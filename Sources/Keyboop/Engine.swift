@@ -786,6 +786,7 @@ final class Engine: EventTapHandler {
         frontAppIsChromium = Engine.chromiumFamily.contains(bid)
             || bid.hasPrefix("com.microsoft.edgemac") || bid.hasPrefix("org.chromium")
             || bid.hasPrefix("com.electron") || bid.hasPrefix("com.tinyspeck")
+        frontAppIsRemote = TextReplacer.isRemoteDesktopBundleID(bid)
         // Chromium и Electron съедают ПЕРВОЕ наше клавиатурное событие после хоткея (доказано в
         // живой Figma 08.09.2026, разбор в TextReplacer.primeFirstKey). Ставим флаг здесь, потому
         // что здесь и так считается семейство, а `TextReplacer` статический и активного приложения
@@ -801,6 +802,7 @@ final class Engine: EventTapHandler {
         applyForcedLayout(for: bid)
     }
     private var frontAppIsChromium = false
+    private var frontAppIsRemote = false
 
     /// Последняя программа, для которой мы уже применили жёсткую раскладку. Уведомление об активации
     /// прилетает и на возврат фокуса внутри той же программы — без этой памяти мы перебивали бы
@@ -996,6 +998,7 @@ final class Engine: EventTapHandler {
         if settings.developerMode && frontAppIsDev { return }
         guard frontAppMode.isEmpty else { return }
         guard !frontAppIsChromium else { return }   // вставка там ненадёжна — мид-слова не трогаем
+        guard !frontAppIsRemote else { return }     // remote desktop теряет Unicode payload и шлёт carrier key
         guard !secureInputWasOn else { return }
         // Фантомный предохранитель (24.07): экран уже показывает итог → выравниваем модель и молчим.
         // Только в grace-окне нашего же переключения; AX зовём здесь, на main, не в колбэке.
@@ -1049,6 +1052,7 @@ final class Engine: EventTapHandler {
         guard !frontAppIsDev || !settings.developerMode else { return }
         guard frontAppMode.isEmpty else { return }
         guard !frontAppIsChromium else { return }
+        guard !frontAppIsRemote else { return }
         guard !secureInputWasOn else { return }
         // F2: физически зажатый модификатор уедет вместе с нашими backspace-ами (⇧⌫ = выделение
         // назад, ⌥⌫ = стирание слова). Флаги читаем живые: пустышка несёт флаги момента постинга.
@@ -1123,6 +1127,7 @@ final class Engine: EventTapHandler {
         // 24.07) — ровно про это. Пока вставка в Chromium не решена, inline там ЗАПРЕЩЁН: у этих
         // приложений остаётся прежний асинхронный путь по границе слова.
         guard !frontAppIsChromium else { return false }
+        guard !frontAppIsRemote else { return false }   // remote desktop не сохраняет Unicode payload
         // F2 (ревью 25.07): если пользователь ФИЗИЧЕСКИ держит модификатор, наши backspace'ы поедут
         // с ним: ⇧⌫ выделяет назад, ⌥⌫ стирает слово целиком — молчаливая потеря текста. Заглавные
         // буквы набирают с зажатым ⇧, так что случай штатный. Флаги события не «обнулить»: приложение
