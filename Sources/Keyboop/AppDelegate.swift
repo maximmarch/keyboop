@@ -394,7 +394,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // не стартуем (без сетевых проверок).
         UpdaterController.shared.onUpdateReady = { [weak self] v in self?.notifyUpdateReady(v) }
         let env = ProcessInfo.processInfo.environment
-        if (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev"), env["KEYBOOP_UPDATER"] != "1" {
+        let hasFeedURL = !(Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !hasFeedURL {
+            kbLog("updater: SUFeedURL не задан — автопроверка обновлений отключена")
+        } else if (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev"), env["KEYBOOP_UPDATER"] != "1" {
             // Dev-сборка НЕ проверяет прод-апкаст: Sparkle иначе может «обновить» dev-бандл
             // прод-DMG — подмена под ногами + диалог с паролем посреди работы (23.07.2026).
             // Прод-поведение Sparkle тестируем на прод-бандле из /Applications.

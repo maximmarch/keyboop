@@ -27,6 +27,12 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
 
     func start() {
         guard controller == nil else { return }
+        let hasFeedURL = !(Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard hasFeedURL else {
+            kbLog("updater: SUFeedURL не задан — Sparkle отключён")
+            return
+        }
         controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
         // ⚠️ В dev-режиме отладки апдейтера (KEYBOOP_UPDATER=1) скачивание ЗАПРЕЩЕНО: пусть Sparkle
         // спрашивает фид и пишет в лог, но не приносит прод-DMG в dev-бандл (инцидент 23.07).
@@ -62,7 +68,7 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
 
     /// Мастер-тумблер «Проверять обновления» (Sparkle хранит стейт в UserDefaults сам).
     var automaticChecks: Bool {
-        get { controller?.updater.automaticallyChecksForUpdates ?? true }
+        get { controller?.updater.automaticallyChecksForUpdates ?? false }
         set {
             controller?.updater.automaticallyChecksForUpdates = newValue
             controller?.updater.automaticallyDownloadsUpdates = newValue

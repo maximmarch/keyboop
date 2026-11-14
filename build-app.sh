@@ -271,8 +271,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>            <string>Keyboop</string>
     <key>CFBundleDisplayName</key>     <string>Keyboop</string>
     <key>CFBundleIdentifier</key>      <string>ru.keyboop.app</string>
-    <key>CFBundleVersion</key>         <string>0.4.10</string>
-    <key>CFBundleShortVersionString</key> <string>0.4.10</string>
+    <key>CFBundleVersion</key>         <string>0.5.0</string>
+    <key>CFBundleShortVersionString</key> <string>0.5.0</string>
     <!-- Штамп сборки: подставляется ниже (sed по __BUILD_STAMP__). Логируется при запуске, чтобы по
          логу было ВИДНО, какую именно сборку гоняем. Прецедент 21.07: диагностировали баг по логу
          процесса, стартовавшего на 11 минут РАНЬШЕ пересборки, — то есть по коду без свежих правок. -->
@@ -311,12 +311,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>NSPrefersDisplaySafeAreaCompatibilityMode</key> <false/>
     <key>NSPrincipalClass</key>        <string>NSApplication</string>
     <key>NSHumanReadableCopyright</key><string>Keyboop — free &amp; open source</string>
-    <!-- Sparkle (автообновления). Проверка ВКЛ + фоновое скачивание. SUAutomaticallyUpdate=true
-         включает «тихий» путь, но мы его ПЕРЕХВАТЫВАЕМ делегатом willInstallUpdateOnQuit
-         (UpdaterController) и по умолчанию НЕ ставим молча, а показываем СВОЁ уведомление «Обновить
-         сейчас / Обновлять автоматически». Тихо ставим только если пользователь сам выбрал «авто».
-         Так выполняется требование ревизии (установка с согласия), а тихий режим — opt-in. Профайлинг off. -->
-    <key>SUFeedURL</key>                       <string>https://keyboop.com/appcast.xml</string>
+    <!-- Sparkle (автообновления). В форке апстримный appcast keyboop.com отключён по умолчанию
+         и для dev, и для release-сборок; при необходимости свой URL можно передать через KEYBOOP_FEED_URL. -->
     <key>SUPublicEDKey</key>                   <string>JHgcY6qatoAU6Tdo02B7mHgfceMyfdPWXqwWQiMESmY=</string>
     <key>SUEnableAutomaticChecks</key>         <true/>
     <key>SUAutomaticallyUpdate</key>           <true/>
@@ -358,6 +354,11 @@ PLIST
 # какую сборку гоняем (прецедент 21.07 — диагностика шла по процессу старше пересборки на 11 минут).
 BUILD_STAMP="$(date '+%Y-%m-%d %H:%M')"
 sed -i '' "s/__BUILD_STAMP__/$BUILD_STAMP/" "$APP/Contents/Info.plist"
+
+if [ "${KEYBOOP_RELEASE:-}" = "1" ] && [ -n "${KEYBOOP_FEED_URL:-}" ]; then
+  /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $KEYBOOP_FEED_URL" "$APP/Contents/Info.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Set :SUFeedURL $KEYBOOP_FEED_URL" "$APP/Contents/Info.plist"
+fi
 
 # M4 (фикс инцидента 14.06): dev-сборкам — ОТДЕЛЬНЫЙ bundle id и имя, чтобы они физически НЕ могли
 # перехватить TCC/Accessibility у боевой ru.keyboop.app (две сборки с одним id, но разной подписью →

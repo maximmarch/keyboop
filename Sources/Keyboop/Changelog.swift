@@ -57,6 +57,27 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        Release(version: "0.5.0",
+            ru: [
+                "Голосовой ввод переведён на единый движок transcribe.cpp (вместо отдельных whisper.cpp и FluidAudio). На Apple Silicon распознавание идёт на GPU через Metal, на Intel — на процессоре; все модели из списка теперь работают на обеих архитектурах.",
+                "Новый каталог ASR-моделей с поддержкой русского языка: по умолчанию рекомендуется GigaAM v3 (E2E RNN-T), а также доступны Parakeet v3, Whisper Large v3 Turbo, Qwen3-ASR, Nemotron Streaming, Voxtral Realtime и другие модели GGUF. Список можно обновить из сети по кнопке, а неиспользуемые модели — удалить в настройках.",
+                "On-device AI-постобработка диктовки: можно подключить встроенную модель Apple Intelligence или локальный OpenAI-совместимый сервер (Ollama, LM Studio и др.) со своим системным промптом. Автоматически работает и офлайн-очистка слов-паразитов и заиканий.",
+                "Фоновая нарезка длинной диктовки по паузам: во время долгой речи готовые фрагменты распознаются на лету в фоне, чтобы финальная вставка не заставляла ждать после отпускания клавиши.",
+                "Live-превью речи прямо на плашке «Слушаю» и на Notch Island во время диктовки: на потоковых моделях через нативный стрим, на остальных — по естественным паузам и быстрому предпросмотру, который мгновенно отменяется при отпускании клавиши.",
+                "Контекстные профили диктовки по активному приложению: Keyboop сам подстраивает пунктуацию и промпт постобработки для чатов, почты/документов, редакторов кода и терминалов. Встроенные правила и свои исключения можно редактировать в отдельном окне.",
+                "Диктовку теперь можно включать и удерживать по клавише Fn / 🌐. Если при удержании нажать системную комбинацию (например Fn+клавиша), удержание безопасно сбрасывается.",
+                "Умное предсказание раскладки при смене фокуса: при переключении в другое окно или поле ввода Keyboop учитывает контекст приложения.",
+            ],
+            en: [
+                "Voice dictation now runs on a single unified transcribe.cpp engine (replacing separate whisper.cpp and FluidAudio backends). Apple Silicon runs on GPU via Metal and Intel Macs run on CPU — every model in the list now works on both architectures.",
+                "Expanded ASR model catalog filtered to Russian-supporting models: GigaAM v3 (E2E RNN-T) is recommended by default alongside Parakeet v3, Whisper Large v3 Turbo, Qwen3-ASR, Nemotron Streaming, Voxtral Realtime, and other GGUF models. You can refresh the catalog online on demand and manage or delete downloaded models in Settings.",
+                "On-device LLM post-processing for dictation: plug in Apple Intelligence or any local OpenAI-compatible endpoint (Ollama, LM Studio, etc.) with a custom prompt, plus automatic deterministic filler-word removal and stutter collapsing.",
+                "Background pause-based chunking for long dictation: speech segments are transcribed on the fly during natural pauses so long dictations land almost immediately when you release the key.",
+                "Live speech preview on the “Listening” pill and Notch Island while you speak — native streaming for streaming-capable models, and pause chunks plus cancellable fast preview for all other models.",
+                "Per-app contextual dictation profiles: Keyboop adapts punctuation rules and post-processing prompts based on the active app (chat, email/docs, code/terminal, or custom rules) with a dedicated rule manager window.",
+                "Dictation can now be triggered and held with the Fn / 🌐 key, safely cancelling accidental hold-to-talk if you press an Fn+<Key> system shortcut.",
+                "Focus layout prediction: Keyboop predicts the expected keyboard layout when switching focus between apps and input fields.",
+            ]),
         // 0.4 «Axolotl» — СРАЗУ СТАБИЛЬНАЯ, без беты (решение автора 17.08). Обычно крупное уходит
         // бетой, но эта версия неделю проверялась ревью в четыре измерения, стендами и глазами:
         // двенадцать подтверждённых дефектов закрыты до релиза, а не после него.

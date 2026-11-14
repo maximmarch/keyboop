@@ -1,95 +1,135 @@
-# Keyboop
+# Keyboop (`0.5.0 · Kinkajou`)
 
 > **wrong layout? keyboop.**
-> Бесплатный open-source переключатель раскладки для macOS, который чинит
-> кракозябры — и при этом **не трогает твой буфер обмена**. А ещё набирает
-> текст голосом. Целиком на твоём Mac.
+> Бесплатный open-source переключатель раскладки и локальная голосовая диктовка
+> для macOS — **не трогает буфер обмена** и не отправляет твой ввод и речь в облако.
 
-Набрал `ghbdtn` вместо `привет`? Keyboop молча всё расколдует — прямо во время
+Набрал `ghbdtn` вместо `привет`? Keyboop молча всё расколдует прямо во время
 набора или по границе слова. Не угадал — поправь хоткеем: последнее слово,
-последние N слов или всё, что настучал за последние T секунд. Плюс автозамена
-сниппетов и локальная диктовка.
+последние N слов или всё, что набрано за последние T секунд. Плюс сниппеты,
+предсказание раскладки при переключении окон и мощная офлайн-диктовка на базе
+`transcribe.cpp`.
 
-## Чем отличается
+> Этот репозиторий — форк [`iffuno/keyboop`](https://github.com/iffuno/keyboop) с
+> версией **0.5.0 · Kinkajou**: переходом на единый движок `transcribe.cpp`,
+> каталогом русских ASR-моделей (включая GigaAM v3), локальной AI-постобработкой,
+> паузным чанкингом, live-превью на острове, контекстными профилями приложений и
+> диктовкой по клавише `Fn / 🌐`. Апстримный фид автообновлений (`SUFeedURL`) в
+> форке отключён по умолчанию.
 
-- 🧼 **Не ломает буфер обмена.** Главная болезнь Punto Switcher — clipboard.
-  Keyboop печатает исправленный текст напрямую, буфер не трогает вообще.
-- 🎙 **Голосовой набор — локально.** Whisper и Parakeet (Neural Engine) на твоём
-  Mac: зажал хоткей, продиктовал, отпустил — текст на месте. Ни байта в сеть.
-- 🌐 **Перевод выделенного.** ⌃⌥T — перевод встаёт на место выделения, через
-  Apple Translation, тоже на устройстве (macOS 15+).
-- ⏪ **Гибкое окно отката.** Не только последнее слово, а N слов / фраза / время —
-  одним хоткеем. Этого нет ни у кого.
-- ✍️ **Сниппеты.** Набрал сокращение — получил e-mail, подпись, любую фразу.
-  Раскладка и регистр не важны.
-- 🔒 **Локально и приватно.** Из того, что ты печатаешь и говоришь, наружу не
-  уходит ничего. Open source — можно проверить каждое слово.
-- 🍎 **Современно.** Apple Silicon, нотаризовано Apple, автообновления, свой
-  канал фидбэка прямо из приложения.
+## Возможности
 
-## Установка
+- 🧼 **Не ломает буфер обмена.** Keyboop печатает исправленный текст напрямую и не
+  перетирает clipboard (в отличие от классических переключателей раскладки).
+- 🧭 **Умная смена раскладки и откат.** Исправление на лету, откат последнего
+  слова / N слов / окна времени, цикл раскладок и предсказание нужной раскладки
+  при переключении фокуса между окнами и приложениями.
+- 🎙 **Локальная диктовка на `transcribe.cpp`.** Единый GGUF-движок с Metal GPU на
+  Apple Silicon и CPU/AVX2 на Intel. Каталог моделей с поддержкой русского языка
+  прямо в настройках: **GigaAM v3** (по умолчанию), **Parakeet v3**, **Whisper
+  Large v3 Turbo**, **Qwen3-ASR**, **Nemotron Streaming**, **Voxtral Realtime** и
+  др., с обновлением списка моделей по кнопке.
+- ✂️ **Очистка речи и нарезка по паузам.** Детерминированное удаление слов-паразитов
+  и свёртывание заиканий, а длинная диктовка режется по естественным паузам и
+  распознаётся в фоне ещё до отпускания клавиши.
+- ✨ **On-device AI-постобработка.** Подключение встроенной модели **Apple
+  Intelligence** (`FoundationModels`) или локального OpenAI-совместимого сервера
+  (Ollama, LM Studio и др.) со своим системным промптом.
+- 💬 **Live-превью речи на пилюле и Notch Island.** Промежуточный текст
+  появляется прямо во время диктовки — через нативный поток на streaming-моделях
+  или через паузные чанки и прерываемое быстрое превью на остальных.
+- 🧩 **Контекстные профили по приложениям.** Автоматические правила для чатов,
+  почты/документов, редакторов кода и терминалов (пунктуация, финальная точка,
+  отдельный AI-промпт), плюс редактор своих правил.
+- 🌐 **Диктовка по клавише `Fn / 🌐`.** Поддерживается удержание или переключение
+  клавишей `Fn / 🌐` (при нажатии системной комбинации `Fn+<клавиша>` удержание
+  безопасно сбрасывается).
+- 🌍 **Перевод выделенного и сниппеты.** Офлайн-перевод выделенного текста
+  через Apple Translation (macOS 15+) и автозамена сниппетов независимо от
+  раскладки и регистра.
 
-Скачай DMG на **[keyboop.com](https://keyboop.com)** — перетащи в Программы,
-разреши доступ к клавиатуре, для голоса выбери модель. Обновляется само.
+## Системные требования
 
-Требуется: **Apple Silicon (M1 и новее) — macOS 14+**, либо **Intel — macOS 13+**.
-На Intel работает всё, кроме движка распознавания Parakeet: он живёт на нейропроцессоре
-Apple, которого в Intel-маках нет. Голосовой набор там идёт через Whisper на процессоре,
-медленнее и теплее, поэтому в настройках подскажем выбрать модель полегче.
+- **Apple Silicon (M1 и новее):** macOS 14.0+ (распознавание речи ускоряется через Metal GPU).
+- **Intel (`x86_64`):** macOS 13.0+ (распознавание идёт на CPU/AVX2 — работают
+  все модели каталога `transcribe.cpp`, для быстрого отклика лучше выбирать
+  компактные модели вроде GigaAM v3, Parakeet или Whisper Small).
 
 ## Сборка из исходников
 
-Нужны Xcode Command Line Tools и три внешние зависимости — их код чужой, в этот
-репозиторий он не входит, положи рядом в `vendor/`:
+Нужны **Xcode Command Line Tools** (`swiftc`, `actool`), `cmake` и две внешние
+зависимости в папке `vendor/` (в git-историю они не входят):
+
+### 1. `transcribe.cpp` (статическая сборка)
 
 ```bash
-mkdir -p vendor && cd vendor
+mkdir -p vendor
+git clone https://github.com/handy-computer/transcribe.cpp vendor/transcribe.cpp
 
-# 1. whisper.cpp — распознавание речи.
-git clone https://github.com/ggml-org/whisper.cpp
-cd whisper.cpp
-cmake -B build-macos14 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_TESTS=OFF \
-  -DWHISPER_BUILD_SERVER=OFF
-cmake --build build-macos14 -j
-cd ..
+# Срез arm64 (Metal GPU, macOS 14+)
+cmake -S vendor/transcribe.cpp -B vendor/transcribe.cpp/build-macos14 \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 \
+  -DTRANSCRIBE_BUILD_SHARED=OFF \
+  -DTRANSCRIBE_METAL=ON \
+  -DGGML_METAL_EMBED_LIBRARY=ON
+cmake --build vendor/transcribe.cpp/build-macos14 --parallel
+cmake --install vendor/transcribe.cpp/build-macos14 --prefix vendor/transcribe.cpp/install-macos14
 ```
 
-⚠️ Флаг `CMAKE_OSX_DEPLOYMENT_TARGET=14.0` обязателен. Без него cmake берёт версию
-той системы, на которой ты собираешь, и `ggml-metal` жёстко связывается с классом из
-macOS 15 — на macOS 14 приложение молча умрёт ещё до `main()`. Проверено на живых
-пользователях, чинилось экстренным релизом.
+⚠️ Флаг `-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0` обязателен: без него `cmake` берёт
+версию текущей macOS, и `ggml-metal` жёстко линкуется к системным символам, из-за
+чего приложение падает до `main()` на macOS 14.
 
-Ещё две:
-
-- **Sparkle** (автообновления) → `vendor/sparkle/Sparkle.framework` —
-  [релизы](https://github.com/sparkle-project/Sparkle/releases)
-- **FluidAudio** (Parakeet на Neural Engine) → `vendor/fluidaudio-prebuilt/` со
-  `libFluidAudio.a`, `Modules/` и `include/` —
-  [исходники](https://github.com/FluidInference/FluidAudio)
-
-Дальше:
+Если нужна universal-сборка с поддержкой Intel (`KEYBOOP_UNIVERSAL=1`),
+дополнительно собери CPU-срез `x86_64`:
 
 ```bash
-bash build-app.sh      # dev-сборка (self-signed) → Keyboop.app
-bash install-local.sh  # то же + установка в /Applications
+cmake -S vendor/transcribe.cpp -B vendor/transcribe.cpp/build-x86 \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+  -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+  -DTRANSCRIBE_BUILD_SHARED=OFF \
+  -DTRANSCRIBE_METAL=OFF \
+  -DTRANSCRIBE_X86_CONSERVATIVE=ON \
+  -DGGML_AVX2=ON \
+  -DGGML_FMA=ON \
+  -DGGML_F16C=ON
+cmake --build vendor/transcribe.cpp/build-x86 --parallel
+cmake --install vendor/transcribe.cpp/build-x86 --prefix vendor/transcribe.cpp/install-x86
 ```
 
-Готовые релизы подписаны Developer ID и нотаризованы Apple — скрипт релиза завязан
-на личные ключи и в репозиторий не входит.
+### 2. `Sparkle.framework`
+
+Скачай [релиз Sparkle](https://github.com/sparkle-project/Sparkle/releases) и
+положи `Sparkle.framework` в `vendor/sparkle/Sparkle.framework`.
+
+### 3. Сборка приложения
+
+```bash
+# Dev-сборка с ad-hoc подписью → Keyboop.app (bundle id: ru.keyboop.app.dev)
+KEYBOOP_SIGN_ID=- bash build-app.sh
+
+# Сборка с локальным сертификатом "Keyboop Dev" (если создан в Keychain)
+bash build-app.sh
+
+# Сборка + чистая установка в /Applications и запуск
+bash install-local.sh
+```
+
+Для релизной сборки с Developer ID и своим Sparkle-фидом при необходимости можно
+передать `KEYBOOP_RELEASE=1` и `KEYBOOP_FEED_URL=https://...`.
 
 ## Авторы
 
-**Ivan Smetanin** — идея, продукт, руки и все опечатки в этом репозитории.
-
-**Claude (Anthropic)** — соавтор кода. Единственный участник проекта, который
-физически не способен набрать «ghbdtn», — именно поэтому ему и доверили это чинить.
-
-Да, программу для исправления человеческого ввода писали человек и нейросеть:
-один печатает с ошибками, второй не печатает вообще. Вместе — как раз одна
-полноценная клавиатура. Ирония замечена, задокументирована и оставлена в проде.
+- **Ivan Smetanin** ([`iffuno/keyboop`](https://github.com/iffuno/keyboop)) —
+  оригинальная идея, продукт и основа Keyboop.
+- **Maxim Marchuk** ([`maximmarch/keyboop`](https://github.com/maximmarch/keyboop)) —
+  развитие форка `0.5.0 · Kinkajou`: интеграция `transcribe.cpp` и каталога
+  моделей с поддержкой русского языка, AI-постобработка, паузный чанкинг,
+  live-превью, контекстные профили и диктовка по `Fn`.
 
 ## Лицензия
 
-MIT. Бесплатно — для всех, кто живёт на нескольких раскладках. А если в
-остальной галактике тоже мучаются с кракозябрами — и для них.
+MIT — см. [LICENSE](LICENSE) и [THIRD_PARTY.md](THIRD_PARTY.md).

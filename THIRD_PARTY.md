@@ -1,16 +1,16 @@
 # Third-party notices
 
-Keyboop сам распространяется под MIT. Ниже — всё чужое, что входит в приложение или
-скачивается им по явному действию человека, с лицензией и тем, где оно лежит.
-
-Порядок: сначала то, что лежит в бандле, потом то, что приложение скачивает.
+Keyboop распространяется под лицензией MIT ([LICENSE](LICENSE)). Ниже — внешние
+компоненты и данные, которые входят в сборку или скачиваются приложением по
+явному действию пользователя.
 
 ---
 
-## 1. Sparkle — автообновление
+## 1. Sparkle — инфраструктура обновлений
 
 Фреймворк <https://sparkle-project.org>, лицензия MIT. Лежит в бандле:
-`Keyboop.app/Contents/Frameworks/Sparkle.framework`, исходники — `vendor/sparkle`.
+`Keyboop.app/Contents/Frameworks/Sparkle.framework`, бинарный артефакт —
+`vendor/sparkle`.
 
 ```
 Copyright (c) 2006-2013 Andy Matuschak
@@ -19,51 +19,53 @@ Copyright (c) 2011-2014 Kornel Lesiński
 … (полный текст: vendor/sparkle/LICENSE)
 ```
 
-Sparkle включает компоненты сторонних авторов со своими лицензиями — их тексты
-идут вместе с фреймворком.
+В форке апстримный `SUFeedURL` по умолчанию не задан (`build-app.sh` включает
+его только при явной передаче `KEYBOOP_FEED_URL` в релизном режиме).
 
-## 2. whisper.cpp — распознавание речи (движок Whisper)
+## 2. transcribe.cpp — движок распознавания речи
 
-<https://github.com/ggml-org/whisper.cpp>, лицензия MIT, исходники — `vendor/whisper.cpp`.
-Собирается в приложение статически.
+<https://github.com/handy-computer/transcribe.cpp>, лицензия MIT, исходники —
+`vendor/transcribe.cpp`. Линкуется статически (`libtranscribe.a`).
 
 ```
 MIT License
-Copyright (c) 2023-2026 The ggml authors
-… (полный текст: vendor/whisper.cpp/LICENSE)
+Copyright (c) 2026 The transcribe.cpp authors
+… (полный текст: vendor/transcribe.cpp/LICENSE)
 ```
 
-Модель Whisper (`ggml-*.bin`) в приложение НЕ входит: её скачивает человек в
-настройках. Веса Whisper — OpenAI, MIT, репозиторий
-<https://huggingface.co/ggerganov/whisper.cpp>.
+В составе `transcribe.cpp` статически используются компоненты под MIT:
+- **ggml** (тензорный бэкенд, CPU / Metal GPU) — `vendor/transcribe.cpp/ggml/LICENSE`
+  (`Copyright (c) 2023-2026 The ggml authors`).
+- **Silero VAD** (сегментация речи в `src/transcribe-vad.cpp`) —
+  `vendor/transcribe.cpp/src/third_party/silero_vad/LICENSE`
+  (`Copyright (c) 2020-present Silero Team`).
+- **miniz** (сжатие/распаковка для эвристик Whisper) —
+  `vendor/transcribe.cpp/src/third_party/miniz/LICENSE`.
 
-## 3. FluidAudio — распознавание речи (движок Parakeet)
+Подробности см. в `vendor/transcribe.cpp/THIRD-PARTY-LICENSES.md`.
 
-<https://github.com/FluidInference/FluidAudio>, лицензия Apache-2.0, исходники —
-`vendor/FluidAudio`, собранные артефакты — `vendor/fluidaudio-prebuilt`. Собственные
-сторонние зависимости FluidAudio перечислены в `vendor/FluidAudio/ThirdPartyLicenses`.
+## 3. Каталог и веса моделей распознавания речи (скачиваются пользователем)
 
-```
-Apache License, Version 2.0
-… (полный текст: vendor/FluidAudio/LICENSE)
-```
+Файлы моделей в бандл не входят: пользователь скачивает выбранные GGUF-модели в
+настройках или при онбординге (из Hugging Face или зеркала `blob.handy.computer`).
+Встроенный снимок каталога `Sources/Keyboop/Resources/models-catalog.json` и
+опциональное онлайн-обновление списка синхронизируются с каталогом проекта
+[Handy](https://github.com/cjpais/Handy) (отфильтрованы по поддержке русского
+языка и совместимости с текущей версией `transcribe.cpp`).
 
-## 4. Модель Parakeet (NVIDIA) — скачивается по действию человека
+Основные семейства и лицензии моделей каталога:
+- **GigaAM v3** (SberDevices / Salute, GGUF-порт `handy-computer`) — **MIT**
+- **NVIDIA Parakeet TDT / Canary** (GGUF-порт `handy-computer`) — **CC-BY-4.0**
+- **NVIDIA Nemotron Streaming ASR** (GGUF-порт `handy-computer`) — **OpenMDW-1.1**
+- **Whisper** (OpenAI / `handy-computer`) — **MIT / Apache-2.0**
+- **Qwen3-ASR** (Alibaba / `handy-computer`) — **Apache-2.0**
+- **Voxtral Realtime** (Mistral / `handy-computer`) — **Apache-2.0**
+- **Orukeet** (`handy-computer`) — **CC-BY-SA-4.0**
 
-Модель распознавания речи **NVIDIA Parakeet TDT** в CoreML-порте FluidInference.
-В приложение не входит: скачивается из настроек по кнопке, с нашего зеркала
-`keyboop.com/models` (файл `parakeet/parakeet-v3.tar.gz`).
+Точная лицензия и ссылка на репозиторий указаны у каждой записи в
+`Sources/Keyboop/Resources/models-catalog.json`.
 
-- Базовая модель: **NVIDIA**, лицензия **CC-BY-4.0**.
-- CoreML-порт: **FluidInference**, та же лицензия.
-
-Атрибуция обязательна по условиям CC-BY-4.0 и указана также в окне «О программе».
-
-> Если будет добавлена потоковая модель Nemotron (`nvidia/nemotron-3.5-asr-streaming-0.6b`
-> и её CoreML-порт), лицензия у неё другая — **OpenMDW-1.1** (Linux Foundation), и
-> сюда нужно положить её текст отдельным разделом плюс сохранить copyright/origin-нотисы.
-
-## 5. Языковые данные (триграммы и словари RU/EN)
+## 4. Языковые данные (триграммы и словари RU/EN)
 
 Файлы `Sources/Keyboop/Resources/trigrams_ru.json`, `trigrams_en.json`,
 `words_ru.json`, `words_en.json` взяты из проекта **keyswitcher**
@@ -87,11 +89,9 @@ copies or substantial portions of the Software.
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND...
 ```
 
-> На будущее: можно сгенерировать собственную триграммную модель из открытого
-> корпуса (wordfreq / FrequencyWords), чтобы не зависеть от внешних данных. Тогда
-> этот раздел можно убрать. Пока используем keyswitcher-данные (MIT это разрешает).
+## 5. Системные фреймворки Apple
 
-## 6. Системные фреймворки Apple
-
-AppKit, Carbon (Text Input Services), CoreGraphics, IOKit, AVFoundation, Speech,
-Translation и прочие — часть macOS, отдельной атрибуции не требуют.
+`AppKit`, `Carbon` (Text Input Services), `CoreGraphics`, `IOKit`, `AVFoundation`,
+`CoreAudio`, `AudioToolbox`, `Metal`, `MetalKit`, `Accelerate`, `SwiftUI`,
+`Translation` и `FoundationModels` (weak-linked для Apple Intelligence на macOS 26+)
+— системные компоненты macOS.
