@@ -211,7 +211,7 @@ final class VoiceIndicator {
         }
         return "…" + String(chars)
     }
-    func showProcessing() { DispatchQueue.main.async { self.present(L10n.t("voice.recognizing"), .processing) } }
+    func showProcessing(_ text: String = L10n.t("voice.recognizing")) { DispatchQueue.main.async { self.present(text, .processing) } }
     func hide() {
         DispatchQueue.main.async {
             if self.onScreen { kbLog("hud: спрятал") }

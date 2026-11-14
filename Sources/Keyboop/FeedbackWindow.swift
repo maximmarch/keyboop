@@ -427,9 +427,10 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         secure input держатель (ИМЯ НЕНАДЁЖНО, поле застревает на первом за сессию): \(AppHealth.secureInputHolder ?? "—")
         запущено из: \(Permissions.launchLocationForDiagnostics())
         раскладки: \(layouts.isEmpty ? "—" : layouts)
-        движок: \(s.voiceEngine) · parakeet установлен=\(ParakeetEngine.modelInstalled) · whisper-модель=\(s.voiceModel) · выгрузка после диктовки=\(s.voiceUnloadAfterDictation)
+        движок: transcribe.cpp · модель=\(s.voiceModel) (установлена=\(ModelDownloader.shared.isInstalled(s.voiceModel))) · выгрузка после диктовки=\(s.voiceUnloadAfterDictation)
+        голос-обработка: fillers=\(s.voiceRemoveFillers) · stutters=\(s.voiceCollapseStutters) · pauseChunking=\(s.voicePauseChunking) · aiPost=\(s.voicePostProcessEnabled) (\(s.voicePostProcessProvider))
         микрофон: \(micName)
-        авто-переключение=\(s.autoEnabled) · live-fix=\(s.liveFixEnabled) · триггеры: space=\(s.triggerSpace) enter=\(s.triggerEnter) tab=\(s.triggerTab)
+        авто-переключение=\(s.autoEnabled) · live-fix=\(s.liveFixEnabled) · predict=\(s.predictLayoutEnabled) · триггеры: space=\(s.triggerSpace) enter=\(s.triggerEnter) tab=\(s.triggerTab)
         \(hk)
 
         --- лог, последние 300 строк (без текста ввода и речи) ---
@@ -474,6 +475,9 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         case .voice:
             c = ("voice", s.voiceEnabled, s.voiceHotkeyMode, s.voiceHotkeyKeyCode, s.voiceHotkeyModifiers,
                  " (hold=\(s.voiceHoldMode))")
+        case .voicePostProcess:
+            c = ("voiceAI", s.voiceEnabled && s.voicePostProcessHotkeyEnabled, "key",
+                 s.voicePostProcessHotkeyKeyCode, s.voicePostProcessHotkeyModifiers, "")
         case .translate:
             c = ("translate", s.translateEnabled, "key", s.translateHotkeyKeyCode, s.translateHotkeyModifiers, "")
         case .instant:

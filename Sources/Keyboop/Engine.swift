@@ -260,6 +260,7 @@ final class Engine: EventTapHandler {
                 // клик мышью идёт отдельным путём (handleContextReset → полный clear, каретка сдвинута).
                 self?.pendingSoftReset = true
                 self?.refreshFrontmostAppCache()   // inline-путь читает кеш (в колбэке NSWorkspace нельзя)
+                FocusLayoutPredictor.shared.schedulePredict(reason: .appActivated)
             }
             NotificationCenter.default.addObserver(
                 forName: NSSpellChecker.didChangeAutomaticPeriodSubstitutionNotification,
@@ -299,6 +300,15 @@ final class Engine: EventTapHandler {
                     kbLog("раскладка: фоновая сверка приняла реальность (мнение расходилось)")
                 }
             }
+            FocusLayoutPredictor.shared.selectLayout = { [weak self] cyrillic in
+                self?.layout.selectLayout(cyrillic: cyrillic) ?? false
+            }
+            FocusLayoutPredictor.shared.currentIsCyrillic = { [weak self] in
+                self?.layout.currentIsCyrillic() ?? false
+            }
+            FocusLayoutPredictor.shared.onDidSwitchLayout = { [weak self] in
+                self?.onLayoutMaybeChanged?()
+            }
             refreshFrontmostAppCache()
             TextReplacer.warmUpInline()   // холодный первый burst стоил 23мс (замер 25.07) → греем заранее
             // Точная таблица символов из реальной раскладки (кавычки, Shift-ряд и т.д.).
@@ -330,6 +340,13 @@ final class Engine: EventTapHandler {
                     // Человек переключился сам — запоминаем ИМЕННО эту раскладку как его выбор с
                     // этой стороны, чтобы вернуть его туда же, а не на первую попавшуюся (105/106).
                     self?.layout.noteCurrentAsUserChoice()
+                    if isSelectedChange {
+                        // Через 30мс HIToolbox точно устоялся — запоминаем выбор для открытого чата/окна.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+                            guard let self, !self.layout.withinOwnSelectGrace else { return }
+                            FocusLayoutPredictor.shared.noteManualLayoutChoice(cyrillic: self.layout.currentIsCyrillic())
+                        }
+                    }
                 }
             }
             // Голосовая вставка завершилась → чистим буфер, чтобы надиктованное не попало в группу (G3).
@@ -463,6 +480,7 @@ final class Engine: EventTapHandler {
         // нашу синтетику мы шлём только с клавиатуры, mouse-down — всегда намерение пользователя.
         buffer.invalidateGroupHistory()
         probeCaretLeft()
+        FocusLayoutPredictor.shared.schedulePredict(reason: .click)
         if muted { pendingContextClear = true; return }   // клик двигал каретку: очистка не теряется, а ждёт следующего нажатия (аудит-гэп)
         // НЕ чистим буфер ЗДЕСЬ (этот колбэк прилетает с async-монитора ПОЗЖЕ первого нажатия и съедал
         // бы первый символ) — помечаем на ленивую очистку перед следующим нажатием (см. handleKeyDown).
@@ -502,7 +520,9 @@ final class Engine: EventTapHandler {
 
     // Голосовой ввод (hold-to-talk) — делегируем оркестратору.
     func handleVoiceBegin() { VoiceController.shared.begin() }
+    func handleVoiceAIBegin() { VoiceController.shared.begin(forcePostProcess: true) }
     func handleVoiceEnd() { VoiceController.shared.end() }
+    func handleVoiceAbort() { VoiceController.shared.abortHold() }
 
     /// Возвращает true, если клавишу надо ПРОГЛОТИТЬ (граница слова раскрыла сниппет — см. expandSnippet).
     ///
@@ -560,6 +580,7 @@ final class Engine: EventTapHandler {
         // Печать символа якорь сохраняет (chain прогрессивной конверсии).
         switch keyCode {
         case 51: // Backspace
+            FocusLayoutPredictor.shared.noteRealKey(at: eventTime)
             liveFixLast = ""                          // правка слова — якорь self-heal недействителен
             // ⌥⌫ / ⌘⌫ стирают слово или строку целиком — мы не знаем сколько, сбрасываем контекст.
             if optOrCmd {
@@ -677,6 +698,9 @@ final class Engine: EventTapHandler {
                 }
                 self.convertFromBuffer(manual: false, soft: appMode == "soft")
             }
+            if (keyCode == 48 || keyCode == 36) && !shortcutSpace {
+                FocusLayoutPredictor.shared.schedulePredict(reason: .focusKey, delay: 0.09)
+            }
         case 123, 124, 125, 126: // стрелки
             liveFixLast = ""                  // курсор сместился — якорь self-heal недействителен
             wordEdited = false                // курсор сместился — это уже другое слово/место
@@ -701,9 +725,16 @@ final class Engine: EventTapHandler {
             buffer.clear()
             UndoLearner.shared.resetContext()
         default:
-            if cmdOrCtrl { liveFixLast = ""; wordEdited = false; buffer.clear(); return false } // это шорткат, не текст
+            if cmdOrCtrl {
+                liveFixLast = ""; wordEdited = false; buffer.clear()
+                if flags.contains(.maskCommand) && Self.focusJumpKeyCodes.contains(keyCode) {
+                    FocusLayoutPredictor.shared.schedulePredict(reason: .focusKey, delay: 0.09)
+                }
+                return false
+            } // это шорткат, не текст
             if let scalar = characters.unicodeScalars.first, isPrintable(scalar) {
                 lastRealKeyAt = ProcessInfo.processInfo.systemUptime
+                FocusLayoutPredictor.shared.noteRealKey(at: eventTime)
                 // INLINE-ПОЧИНКА (25.07): пробуем заменить слово ПРЯМО ЗДЕСЬ, внутри колбэка тапа —
                 // пока мы не вернули управление, ни одна клавиша пользователя не пройдёт, поэтому
                 // вклиниться в нашу замену физически нечему (разбор: memory keyboop-inline-replace-in-callback).
@@ -782,7 +813,7 @@ final class Engine: EventTapHandler {
         // эта строка тихо осталась в обход — то есть правка закрыла границу слова, но не закрыла
         // ровно тот путь, который стирает символы посреди набора. Один источник, чтобы не разошлись.
         frontAppMode = Engine.appMode(for: bid)
-        frontAppIsDev = Engine.devApps.contains(bid) || bid.hasPrefix("com.jetbrains")
+        frontAppIsDev = Engine.isDevBundleID(bid)
         frontAppIsChromium = Engine.chromiumFamily.contains(bid)
             || bid.hasPrefix("com.microsoft.edgemac") || bid.hasPrefix("org.chromium")
             || bid.hasPrefix("com.electron") || bid.hasPrefix("com.tinyspeck")
@@ -1299,6 +1330,7 @@ final class Engine: EventTapHandler {
             self.liveFixLast = ""
             self.buffer.clear()
             self.onLayoutMaybeChanged?()
+            FocusLayoutPredictor.shared.noteManualLayoutChoice(cyrillic: self.layout.currentIsCyrillicOpinion())
             // Звук НЕ играем (просьба автора 24.07): это замена системной смены языка, а она
             // молчит. Индикатор в строке меню и так показывает текущий язык.
         }
@@ -1927,6 +1959,11 @@ final class Engine: EventTapHandler {
         settings.rescuedCount += 1                      // зверёк расколдовал ещё одно слово
         let statsDone = CACurrentMediaTime()
         layout.selectLayout(cyrillic: toCyrillic)
+        if manual {
+            FocusLayoutPredictor.shared.noteManualLayoutChoice(cyrillic: toCyrillic)
+        } else if autoProp?.rescue != true {
+            FocusLayoutPredictor.shared.noteConfirmedTypingLayout(cyrillic: toCyrillic)
+        }
         let layoutDone = CACurrentMediaTime()
         onLayoutMaybeChanged?()
         let callbackDone = CACurrentMediaTime()
@@ -2409,9 +2446,23 @@ final class Engine: EventTapHandler {
         "net.kovidgoyal.kitty", "com.apple.Console",
         "com.mitchellh.ghostty", "co.zeit.hyper", "org.tabby", "com.github.wez.wezterm"
     ]
+    static let focusJumpKeyCodes: Set<Int64> = [
+        3,   // ⌘F — поиск
+        17,  // ⌘T — новая вкладка
+        18, 19, 20, 21, 22, 23, 25, 26, 28, // ⌘1…9 — вкладки и чаты
+        30, 33, // ⌘] / ⌘[ — вперёд/назад
+        37,  // ⌘L — адресная строка
+        40,  // ⌘K — быстрый переход к чату
+        45,  // ⌘N — новое окно/сообщение
+        50   // ⌘` / ⌘~ — смена окна
+    ]
+
+    static func isDevBundleID(_ bid: String) -> Bool {
+        devApps.contains(bid) || bid.hasPrefix("com.jetbrains")
+    }
+
     static func frontmostIsDevApp() -> Bool {
-        let bid = frontmostBundleID()
-        return devApps.contains(bid) || bid.hasPrefix("com.jetbrains")
+        return isDevBundleID(frontmostBundleID())
     }
 
     /// ВСТРОЕННЫЕ дефолты-исключения (чтобы юзеру не приходилось искать настройку — частая жалоба).

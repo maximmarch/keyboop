@@ -1209,7 +1209,8 @@ enum GlobeKey {
         let settings = AppSettings.shared
         let instant = settings.instantSwitchEnabled && settings.instantSwitchMode == "globe"
         let manual = settings.hotkeyMode == "modkey" && settings.hotkeyKeyCode == 63
-        return instant || manual
+        let voice = settings.voiceEnabled && settings.voiceHotkeyMode == "modkey" && settings.voiceHotkeyKeyCode == 63
+        return instant || manual || voice
     }
 
     static var looksOrphaned: Bool { current == .nothing && !wanted }

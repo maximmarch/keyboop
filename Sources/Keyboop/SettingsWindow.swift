@@ -1108,6 +1108,19 @@ final class DetailVC: NSViewController {
     /// раздела — иначе обработчик прогресса держал бы ссылку на кнопку, которой уже нет.
     private var voiceModelButton: [String: NSButton] = [:]
     private var historyWC: VoiceHistoryWindowController?
+    private var ppPromptWindow: NSWindow?
+    private var ctxProfilesWindow: NSWindow?
+    private weak var ctxProfilesStack: NSStackView?
+    private weak var ctxProfilesBox: CollapsibleRow?
+    private weak var ctxProfilesSummaryLabel: NSTextField?
+    private var ctxDisplayedRuleIDs: [String] = []
+    private var ppPromptTextView: NSTextView?
+    private weak var ppTestInputField: NSTextField?
+    private var ppTestOutputView: NSTextView?
+    private weak var ppTestButton: NSButton?
+    private weak var ppBaseURLField: NSTextField?
+    private weak var ppModelField: NSTextField?
+    private weak var ppKeyField: NSSecureTextField?
     private let docView = FlippedView()
     private let column = FlippedView()           // колонка контента с ограниченной шириной
     private var contentStack: NSStackView?
@@ -1517,13 +1530,14 @@ final class DetailVC: NSViewController {
     private func modelsSignature() -> String {
         let dir = (VoiceController.modelPath("") as NSString).deletingLastPathComponent
         let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return "" }
-        return names.sorted().map { n -> String in
+        let names = (try? fm.contentsOfDirectory(atPath: dir)) ?? []
+        let filesSig = names.sorted().map { n -> String in
             let a = try? fm.attributesOfItem(atPath: (dir as NSString).appendingPathComponent(n))
             let size = (a?[.size] as? NSNumber)?.int64Value ?? -1
             let mtime = (a?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
             return "\(n):\(size):\(Int(mtime))"
         }.joined(separator: "|")
+        return "\(ModelDownloader.catalog.count)#\(filesSig)"
     }
     private var lastModelsSignature: String?
 
@@ -1732,6 +1746,9 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("switch.live"), L10n.t("switch.liveSub"),
                           settings.autoEnabled && settings.liveFixEnabled, #selector(toggleLive),
                           enabled: settings.autoEnabled, help: L10n.t("switch.liveHelp"), key: "switch.live"),
+                switchRow(L10n.t("switch.predict"), L10n.t("switch.predictSub"),
+                          settings.predictLayoutEnabled, #selector(togglePredictLayout),
+                          help: L10n.t("switch.predictHelp"), key: "switch.predict"),
                 switchRow(L10n.t("switch.dev"), L10n.t("switch.devSub"), settings.developerMode, #selector(toggleDev),
                           help: L10n.t("switch.devHelp"), key: "switch.dev"),
                 controlRow(L10n.t("switch.manual"), HotkeyControl(),
@@ -3480,15 +3497,13 @@ final class DetailVC: NSViewController {
         // Раздел собран по ТЕКУЩЕМУ состоянию диска → запоминаем сигнатуру, чтобы ближайший
         // revalidateVoiceIfShown (активация окна) не делал лишнюю пересборку впустую.
         lastModelsSignature = modelsSignature()
-        // Единый список моделей (Parakeet + whisper) — без тумблера движка: движок выводится из
-        // активной модели. Любую можно скачать / активировать / удалить (по просьбе автора 2026-06-14).
-        unifiedCatalog = unifiedModels()
-        // РЕКОМЕНДУЕМЫЕ отдельно от остальных: из пяти моделей человек не понимает, какую брать
-        // (репорт 25.07). Сверху две, которыми стоит пользоваться, прочие — под спойлером.
+        // Единый список ASR-моделей из каталога transcribe.cpp (ограничен моделями с поддержкой RU).
         // Индексы берём от ПОЛНОГО каталога: по ним работают кнопки строк (tag → unifiedCatalog).
+        unifiedCatalog = unifiedModels()
+        let recommendedSet = Set(ModelDownloader.recommendedOrder)
         let indexed = Array(unifiedCatalog.enumerated())
-        let recommended = indexed.filter { Self.recommendedModelIds.contains($0.element.id) }
-        let others = indexed.filter { !Self.recommendedModelIds.contains($0.element.id) }
+        let recommended = indexed.filter { recommendedSet.contains($0.element.id) }
+        let others = indexed.filter { !recommendedSet.contains($0.element.id) }
         // Спойлер раскрыт сам, если «спрятанная» модель активна или уже скачана — иначе человек
         // не нашёл бы то, чем прямо сейчас пользуется.
         if voiceOthersExpanded == nil {
@@ -3507,7 +3522,8 @@ final class DetailVC: NSViewController {
         // звука…») сидела прямо над нашим собственным «Звуком записи», и слово «звук» в двух
         // разных смыслах читалось как дубль. Теперь четыре карточки с заголовками; ровно четыре,
         // потому что коралловый акцент, встречающийся шесть раз на экране, перестаёт быть акцентом.
-        warmBox = nil; volumeBox = nil; autoEnterBox = nil; othersBox = nil; outputBox = nil   // ссылки прошлой сборки недействительны
+        warmBox = nil; volumeBox = nil; autoEnterBox = nil; othersBox = nil; outputBox = nil; ctxProfilesBox = nil
+        catalogRefreshButton = nil; catalogRefreshLabel = nil   // ссылки прошлой сборки недействительны
         var views: [NSView] = [
             blockTitle("voice.title"),
             group(8),
@@ -3576,15 +3592,8 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("voice.escSave"), L10n.t("voice.escSaveSub"), settings.escSaveToHistory,
                           #selector(toggleEscSave), enabled: settings.escCancelsDictation,
                           help: L10n.t("voice.escSaveHelp"), key: "voice.escSave"),
-                // ⚠️ ЗДЕСЬ БЫЛ ПОТОКОВЫЙ НАБОР — УБРАН ДО 0.4 (автор, 01.08.2026), см. AppSettings.
-                // Строка обещала «показывает речь на плашке», и этого не происходило. Возвращать
-                // сюда же не надо: в 0.4 её место в разделе «Пока вы диктуете», рядом с остальным,
-                // что происходит во время речи.
-                //
-                // ⚠️ «Звук записи» и громкость ОСТАЮТСЯ ЗДЕСЬ. 01.08 они переехали в «Пока вы
-                // диктуете» (по смыслу: звучат во время диктовки), а 02.08 автор посмотрел на живом
-                // окне и вернул обратно. Не трогать без него: логика группировки тут проиграла
-                // привычке, и это его окно.
+                switchRow(L10n.t("voice.streaming"), L10n.t("voice.streamingSub"), settings.voiceStreaming,
+                          #selector(toggleVoiceStreaming), help: L10n.t("voice.streamHelp"), key: "voice.streaming"),
                 switchRow(L10n.t("voice.sound"), L10n.t("voice.soundSub"), settings.voiceSoundEnabled,
                           #selector(toggleVoiceSound), help: L10n.t("voice.soundHelp"), key: "voice.sound"),
                 makeVolumeBox(),
@@ -3593,7 +3602,19 @@ final class DetailVC: NSViewController {
                 // обычная строка внутри «Диктовки», а четыре правила выезжают под ней.
                 outputGroupRow(),
                 makeOutputBox(),
+                switchRow(L10n.t("voice.ctxProfiles"), L10n.t("voice.ctxProfilesSub"), settings.voiceContextProfilesEnabled,
+                          #selector(toggleVoiceContextProfiles(_:)), help: L10n.t("voice.ctxProfilesHelp"), key: "voice.ctxProfiles"),
+                makeCtxProfilesBox(),
+                switchRow(L10n.t("voice.cleanFillers"), L10n.t("voice.cleanFillersSub"), settings.voiceRemoveFillers,
+                          #selector(toggleVoiceRemoveFillers(_:)), help: L10n.t("voice.cleanFillersHelp"), key: "voice.cleanFillers"),
+                switchRow(L10n.t("voice.collapseStutters"), L10n.t("voice.collapseStuttersSub"), settings.voiceCollapseStutters,
+                          #selector(toggleVoiceCollapseStutters(_:)), key: "voice.collapseStutters"),
+                switchRow(L10n.t("voice.pauseChunking"), L10n.t("voice.pauseChunkingSub"), settings.voicePauseChunking,
+                          #selector(toggleVoicePauseChunking(_:)), help: L10n.t("voice.pauseChunkingHelp"), key: "voice.pauseChunking"),
             ]),
+            group(6),
+            sectionTitle(L10n.t("voice.grpAI")),
+            card(postProcessRows()),
         ]
         // ⚠️ РЕДАКТОР СЛОВАРЯ УБРАН ИЗ НАСТРОЕК (решение автора 13.08.2026: «словарь в голосовом
         // наборе не будем отображать, он будет под нашим контролем полностью»).
@@ -3629,6 +3650,8 @@ final class DetailVC: NSViewController {
                                       box])
         }
         views.append(contentsOf: [
+            group(4),
+            catalogRefreshRow(),
             group(6),
             hint(L10n.t("voice.modelsNote")),
             group(2),
@@ -3691,70 +3714,122 @@ final class DetailVC: NSViewController {
         return vstack(views)
     }
 
-    // MARK: единый список моделей распознавания (Parakeet + whisper, без тумблера движка)
+    // MARK: единый список моделей распознавания (transcribe.cpp, только модели с поддержкой русского)
 
     private var unifiedCatalog: [UnifiedModel] = []
-    /// Что показываем сразу: Neural-Engine-модель и самая сильная whisper. Остальные — под спойлером.
-    private static let recommendedModelIds: Set<String> = ["parakeet", "large-v3-turbo"]
     /// nil — ещё не решали (решим по факту: активна/скачана ли «спрятанная» модель).
     private var voiceOthersExpanded: Bool?
     private var downloadingModelId: String?      // какая модель качается сейчас (одна за раз)
     private var downloadProgress = 0.0
-    // Сторож застревания загрузки (репорт 23.07.2026: Parakeet «завис на 2%» — HF-CDN из RU
-    // капризен, а прогресс FluidAudio при затыке честно замирает; UI молчал и выглядел сломанным).
+    // Сторож застревания загрузки (репорт 23.07.2026: HF-CDN из RU бывает капризным).
     private var dlLastChangeAt = Date()
     private var dlLoggedDecile = -1
     private var dlStallTimer: Timer?
+    private weak var catalogRefreshButton: NSButton?
+    private weak var catalogRefreshLabel: NSTextField?
 
-    /// Одна запись каталога моделей. Движок выводится из активной модели (тумблер Whisper/Parakeet убран).
+    /// Одна запись каталога моделей для `transcribe.cpp`.
     struct UnifiedModel {
-        let engine: String      // "parakeet" | "whisper"
-        let id: String          // "parakeet" или имя whisper-модели (base/small/…)
-        let display: String
-        let size: String
-        let note: String
-        /// Ключ L10n для подсказки. Для whisper приходит из `ModelDownloader.catalog`, для Parakeet
-        /// это «voice.pkHelp». ⚠️ НЕ вычислять из id — почему, написано у `struct Model` в
-        /// `ModelDownloader`.
-        let helpKey: String
-        /// Развёрнутое описание под кнопкой «i»: диск, память, скорость, для чего годится.
-        /// Собирается из ключа модели и общего хвоста про память (`model.memNote`).
+        let model: ModelDownloader.Model
+        var id: String { model.id }
+        var display: String { model.name }
+        var size: String { L10n.size(model.formattedSize) }
+
+        var note: String {
+            var parts: [String] = []
+            parts.append(model.isRussianOnly
+                         ? L10n.t("voice.ruOnlyBadge")
+                         : String(format: L10n.t("voice.langsN"), model.languages.count))
+            if let wer = model.ruErrorPercent {
+                parts.append(String(format: L10n.t("voice.ruWer"), wer))
+            }
+            #if arch(arm64)
+            let rtf = model.accelRtf
+            #else
+            let rtf = model.cpuRtf
+            #endif
+            if let rtf, rtf > 0 {
+                parts.append("~\(String(format: rtf >= 10 ? "%.0f" : "%.1f", rtf))×")
+            }
+            return parts.joined(separator: " · ")
+        }
+
+        /// Развёрнутое описание под кнопкой «i»: параметры, качество RU, скорость и память (`model.memNote`).
         var help: String {
-            let body = L10n.t(helpKey)
-            // Ключа нет в словаре → L10n.t возвращает сам ключ, и человек прочитал бы в поповере
-            // «model.large-v3-turbo-q5_0.help». Ловим это при добавлении модели, а не по отзыву.
-            assert(body != helpKey, "нет перевода для \(helpKey) — добавь пару ru/en")
-            return body.contains("%@") ? String(format: body, L10n.t("model.memNote")) : body
+            var lines: [String] = []
+            var meta: [String] = [model.family]
+            if let p = model.parameters, !p.isEmpty { meta.append(p) }
+            if !model.quant.isEmpty { meta.append(model.quant) }
+            meta.append(size)
+            lines.append(meta.joined(separator: " · "))
+            if !model.englishDescription.isEmpty {
+                lines.append(model.englishDescription)
+            }
+            var bench: [String] = []
+            if let wer = model.ruErrorPercent {
+                bench.append(String(format: L10n.t("voice.helpRuWer"), wer))
+            }
+            if let rtf = model.accelRtf {
+                bench.append(String(format: L10n.t("voice.helpSpeed"), rtf))
+            }
+            if !bench.isEmpty {
+                lines.append(bench.joined(separator: " · "))
+            }
+            let langScope = model.isRussianOnly
+                ? L10n.t("voice.ruOnlyBadge")
+                : String(format: L10n.t("voice.langsN"), model.languages.count)
+            lines.append("\(L10n.t("voice.helpLangs")): \(langScope)")
+            lines.append(L10n.t("model.memNote"))
+            return lines.joined(separator: "\n\n")
         }
+
         func isInstalled() -> Bool {
-            engine == "parakeet" ? ParakeetEngine.modelInstalled : ModelDownloader.shared.isInstalled(id)
+            ModelDownloader.shared.isInstalled(id)
         }
     }
 
-    /// Полный каталог: Parakeet (рекомендуемый, по умолчанию) первым, затем whisper по возрастанию размера.
+    /// Полный каталог ASR-моделей с поддержкой русского языка.
     private func unifiedModels() -> [UnifiedModel] {
-        var list: [UnifiedModel] = []
-        #if arch(arm64) && !KEYBOOP_NO_PARAKEET   // Intel: Parakeet физически отсутствует в сборке (нет Neural Engine) — не дразним
-        list.append(UnifiedModel(engine: "parakeet", id: "parakeet",
-                                 display: L10n.t("voice.pkName"), size: L10n.size("~465 MB"),
-                                 note: L10n.t("voice.pkDesc"), helpKey: "voice.pkHelp"))
-        #endif
-        list += ModelDownloader.catalog.map {
-            UnifiedModel(engine: "whisper", id: $0.name, display: Self.whisperDisplayName($0.name),
-                         size: L10n.size($0.size), note: L10n.t($0.note), helpKey: $0.help)
-        }
-        return list
+        ModelDownloader.catalog.map { UnifiedModel(model: $0) }
     }
 
-    /// Человекочитаемое имя whisper-модели (вопрос автора 28.07: «Base, Small, Medium — непонятно,
-    /// что это Whisper»). В списке они стояли голыми идентификаторами рядом с названным по имени
-    /// Parakeet, и выглядело это как размеры чего-то безымянного, а не как отдельный движок.
-    static func whisperDisplayName(_ id: String) -> String {
-        let pretty = id.split(separator: "-").map { part -> String in
-            // «v3» оставляем как есть, остальное с заглавной: large-v3-turbo → Large v3 Turbo
-            part.first == "v" && part.dropFirst().allSatisfy(\.isNumber) ? String(part) : part.capitalized
-        }.joined(separator: " ")
-        return "Whisper " + pretty
+    private func catalogRefreshRow() -> NSView {
+        let btn = NSButton(title: L10n.t("voice.refreshCatalog"), target: self, action: #selector(refreshCatalogAction(_:)))
+        btn.bezelStyle = .rounded; btn.controlSize = .small
+        btn.setContentHuggingPriority(.required, for: .horizontal)
+        catalogRefreshButton = btn
+
+        let label = NSTextField(labelWithString: String(format: L10n.t("voice.catalogCount"), ModelDownloader.catalog.count))
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        catalogRefreshLabel = label
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let row = NSStackView(views: [label, spacer, btn])
+        row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 8
+        row.edgeInsets = NSEdgeInsets(top: 2, left: 4, bottom: 2, right: 4)
+        return row
+    }
+
+    @objc private func refreshCatalogAction(_ s: NSButton) {
+        s.isEnabled = false
+        catalogRefreshLabel?.stringValue = L10n.t("voice.refreshing")
+        ModelDownloader.shared.refreshCatalog { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let count):
+                self.catalogRefreshLabel?.stringValue = String(format: L10n.t("voice.refreshDone"), count)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                    self?.reshow()
+                }
+            case .failure(let error):
+                s.isEnabled = true
+                self.catalogRefreshLabel?.stringValue = String(format: L10n.t("voice.refreshFail"), error.localizedDescription)
+            }
+        }
     }
 
     /// Шторки раздела «Голос». Ссылки СЛАБЫЕ и обнуляются в начале сборки: иначе после законной
@@ -3848,26 +3923,14 @@ final class DetailVC: NSViewController {
         othersBox?.setVisible(on, in: contentStack)
     }
 
-    /// Активна ли модель (движок + конкретная whisper-модель).
+    /// Активна ли модель в `transcribe.cpp`.
     private func isActiveModel(_ m: UnifiedModel) -> Bool {
-        m.engine == "parakeet"
-            ? settings.voiceEngine == "parakeet"
-            : (settings.voiceEngine == "whisper" && settings.voiceModel == m.id)
+        settings.voiceModel == m.id
     }
 
-    /// Сделать модель активной: движок выводится из неё (whisper-модель ещё и запоминается).
+    /// Сделать модель активной и прогреть её в `VoiceController`.
     private func activateModel(_ m: UnifiedModel) {
-        if m.engine == "parakeet" {
-            settings.voiceEngine = "parakeet"
-        } else {
-            settings.voiceEngine = "whisper"
-            settings.voiceModel = m.id
-        }
-        // ⚠️ ГРЕЕМ НОВЫЙ ДВИЖОК СРАЗУ (фикс 30.07). Прогрев жил только в старте приложения
-        // (AppDelegate → VoiceController.preload) и грел тот движок, который выбран НА ТОТ МОМЕНТ.
-        // Человек менял движок в настройках, новый оставался холодным, и за это платила первая же
-        // диктовка: у паракита загрузка под ANE занимает больше полуминуты. Момент переключения —
-        // идеальное время греть: человек в настройках, диктовать прямо сейчас не собирается.
+        settings.voiceModel = m.id
         VoiceController.shared.preload()
         // Кнопка «Использовать» живёт в ПЕРЕСОБИРАЕМОЙ строке — снос из её же action это тот самый
         // класс, который на macOS 26 роняет приложение (см. toggleSilentUpdate). Откладываем на такт.
@@ -4000,7 +4063,10 @@ final class DetailVC: NSViewController {
             // Esc — отмена проверки, а не «нажатый хоткей».
             if ev.type == .keyDown, ev.keyCode == 53 { finish(); return nil }
             // Отпускание модификаторов пропускаем: интересует нажатие.
-            if ev.type == .flagsChanged, ev.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+            let fnPressed = (ev.keyCode == 63 && ev.modifierFlags.contains(.function))
+            if ev.type == .flagsChanged,
+               !fnPressed,
+               ev.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
                 return ev
             }
             finish()
@@ -4011,37 +4077,48 @@ final class DetailVC: NSViewController {
             if ev.modifierFlags.contains(.shift)   { pressedMod.insert(.maskShift) }
             if ev.modifierFlags.contains(.command) { pressedMod.insert(.maskCommand) }
             if ev.modifierFlags.contains(.control) { pressedMod.insert(.maskControl) }
+            if fnPressed { pressedMod.insert(.maskSecondaryFn) }
             // Что сохранено
             let savedMode = self.settings.voiceHotkeyMode
             let savedKC   = self.settings.voiceHotkeyKeyCode
             let savedMod  = CGEventFlags(rawValue: self.settings.voiceHotkeyModifiers)
-            let kcOK  = (savedMode == "key") && (pressedKC == savedKC)
-            let modOK = pressedMod == savedMod
-            let match = kcOK && modOK
+            let relevant: CGEventFlags = [.maskAlternate, .maskShift, .maskCommand, .maskControl, .maskSecondaryFn]
+            let match: Bool
+            switch savedMode {
+            case "key":
+                match = (ev.type == .keyDown) && (pressedKC == savedKC) && (pressedMod.intersection(relevant) == savedMod.intersection(relevant))
+            case "modkey":
+                match = (ev.type == .flagsChanged) && (pressedKC == savedKC)
+            case "combo":
+                match = (ev.type == .flagsChanged) && (pressedMod.intersection(relevant) == savedMod.intersection(relevant))
+            default:
+                match = false
+            }
             // У .flagsChanged нет свойства charactersIgnoringModifiers — обращение к нему бросает
             // NSInternalInconsistencyException и роняет приложение в модальном цикле (Issue #30).
             let pressedLabel = ev.type == .keyDown ? (ev.charactersIgnoringModifiers?.uppercased() ?? "?") : ""
             func modStr(_ f: CGEventFlags) -> String {
                 var s = ""
-                if f.contains(.maskControl)  { s += "⌃" }
-                if f.contains(.maskAlternate){ s += "⌥" }
-                if f.contains(.maskShift)    { s += "⇧" }
-                if f.contains(.maskCommand)  { s += "⌘" }
+                if f.contains(.maskControl)     { s += "⌃" }
+                if f.contains(.maskAlternate)   { s += "⌥" }
+                if f.contains(.maskShift)       { s += "⇧" }
+                if f.contains(.maskCommand)     { s += "⌘" }
+                if f.contains(.maskSecondaryFn) { s += "🌐 Fn" }
                 return s
             }
             let pressedDisp = modStr(pressedMod) + pressedLabel
             let savedDisp   = savedMode == "key"
                 ? modStr(savedMod) + (self.settings.voiceHotkeyKeyLabel.isEmpty ? "·" : self.settings.voiceHotkeyKeyLabel)
-                : (savedMode == "modkey" ? "одиночный модификатор" : savedMode)
+                : (savedMode == "modkey" ? (savedKC == 63 ? "🌐 Fn" : "одиночный модификатор (kc=\(savedKC))") : savedMode)
             let a = NSAlert()
             a.messageText = match ? L10n.t("voice.hkTestOk") : L10n.t("voice.hkTestFail")
             var info = "Нажато:   \(pressedDisp)  (kc=\(pressedKC), mod=0x\(String(pressedMod.rawValue, radix: 16)))\n"
             info     += "Сохранено: \(savedDisp)"
             if savedMode == "key" { info += "  (kc=\(savedKC), mod=0x\(String(savedMod.rawValue, radix: 16)))" }
             if !match {
-                if savedMode != "key" { info += "\n\nРежим «\(savedMode)» — хоткей-клавиша не задана (нужна запись)." }
-                else if !kcOK  { info += "\n\nkeyCode не совпадает: нажата кнопка kc=\(pressedKC), сохранена kc=\(savedKC)." }
-                else if !modOK { info += "\n\nМодификатор не совпадает: нажато 0x\(String(pressedMod.rawValue, radix: 16)), сохранено 0x\(String(savedMod.rawValue, radix: 16))." }
+                if savedMode == "key" && pressedKC != savedKC { info += "\n\nkeyCode не совпадает: нажата кнопка kc=\(pressedKC), сохранена kc=\(savedKC)." }
+                else if savedMode == "modkey" && pressedKC != savedKC { info += "\n\nНажат другой модификатор (kc=\(pressedKC), сохранён kc=\(savedKC))." }
+                else { info += "\n\nМодификатор не совпадает: нажато 0x\(String(pressedMod.rawValue, radix: 16)), сохранено 0x\(String(savedMod.rawValue, radix: 16))." }
             }
             a.informativeText = info
             a.alertStyle = match ? .informational : .warning
@@ -4221,29 +4298,7 @@ final class DetailVC: NSViewController {
         warmBox?.setVisible(on, in: contentStack)
     }
     @objc private func toggleVoiceStreaming(_ s: NSSwitch) {
-        let on = (s.state == .on)
-        settings.voiceStreaming = on
-        // Включили, а потоковой модели нет → честно спрашиваем и качаем (~120 МБ).
-        guard on, !StreamingEouEngine.modelInstalled, downloadingModelId == nil else { return }
-        let a = NSAlert()
-        a.messageText = L10n.t("voice.streamDlTitle")
-        a.informativeText = L10n.t("voice.streamDlSub")
-        a.addButton(withTitle: L10n.t("voice.streamDlGo"))
-        a.addButton(withTitle: L10n.t("common.cancel"))
-        guard a.runModal() == .alertFirstButtonReturn else {
-            settings.voiceStreaming = false; s.state = .off; return   // отказались — выключаем тумблер
-        }
-        downloadingModelId = "eou-streaming"
-        Task {
-            let ok = await StreamingEouEngine.shared.download(progress: { _ in })
-            await MainActor.run {
-                self.downloadingModelId = nil
-                let r = NSAlert()
-                r.messageText = ok ? L10n.t("voice.streamDlOk") : L10n.t("voice.streamDlFail")
-                r.runModal()
-                if !ok { self.settings.voiceStreaming = false; s.state = .off }
-            }
-        }
+        settings.voiceStreaming = (s.state == .on)
     }
     private var cuePreview: NSSound?   // удерживаем превью, иначе звук оборвётся
     @objc private func voiceVolChanged(_ s: NSSlider) {
@@ -4267,6 +4322,658 @@ final class DetailVC: NSViewController {
     @objc private func voiceLangChanged(_ s: NSPopUpButton) {
         let i = s.indexOfSelectedItem
         if i >= 0, i < voiceLangCodes.count { settings.voiceLanguage = voiceLangCodes[i] }
+    }
+
+    // MARK: - Очистка текста, фоновая нарезка и AI-постобработка
+
+    @objc private func toggleVoiceRemoveFillers(_ s: NSSwitch) { settings.voiceRemoveFillers = (s.state == .on) }
+    @objc private func toggleVoiceCollapseStutters(_ s: NSSwitch) { settings.voiceCollapseStutters = (s.state == .on) }
+    @objc private func toggleVoicePauseChunking(_ s: NSSwitch) { settings.voicePauseChunking = (s.state == .on) }
+    @objc private func toggleVoicePostProcess(_ s: NSSwitch) {
+        settings.voicePostProcessEnabled = (s.state == .on)
+    }
+
+    private func postProcessRows() -> [NSView] {
+        var rows: [NSView] = [
+            switchRow(L10n.t("voice.postprocess.enable"), L10n.t("voice.postprocess.enableSub"),
+                      settings.voicePostProcessEnabled, #selector(toggleVoicePostProcess(_:)),
+                      help: L10n.t("voice.postprocess.help"), key: "voice.postprocess.enable"),
+            controlRow(L10n.t("voice.postprocess.hotkey"), postProcessHotkeyControl(),
+                       subtitle: L10n.t("voice.postprocess.hotkeySub"), key: "voice.postprocess.hotkey"),
+            controlRow(L10n.t("voice.postprocess.provider"), postProcessProviderControl(),
+                       subtitle: postProcessStatusText(), key: "voice.postprocess.provider"),
+        ]
+        if settings.voicePostProcessProvider == VoicePostProcessProvider.local.rawValue {
+            let urlField = makePostProcessInput(
+                value: settings.voicePostProcessBaseURL,
+                placeholder: VoicePostProcessor.defaultBaseURL,
+                width: 210
+            )
+            ppBaseURLField = urlField
+            let modelField = makePostProcessInput(
+                value: settings.voicePostProcessModel,
+                placeholder: VoicePostProcessor.defaultLocalModel,
+                width: 170
+            )
+            ppModelField = modelField
+            let keyField = NSSecureTextField()
+            keyField.stringValue = settings.voicePostProcessAPIKey
+            keyField.placeholderString = L10n.t("voice.postprocess.apiKeyPh")
+            keyField.controlSize = .small
+            keyField.font = .systemFont(ofSize: 12)
+            keyField.delegate = self
+            keyField.widthAnchor.constraint(equalToConstant: 170).isActive = true
+            ppKeyField = keyField
+
+            rows.append(controlRow(L10n.t("voice.postprocess.baseURL"), urlField, key: "voice.postprocess.baseURL"))
+            rows.append(controlRow(L10n.t("voice.postprocess.model"), modelField, key: "voice.postprocess.model"))
+            rows.append(controlRow(L10n.t("voice.postprocess.apiKey"), keyField, key: "voice.postprocess.apiKey"))
+        } else {
+            ppBaseURLField = nil
+            ppModelField = nil
+            ppKeyField = nil
+        }
+
+        let editBtn = NSButton(title: L10n.t("voice.postprocess.editPrompt"), target: self,
+                               action: #selector(openPostProcessPromptEditor))
+        editBtn.bezelStyle = .rounded
+        editBtn.controlSize = .small
+        rows.append(controlRow(L10n.t("voice.postprocess.promptRow"), editBtn,
+                               subtitle: promptPreviewLine(), key: "voice.postprocess.promptRow"))
+        return rows
+    }
+
+    private func makePostProcessInput(value: String, placeholder: String, width: CGFloat) -> NSTextField {
+        let f = NSTextField()
+        f.stringValue = value
+        f.placeholderString = placeholder
+        f.controlSize = .small
+        f.font = .systemFont(ofSize: 12)
+        f.lineBreakMode = .byTruncatingHead
+        f.delegate = self
+        f.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return f
+    }
+
+    private func postProcessHotkeyControl() -> NSView {
+        let hasHotkey = settings.voicePostProcessHotkeyEnabled
+        let labelText = (hasHotkey && !settings.voicePostProcessHotkeyKeyLabel.isEmpty)
+            ? settings.voicePostProcessHotkeyKeyLabel
+            : L10n.t("voice.postprocess.hotkeyUnset")
+        let lbl = NSTextField(labelWithString: labelText)
+        lbl.font = .systemFont(ofSize: 12, weight: hasHotkey ? .medium : .regular)
+        lbl.textColor = hasHotkey ? .labelColor : .secondaryLabelColor
+        let assignTitle = L10n.t(hasHotkey ? "voice.postprocess.hotkeyChange" : "voice.postprocess.hotkeyAssign")
+        let assign = NSButton(title: assignTitle, target: self, action: #selector(recordPostProcessHotkey))
+        assign.bezelStyle = .rounded
+        assign.controlSize = .small
+        var items: [NSView] = [lbl, assign]
+        if hasHotkey {
+            let clear = NSButton(title: L10n.t("voice.postprocess.hotkeyClear"), target: self,
+                                 action: #selector(clearPostProcessHotkey))
+            clear.bezelStyle = .rounded
+            clear.controlSize = .small
+            items.append(clear)
+        }
+        let stack = NSStackView(views: items)
+        stack.orientation = .horizontal
+        stack.spacing = 6
+        return stack
+    }
+
+    @objc private func recordPostProcessHotkey() {
+        startHotkeyRecording(what: L10n.t("hkrec.what.voiceAI"), slot: .voicePostProcess) { [weak self] code, mods, label in
+            self?.settings.voicePostProcessHotkeyKeyCode = code
+            self?.settings.voicePostProcessHotkeyModifiers = mods.rawValue
+            self?.settings.voicePostProcessHotkeyKeyLabel = label
+        }
+    }
+
+    @objc private func clearPostProcessHotkey() {
+        settings.voicePostProcessHotkeyKeyCode = -1
+        settings.voicePostProcessHotkeyModifiers = 0
+        settings.voicePostProcessHotkeyKeyLabel = ""
+        reshow()
+    }
+
+    private func postProcessProviderControl() -> NSView {
+        let seg = NSSegmentedControl(
+            labels: [L10n.t("voice.postprocess.apple"), L10n.t("voice.postprocess.local")],
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(postProcessProviderChanged(_:))
+        )
+        seg.controlSize = .small
+        seg.selectedSegment = settings.voicePostProcessProvider == VoicePostProcessProvider.local.rawValue ? 1 : 0
+        return seg
+    }
+
+    @objc private func postProcessProviderChanged(_ seg: NSSegmentedControl) {
+        settings.voicePostProcessProvider = seg.selectedSegment == 1
+            ? VoicePostProcessProvider.local.rawValue
+            : VoicePostProcessProvider.apple.rawValue
+        reshow()
+    }
+
+    private func postProcessStatusText() -> String {
+        switch VoicePostProcessor.availability(
+            for: settings.voicePostProcessProvider,
+            baseURL: settings.voicePostProcessBaseURL,
+            model: settings.voicePostProcessModel
+        ) {
+        case .available:
+            if settings.voicePostProcessProvider == VoicePostProcessProvider.local.rawValue {
+                return "\(settings.voicePostProcessModel) · \(settings.voicePostProcessBaseURL)"
+            }
+            return L10n.t("voice.postprocess.apple.ok")
+        case .unsupportedOS:
+            return L10n.t("voice.postprocess.apple.os")
+        case .unavailable(let reason):
+            return reason
+        }
+    }
+
+    private func promptPreviewLine() -> String {
+        let single = settings.voicePostProcessPrompt
+            .split(whereSeparator: { $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty } ?? ""
+        return single.count > 68 ? String(single.prefix(67)) + "…" : single
+    }
+
+    @objc private func openPostProcessPromptEditor() {
+        if ppPromptWindow == nil {
+            let w = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 460),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            w.isReleasedWhenClosed = false
+            w.minSize = NSSize(width: 440, height: 380)
+            w.center()
+
+            let root = NSView()
+            let stack = NSStackView()
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = 10
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
+                stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18),
+                stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 16),
+                stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
+            ])
+
+            let presetBar = NSStackView()
+            presetBar.orientation = .horizontal
+            presetBar.spacing = 8
+            for (idx, preset) in VoicePostProcessor.presets.enumerated() {
+                let b = NSButton(title: L10n.t(preset.titleKey), target: self, action: #selector(applyPostProcessPreset(_:)))
+                b.bezelStyle = .rounded
+                b.controlSize = .small
+                b.tag = idx
+                presetBar.addArrangedSubview(b)
+            }
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            presetBar.addArrangedSubview(spacer)
+            let resetBtn = NSButton(title: L10n.t("voice.postprocess.reset"), target: self,
+                                    action: #selector(resetPostProcessPrompt))
+            resetBtn.bezelStyle = .rounded
+            resetBtn.controlSize = .small
+            presetBar.addArrangedSubview(resetBtn)
+            stack.addArrangedSubview(presetBar)
+            presetBar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+            let promptScroll = NSScrollView()
+            promptScroll.hasVerticalScroller = true
+            promptScroll.borderType = .bezelBorder
+            let tv = NSTextView()
+            tv.isEditable = true
+            tv.isRichText = false
+            tv.isAutomaticQuoteSubstitutionEnabled = false
+            tv.isAutomaticDashSubstitutionEnabled = false
+            tv.font = .systemFont(ofSize: 12.5)
+            tv.textContainerInset = NSSize(width: 6, height: 8)
+            tv.isVerticallyResizable = true
+            tv.isHorizontallyResizable = false
+            tv.textContainer?.widthTracksTextView = true
+            tv.delegate = self
+            promptScroll.documentView = tv
+            promptScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+            stack.addArrangedSubview(promptScroll)
+            promptScroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            ppPromptTextView = tv
+
+            let testBar = NSStackView()
+            testBar.orientation = .horizontal
+            testBar.spacing = 8
+            let sampleField = NSTextField()
+            sampleField.stringValue = L10n.t("voice.postprocess.testSample")
+            sampleField.controlSize = .small
+            sampleField.font = .systemFont(ofSize: 12)
+            let testBtn = NSButton(title: L10n.t("voice.postprocess.test"), target: self,
+                                   action: #selector(testPostProcessPrompt))
+            testBtn.bezelStyle = .rounded
+            testBtn.controlSize = .small
+            testBtn.setContentHuggingPriority(.required, for: .horizontal)
+            testBar.addArrangedSubview(sampleField)
+            testBar.addArrangedSubview(testBtn)
+            stack.addArrangedSubview(testBar)
+            testBar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            ppTestInputField = sampleField
+            ppTestButton = testBtn
+
+            let outScroll = NSScrollView()
+            outScroll.hasVerticalScroller = true
+            outScroll.borderType = .bezelBorder
+            let outTV = NSTextView()
+            outTV.isEditable = false
+            outTV.isSelectable = true
+            outTV.font = .systemFont(ofSize: 12)
+            outTV.textContainerInset = NSSize(width: 6, height: 6)
+            outTV.isVerticallyResizable = true
+            outTV.isHorizontallyResizable = false
+            outTV.textContainer?.widthTracksTextView = true
+            outScroll.documentView = outTV
+            outScroll.heightAnchor.constraint(equalToConstant: 96).isActive = true
+            stack.addArrangedSubview(outScroll)
+            outScroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            ppTestOutputView = outTV
+
+            w.contentView = root
+            w.clampToScreen()
+            ppPromptWindow = w
+        }
+        ppPromptWindow?.title = L10n.t("voice.postprocess.promptTitle")
+        ppPromptTextView?.string = settings.voicePostProcessPrompt
+        ppPromptWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func applyPostProcessPreset(_ sender: NSButton) {
+        let idx = sender.tag
+        guard idx >= 0, idx < VoicePostProcessor.presets.count else { return }
+        let p = VoicePostProcessor.presets[idx].prompt
+        settings.voicePostProcessPrompt = p
+        ppPromptTextView?.string = p
+    }
+
+    @objc private func resetPostProcessPrompt() {
+        settings.voicePostProcessPrompt = VoicePostProcessor.defaultPrompt
+        ppPromptTextView?.string = VoicePostProcessor.defaultPrompt
+    }
+
+    @objc private func testPostProcessPrompt() {
+        guard let sample = ppTestInputField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sample.isEmpty else { return }
+        let prompt = ppPromptTextView?.string ?? settings.voicePostProcessPrompt
+        settings.voicePostProcessPrompt = prompt
+        ppTestButton?.isEnabled = false
+        ppTestOutputView?.string = L10n.t("voice.postprocess.testing")
+        Task { [weak self] in
+            let res = await VoicePostProcessor.shared.process(sample, prompt: prompt)
+            await MainActor.run {
+                guard let self else { return }
+                self.ppTestButton?.isEnabled = true
+                switch res {
+                case .success(let out):
+                    self.ppTestOutputView?.string = out
+                case .failure(let err):
+                    self.ppTestOutputView?.string = err.message
+                }
+            }
+        }
+    }
+
+    // MARK: - Контекстные профили по приложениям
+
+    private func makeCtxProfilesBox() -> CollapsibleRow {
+        let btn = NSButton(title: L10n.t("voice.ctx.manage"), target: self, action: #selector(openContextProfilesWindow))
+        btn.bezelStyle = .rounded
+        btn.controlSize = .small
+        let row = controlRow(L10n.t("voice.ctx.rulesTitle"), btn,
+                             subtitle: ctxProfilesSummaryText(),
+                             key: "voice.ctx.rulesTitle")
+        ctxProfilesSummaryLabel = row.subviews.compactMap { $0 as? NSTextField }.last
+        let box = CollapsibleRow(row: subordinateRow(row),
+                                 separator: hairline(),
+                                 visible: settings.voiceContextProfilesEnabled)
+        ctxProfilesBox = box
+        return box
+    }
+
+    private func ctxProfilesSummaryText() -> String {
+        let total = VoiceContextProfileStore.shared.allEffectiveRules().filter(\.enabled).count
+        let custom = VoiceContextProfileStore.shared.customRulesCount()
+        return String(format: L10n.t("voice.ctx.summaryFmt"), total, custom)
+    }
+
+    private func refreshCtxProfilesSummary() {
+        ctxProfilesSummaryLabel?.stringValue = ctxProfilesSummaryText()
+    }
+
+    @objc private func toggleVoiceContextProfiles(_ s: NSSwitch) {
+        let on = (s.state == .on)
+        settings.voiceContextProfilesEnabled = on
+        ctxProfilesBox?.setVisible(on, in: contentStack)
+    }
+
+    @objc private func openContextProfilesWindow() {
+        if ctxProfilesWindow == nil {
+            let w = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            w.isReleasedWhenClosed = false
+            w.minSize = NSSize(width: 560, height: 380)
+            w.center()
+
+            let root = NSView()
+            let outer = NSStackView()
+            outer.orientation = .vertical
+            outer.alignment = .leading
+            outer.spacing = 10
+            outer.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(outer)
+            NSLayoutConstraint.activate([
+                outer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
+                outer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18),
+                outer.topAnchor.constraint(equalTo: root.topAnchor, constant: 16),
+                outer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
+            ])
+
+            let note = NSTextField(wrappingLabelWithString: L10n.t("voice.ctx.windowNote"))
+            note.font = .systemFont(ofSize: 12)
+            note.textColor = .secondaryLabelColor
+            outer.addArrangedSubview(note)
+            note.widthAnchor.constraint(equalTo: outer.widthAnchor).isActive = true
+
+            let toolbar = NSStackView()
+            toolbar.orientation = .horizontal
+            toolbar.spacing = 8
+            let addBtn = NSButton(title: L10n.t("voice.ctx.addApp"), target: self, action: #selector(ctxShowAddMenu(_:)))
+            addBtn.bezelStyle = .rounded
+            addBtn.controlSize = .small
+            let resetBtn = NSButton(title: L10n.t("voice.ctx.reset"), target: self, action: #selector(ctxResetProfiles))
+            resetBtn.bezelStyle = .rounded
+            resetBtn.controlSize = .small
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            toolbar.addArrangedSubview(addBtn)
+            toolbar.addArrangedSubview(spacer)
+            toolbar.addArrangedSubview(resetBtn)
+            outer.addArrangedSubview(toolbar)
+            toolbar.widthAnchor.constraint(equalTo: outer.widthAnchor).isActive = true
+
+            let scroll = NSScrollView()
+            scroll.hasVerticalScroller = true
+            scroll.borderType = .bezelBorder
+            let doc = FlippedView()
+            doc.translatesAutoresizingMaskIntoConstraints = false
+            let listStack = NSStackView()
+            listStack.orientation = .vertical
+            listStack.alignment = .width
+            listStack.spacing = 6
+            listStack.translatesAutoresizingMaskIntoConstraints = false
+            doc.addSubview(listStack)
+            NSLayoutConstraint.activate([
+                listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 10),
+                listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -10),
+                listStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 10),
+                listStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -10),
+                doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            ])
+            scroll.documentView = doc
+            outer.addArrangedSubview(scroll)
+            scroll.widthAnchor.constraint(equalTo: outer.widthAnchor).isActive = true
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
+
+            ctxProfilesStack = listStack
+            w.contentView = root
+            w.clampToScreen()
+            ctxProfilesWindow = w
+        }
+        ctxProfilesWindow?.title = L10n.t("voice.ctx.windowTitle")
+        rebuildContextProfilesList()
+        ctxProfilesWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    private func rebuildContextProfilesList() {
+        guard let stack = ctxProfilesStack else { return }
+        stack.arrangedSubviews.forEach {
+            stack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+
+        let store = VoiceContextProfileStore.shared
+        let rules = store.allEffectiveRules()
+        ctxDisplayedRuleIDs = rules.map(\.id)
+
+        for (idx, rule) in rules.enumerated() {
+            if idx > 0 {
+                stack.addArrangedSubview(hairline())
+            }
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 8
+
+            let check = NSButton(checkboxWithTitle: "", target: self, action: #selector(ctxToggleRuleEnabled(_:)))
+            check.state = rule.enabled ? .on : .off
+            check.tag = idx
+            check.setContentHuggingPriority(.required, for: .horizontal)
+
+            let nameLbl = NSTextField(labelWithString: rule.appName.isEmpty ? rule.id : rule.appName)
+            nameLbl.font = .systemFont(ofSize: 12.5, weight: .medium)
+            nameLbl.lineBreakMode = .byTruncatingTail
+            let idLbl = NSTextField(labelWithString: rule.id)
+            idLbl.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
+            idLbl.textColor = .tertiaryLabelColor
+            idLbl.lineBreakMode = .byTruncatingMiddle
+
+            let titleCol = NSStackView(views: [nameLbl, idLbl])
+            titleCol.orientation = .vertical
+            titleCol.alignment = .leading
+            titleCol.spacing = 1
+            titleCol.setContentHuggingPriority(NSLayoutConstraint.Priority(10), for: .horizontal)
+
+            let catPop = NSPopUpButton(frame: .zero, pullsDown: false)
+            catPop.controlSize = .small
+            catPop.font = .systemFont(ofSize: 11.5)
+            for cat in VoiceContextCategory.allCases {
+                catPop.addItem(withTitle: L10n.t(cat.titleKey))
+            }
+            if let catIdx = VoiceContextCategory.allCases.firstIndex(of: rule.category) {
+                catPop.selectItem(at: catIdx)
+            }
+            catPop.tag = idx
+            catPop.target = self
+            catPop.action = #selector(ctxCategoryChanged(_:))
+            catPop.widthAnchor.constraint(equalToConstant: 155).isActive = true
+
+            let periodPop = NSPopUpButton(frame: .zero, pullsDown: false)
+            periodPop.controlSize = .small
+            periodPop.font = .systemFont(ofSize: 11.5)
+            periodPop.addItems(withTitles: [
+                L10n.t("voice.ctx.periodAuto"),
+                L10n.t("voice.ctx.periodStrip"),
+                L10n.t("voice.ctx.periodKeep")
+            ])
+            switch rule.noFinalPeriodOverride {
+            case nil: periodPop.selectItem(at: 0)
+            case true?: periodPop.selectItem(at: 1)
+            case false?: periodPop.selectItem(at: 2)
+            }
+            periodPop.tag = idx
+            periodPop.target = self
+            periodPop.action = #selector(ctxPeriodChanged(_:))
+            periodPop.widthAnchor.constraint(equalToConstant: 108).isActive = true
+
+            let promptBtn = NSButton(title: rule.customPrompt.isEmpty ? L10n.t("voice.ctx.promptBtn") : L10n.t("voice.ctx.promptBtnSet"),
+                                     target: self, action: #selector(ctxEditRulePrompt(_:)))
+            promptBtn.bezelStyle = .rounded
+            promptBtn.controlSize = .small
+            promptBtn.tag = idx
+
+            row.addArrangedSubview(check)
+            row.addArrangedSubview(titleCol)
+            row.addArrangedSubview(catPop)
+            row.addArrangedSubview(periodPop)
+            row.addArrangedSubview(promptBtn)
+
+            if !store.isBuiltIn(bundleID: rule.id) {
+                let delBtn = NSButton(title: "×", target: self, action: #selector(ctxDeleteRule(_:)))
+                delBtn.bezelStyle = .rounded
+                delBtn.controlSize = .small
+                delBtn.tag = idx
+                row.addArrangedSubview(delBtn)
+            }
+            stack.addArrangedSubview(row)
+        }
+        refreshCtxProfilesSummary()
+    }
+
+    private func ctxRuleAtTag(_ idx: Int) -> VoiceContextRule? {
+        guard idx >= 0, idx < ctxDisplayedRuleIDs.count else { return nil }
+        let bid = ctxDisplayedRuleIDs[idx]
+        return VoiceContextProfileStore.shared.allEffectiveRules().first { $0.id == bid }
+    }
+
+    @objc private func ctxToggleRuleEnabled(_ sender: NSButton) {
+        guard var rule = ctxRuleAtTag(sender.tag) else { return }
+        rule.enabled = (sender.state == .on)
+        VoiceContextProfileStore.shared.upsertRule(rule)
+        refreshCtxProfilesSummary()
+    }
+
+    @objc private func ctxCategoryChanged(_ sender: NSPopUpButton) {
+        let i = sender.indexOfSelectedItem
+        guard var rule = ctxRuleAtTag(sender.tag),
+              i >= 0, i < VoiceContextCategory.allCases.count else { return }
+        rule.category = VoiceContextCategory.allCases[i]
+        VoiceContextProfileStore.shared.upsertRule(rule)
+        refreshCtxProfilesSummary()
+    }
+
+    @objc private func ctxPeriodChanged(_ sender: NSPopUpButton) {
+        guard var rule = ctxRuleAtTag(sender.tag) else { return }
+        switch sender.indexOfSelectedItem {
+        case 1: rule.noFinalPeriodOverride = true
+        case 2: rule.noFinalPeriodOverride = false
+        default: rule.noFinalPeriodOverride = nil
+        }
+        VoiceContextProfileStore.shared.upsertRule(rule)
+    }
+
+    @objc private func ctxEditRulePrompt(_ sender: NSButton) {
+        guard var rule = ctxRuleAtTag(sender.tag) else { return }
+        let a = NSAlert()
+        a.messageText = String(format: L10n.t("voice.ctx.promptDlgTitle"), rule.appName.isEmpty ? rule.id : rule.appName)
+        a.informativeText = L10n.t("voice.ctx.promptDlgSub")
+
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 380, height: 110))
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: 380, height: 110))
+        tv.isEditable = true
+        tv.isRichText = false
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled = false
+        tv.font = .systemFont(ofSize: 12)
+        tv.string = rule.customPrompt
+        scroll.documentView = tv
+        a.accessoryView = scroll
+
+        a.addButton(withTitle: L10n.t("common.ok"))
+        a.addButton(withTitle: L10n.t("voice.ctx.promptClear"))
+        a.addButton(withTitle: L10n.t("common.cancel"))
+
+        let res = a.runModal()
+        if res == .alertFirstButtonReturn {
+            rule.customPrompt = tv.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !rule.customPrompt.isEmpty, rule.category == .general {
+                rule.category = .custom
+            }
+            VoiceContextProfileStore.shared.upsertRule(rule)
+            rebuildContextProfilesList()
+        } else if res == .alertSecondButtonReturn {
+            rule.customPrompt = ""
+            if rule.category == .custom { rule.category = .general }
+            VoiceContextProfileStore.shared.upsertRule(rule)
+            rebuildContextProfilesList()
+        }
+    }
+
+    @objc private func ctxDeleteRule(_ sender: NSButton) {
+        guard let rule = ctxRuleAtTag(sender.tag) else { return }
+        VoiceContextProfileStore.shared.removeCustomRule(bundleID: rule.id)
+        rebuildContextProfilesList()
+    }
+
+    @objc private func ctxShowAddMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        let existing = Set(VoiceContextProfileStore.shared.allEffectiveRules().map(\.id))
+        let ownBid = Bundle.main.bundleIdentifier?.lowercased() ?? ""
+        let running = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app -> (String, String)? in
+                guard let bid = app.bundleIdentifier?.lowercased(),
+                      bid != ownBid,
+                      !existing.contains(bid) else { return nil }
+                return (app.localizedName ?? bid, bid)
+            }
+            .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
+
+        if running.isEmpty {
+            let empty = NSMenuItem(title: L10n.t("voice.ctx.noNewRunning"), action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        } else {
+            for (name, bid) in running {
+                let item = NSMenuItem(title: name, action: #selector(ctxAddRunningApp(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = [name, bid]
+                menu.addItem(item)
+            }
+        }
+        menu.addItem(.separator())
+        let browse = NSMenuItem(title: L10n.t("voice.ctx.chooseBundle"), action: #selector(ctxAddAppFromDisk), keyEquivalent: "")
+        browse.target = self
+        menu.addItem(browse)
+        NSMenu.popUpContextMenu(menu, with: NSApp.currentEvent ?? NSEvent(), for: sender)
+    }
+
+    @objc private func ctxAddRunningApp(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+        let rule = VoiceContextRule(id: pair[1], appName: pair[0], category: .chat)
+        VoiceContextProfileStore.shared.upsertRule(rule)
+        rebuildContextProfilesList()
+    }
+
+    @objc private func ctxAddAppFromDisk() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        guard panel.runModal() == .OK, let url = panel.url, let bundle = Bundle(url: url),
+              let bid = bundle.bundleIdentifier?.lowercased(), !bid.isEmpty else { return }
+        let name = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? url.deletingPathExtension().lastPathComponent
+        let rule = VoiceContextRule(id: bid, appName: name, category: .chat)
+        VoiceContextProfileStore.shared.upsertRule(rule)
+        rebuildContextProfilesList()
+    }
+
+    @objc private func ctxResetProfiles() {
+        VoiceContextProfileStore.shared.resetCustomRules()
+        rebuildContextProfilesList()
     }
 
     // MARK: - Карточки (нативный grouped-стиль macOS System Settings)
@@ -4633,6 +5340,7 @@ final class DetailVC: NSViewController {
         DispatchQueue.main.async { [weak self] in self?.reshow() }
     }
     @objc private func toggleLive(_ s: NSSwitch) { settings.liveFixEnabled = (s.state == .on) }
+    @objc private func togglePredictLayout(_ s: NSSwitch) { settings.predictLayoutEnabled = (s.state == .on) }
     @objc private func toggleTranslate(_ s: NSSwitch) { settings.translateEnabled = (s.state == .on) }
     @objc private func toggleDev(_ s: NSSwitch) { settings.developerMode = (s.state == .on) }
     @objc private func toggleSound(_ s: NSSwitch) { settings.soundEnabled = (s.state == .on) }
@@ -4729,7 +5437,10 @@ final class DetailVC: NSViewController {
         // Меню в статус-баре локализуется отдельно — пнём его пересобраться.
         NotificationCenter.default.post(name: .keyboopLanguageChanged, object: nil)
     }
-    @objc private func toggleVoice(_ s: NSSwitch) { settings.voiceEnabled = (s.state == .on) }
+    @objc private func toggleVoice(_ s: NSSwitch) {
+        settings.voiceEnabled = (s.state == .on)
+        GlobeKey.reconcile()
+    }
     @objc private func voiceModeChanged(_ s: NSSegmentedControl) { settings.voiceHoldMode = s.selectedSegment == 1 ? "toggle" : "hold" }
     @objc private func toggleVoiceHistory(_ s: NSSwitch) {
         settings.voiceHistoryEnabled = (s.state == .on)
@@ -4970,16 +5681,7 @@ final class DetailVC: NSViewController {
             if ok { self?.activateModel(m) }   // скачал → сразу активна (reshow внутри)
             else { self?.reshow() }
         }
-        if m.engine == "whisper" {
-            ModelDownloader.shared.download(m.id, progress: onProgress, done: onDone)
-        } else {
-            Task {
-                let ok = await ParakeetEngine.shared.download(progress: { p in
-                    DispatchQueue.main.async { onProgress(p) }
-                })
-                await MainActor.run { onDone(ok) }
-            }
-        }
+        ModelDownloader.shared.download(m.id, progress: onProgress, done: onDone)
     }
 
     @objc private func deleteModelAction(_ s: NSButton) {
@@ -5011,8 +5713,7 @@ final class DetailVC: NSViewController {
                 self.reshow()
             }
         }
-        if m.engine == "whisper" { ModelDownloader.shared.delete(m.id, completion: finish) }
-        else { ParakeetEngine.shared.deleteModel(completion: finish) }
+        ModelDownloader.shared.delete(m.id, completion: finish)
     }
 }
 
@@ -5389,5 +6090,23 @@ final class ChipFieldView: NSView {
             layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.04).cgColor
             layer?.borderColor = NSColor.separatorColor.cgColor
         }
+    }
+}
+
+extension DetailVC: NSTextFieldDelegate, NSTextViewDelegate {
+    func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField else { return }
+        if field === ppBaseURLField {
+            settings.voicePostProcessBaseURL = field.stringValue
+        } else if field === ppModelField {
+            settings.voicePostProcessModel = field.stringValue
+        } else if field === ppKeyField {
+            settings.voicePostProcessAPIKey = field.stringValue
+        }
+    }
+
+    func textDidChange(_ notification: Notification) {
+        guard let tv = notification.object as? NSTextView, tv === ppPromptTextView else { return }
+        settings.voicePostProcessPrompt = tv.string
     }
 }

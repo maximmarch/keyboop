@@ -174,53 +174,49 @@ fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-# ⚠️ КРИТИЧНО (24.07): arm64-сборка whisper.cpp ДОЛЖНА быть с CMAKE_OSX_DEPLOYMENT_TARGET=14.0.
-# Без него cmake берёт таргет текущей системы (собирали на macOS 26) → ggml-metal делает STRONG-ссылку
-# на MTLResidencySetDescriptor (класс есть только с macOS 15) → на Sonoma/14 dyld убивает процесс ДО
-# main() с "Symbol not found", приложение молча не запускается (репорт M1/Sonoma, 0.2.66). С таргетом
-# 14.0 ссылка становится weak (@available(macOS 15) в ggml отрабатывает как задумано).
-WHISPER="vendor/whisper.cpp/build-macos14/.."
-WHISPER_BUILD="vendor/whisper.cpp/build-macos14"
-if [ ! -f "$WHISPER_BUILD/src/libwhisper.a" ]; then
-  echo "⚠️  whisper.cpp не собран. Собери один раз:"
-  echo "    cd $WHISPER && cmake -B build-macos14 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \\"
-  echo "      -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF && cmake --build build-macos14 -j"
+# ⚠️ КРИТИЧНО: arm64-сборка transcribe.cpp ДОЛЖНА быть с CMAKE_OSX_DEPLOYMENT_TARGET=14.0.
+# Без него cmake берёт таргет текущей системы → ggml-metal делает STRONG-ссылку на символы новых
+# macOS → на Sonoma/14 dyld убивает процесс ДО main(). С таргетом 14.0 ggml отрабатывает корректно.
+TRANSCRIBE="vendor/transcribe.cpp/install-macos14"
+if [ ! -f "$TRANSCRIBE/lib/libtranscribe.a" ]; then
+  echo "⚠️  transcribe.cpp не собран. Собери один раз:"
+  echo "    cmake -S vendor/transcribe.cpp -B vendor/transcribe.cpp/build-macos14 \\"
+  echo "      -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_OSX_ARCHITECTURES=arm64 \\"
+  echo "      -DTRANSCRIBE_BUILD_SHARED=OFF -DTRANSCRIBE_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON && \\"
+  echo "      cmake --build vendor/transcribe.cpp/build-macos14 --parallel && \\"
+  echo "      cmake --install vendor/transcribe.cpp/build-macos14 --prefix $TRANSCRIBE"
   exit 1
 fi
 
-# FluidAudio (Parakeet/CoreML/ANE) — предсобранная статика, предсобранная статика.
-# Требует macOS 14 (поэтому таргет подняли 13→14).
-FA="vendor/fluidaudio-prebuilt"
 # Sparkle (автообновления): динамический фреймворк. Линкуем + rpath на Contents/Frameworks,
 # куда сам фреймворк копируется ниже (с переподписью вложенных бинарей нашим Developer ID).
 SPARKLE="vendor/sparkle"
 swiftc -O Sources/Keyboop/*.swift \
   -o "$APP/Contents/MacOS/Keyboop" \
   -swift-version 5 -target arm64-apple-macos14.0 \
-  -import-objc-header Sources/Keyboop/whisper-bridging.h \
-  -I "$WHISPER/include" -I "$WHISPER/ggml/include" \
-  -I "$FA/Modules" -I "$FA/include/FastClusterWrapper" -I "$FA/include/MachTaskSelfWrapper" \
-  -L "$WHISPER_BUILD/src" -L "$WHISPER_BUILD/ggml/src" \
-  -L "$WHISPER_BUILD/ggml/src/ggml-metal" -L "$WHISPER_BUILD/ggml/src/ggml-blas" \
-  -L "$FA" -lFluidAudio \
-  -lwhisper -lggml -lggml-cpu -lggml-metal -lggml-blas -lggml-base -lc++ \
+  -import-objc-header Sources/Keyboop/transcribe-bridging.h \
+  -I "$TRANSCRIBE/include" \
+  -L "$TRANSCRIBE/lib" \
+  -ltranscribe -lggml -lggml-cpu -lggml-metal -lggml-base -lc++ -lm \
   -framework AppKit -framework Carbon -framework ServiceManagement -framework ApplicationServices -framework IOKit \
-  -framework AVFoundation -framework CoreAudio -framework AudioToolbox -framework Metal -framework MetalKit -framework Accelerate -framework CoreML \
-  -framework SwiftUI -Xlinker -weak_framework -Xlinker Translation \
+  -framework AVFoundation -framework CoreAudio -framework AudioToolbox -framework Metal -framework MetalKit -framework Accelerate -framework Foundation \
+  -framework SwiftUI -Xlinker -weak_framework -Xlinker Translation -Xlinker -weak_framework -Xlinker FoundationModels \
   -F "$SPARKLE" -framework Sparkle \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks
 
 # ── Universal (Intel): второй проход под x86_64 + lipo. Включается KEYBOOP_UNIVERSAL=1
 #    (release.sh включает всегда; dev-сборки по умолчанию arm64-only — вдвое быстрее).
-#    x86-срез: whisper из build-x86 (GGML_NATIVE=OFF + AVX2-бейзлайн, БЕЗ Metal — CPU/Accelerate),
-#    БЕЗ FluidAudio (arm64-only статика; Swift-код компилирует Intel-заглушки по #if arch).
+#    x86-срез: transcribe.cpp из install-x86 (БЕЗ Metal — CPU/Accelerate).
 if [ "${KEYBOOP_UNIVERSAL:-}" = "1" ]; then
-  WX="$WHISPER/build-x86"
-  if [ ! -f "$WX/src/libwhisper.a" ]; then
-    echo "✗ Нет x86-сборки whisper. Один раз собери:"
-    echo "  cd $WHISPER && cmake -B build-x86 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 \\"
-    echo "    -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON \\"
-    echo "    -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF && cmake --build build-x86 -j"
+  TX="vendor/transcribe.cpp/install-x86"
+  if [ ! -f "$TX/lib/libtranscribe.a" ]; then
+    echo "✗ Нет x86-сборки transcribe.cpp. Один раз собери:"
+    echo "  cmake -S vendor/transcribe.cpp -B vendor/transcribe.cpp/build-x86 \\"
+    echo "    -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DCMAKE_OSX_ARCHITECTURES=x86_64 \\"
+    echo "    -DTRANSCRIBE_BUILD_SHARED=OFF -DTRANSCRIBE_METAL=OFF -DTRANSCRIBE_X86_CONSERVATIVE=ON \\"
+    echo "    -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON && \\"
+    echo "    cmake --build vendor/transcribe.cpp/build-x86 --parallel && \\"
+    echo "    cmake --install vendor/transcribe.cpp/build-x86 --prefix $TX"
     exit 1
   fi
   echo "▸ swiftc compile (x86_64 для universal)…"
@@ -228,13 +224,13 @@ if [ "${KEYBOOP_UNIVERSAL:-}" = "1" ]; then
   swiftc -O Sources/Keyboop/*.swift \
     -o "$APP/Contents/MacOS/.Keyboop-x86" \
     -swift-version 5 -target x86_64-apple-macos13.0 \
-    -import-objc-header Sources/Keyboop/whisper-bridging.h \
-    -I "$WHISPER/include" -I "$WHISPER/ggml/include" \
-    -L "$WX/src" -L "$WX/ggml/src" -L "$WX/ggml/src/ggml-blas" \
-    -lwhisper -lggml -lggml-cpu -lggml-blas -lggml-base -lc++ \
+    -import-objc-header Sources/Keyboop/transcribe-bridging.h \
+    -I "$TX/include" \
+    -L "$TX/lib" \
+    -ltranscribe -lggml -lggml-cpu -lggml-base -lc++ -lm \
     -framework AppKit -framework Carbon -framework ServiceManagement -framework ApplicationServices -framework IOKit \
-    -framework AVFoundation -framework CoreAudio -framework AudioToolbox -framework Accelerate -framework CoreML \
-    -framework SwiftUI -Xlinker -weak_framework -Xlinker Translation \
+    -framework AVFoundation -framework CoreAudio -framework AudioToolbox -framework Accelerate -framework Foundation \
+    -framework SwiftUI -Xlinker -weak_framework -Xlinker Translation -Xlinker -weak_framework -Xlinker FoundationModels \
     -F "$SPARKLE" -framework Sparkle \
     -Xlinker -rpath -Xlinker @executable_path/../Frameworks
   lipo -create "$APP/Contents/MacOS/.Keyboop-arm64" "$APP/Contents/MacOS/.Keyboop-x86" \
@@ -292,10 +288,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
          (AppDelegate), так что диалоги Sparkle слушаются переключателя в приложении. -->
     <key>CFBundleAllowMixedLocalizations</key> <true/>
     <key>LSMinimumSystemVersion</key>  <string>13.0</string>
-    <!-- Пер-архитектурные минимумы (задача «старые системы», 23.07.2026): arm64 требует 14
-         (FluidAudio/ANE статически влинкован), x86_64 живёт с 13 — в этом срезе FluidAudio нет,
-         а интелы 2017 года выше Ventura не обновляются. Ключ подтверждён в актуальной
-         документации Apple (bundleresources → LSMinimumSystemVersionByArchitecture). -->
+    <!-- Пер-архитектурные минимумы: arm64 (transcribe.cpp с Metal GPU) требует macOS 14,
+         x86_64 живёт с macOS 13 (CPU/Accelerate). -->
     <key>LSMinimumSystemVersionByArchitecture</key>
     <dict>
         <key>arm64</key>  <string>14.0</string>

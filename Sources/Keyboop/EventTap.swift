@@ -22,7 +22,9 @@ protocol EventTapHandler: AnyObject {
     /// удалять нечего: триггер никто не печатал.
     func handleSnippetPicked(_ text: String)
     func handleVoiceBegin()
+    func handleVoiceAIBegin()
     func handleVoiceEnd()
+    func handleVoiceAbort()
     func handleTranslateHotkey()
     /// Смена регистра выделенного текста (задача 122).
     func handleCaseHotkey()
@@ -123,6 +125,7 @@ final class EventTap {
     /// Разовая диагностика «сосед LANG1» уже написана (см. caps-режим в keyDown).
     private var loggedLang1Neighbor = false
     private var voiceActive = false
+    private var voiceActiveFromAI = false
     /// Взвод жеста «диктовка по одиночному модификатору» в режиме переключения. Нужен ровно затем
     /// же, зачем `fnArmed` и `modkeyArmed`: в момент НАЖАТИЯ модификатор всегда выглядит одиночным,
     /// и отличить «тап по ⌥» от «начало аккорда ⌥⇧» можно только к моменту отпускания.
@@ -526,6 +529,18 @@ final class EventTap {
             // комбинацию), запускал СТАРОЕ действие, а окно настроек не получало событие —
             // «нажимаю переназначить, ничего не происходит» (репорты пользователей 25.07).
             if HotkeyRecording.active { return Unmanaged.passUnretained(event) }
+            // Если диктовка висит на удержании Fn/🌐 и человек нажал Fn+<клавиша> (стрелки,
+            // F1–F12, Delete и др. — кроме Escape, который обрабатывается ниже), отменяем
+            // случайный старт диктовки и отдаём событие системе.
+            if voiceActive, s.voiceHoldMode != "toggle",
+               s.voiceHotkeyMode == "modkey", s.voiceHotkeyKeyCode == 63,
+               keyCode != 53, event.flags.contains(.maskSecondaryFn) {
+                voiceActive = false
+                VoiceGate.set(false)
+                kbLog("voice: Fn+клавиша (\(keyCode)) — это системное сочетание, запись отменяю")
+                onMain { [weak self] in self?.handler?.handleVoiceAbort() }
+                return Unmanaged.passUnretained(event)
+            }
             // Escape во время диктовки — отмена (если включено). Глотаем Esc, чтобы он не
             // улетел в активное приложение.
             // ⚠️ ESCAPE С ЗАЖАТЫМ МОДИФИКАТОРОМ — НЕ ОТМЕНА (решение автора, 03.08.2026).
@@ -643,6 +658,21 @@ final class EventTap {
                     }
                 }
                 return swallowDown(keyCode)   // глотаем ВСЕГДА (вкл. autorepeat) — чтобы клавиша не печаталась
+            }
+            if isVoiceAIHotkey(keyCode, event.flags) {
+                let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+                if !isRepeat {
+                    if s.voiceHoldMode == "toggle" {
+                        let now = CACurrentMediaTime()
+                        if now - lastVoiceToggle > 0.3 { lastVoiceToggle = now; toggleVoice(forcePostProcess: true) }
+                    } else if !voiceActive {
+                        voiceActive = true
+                        voiceActiveFromAI = true
+                        VoiceGate.set(true)
+                        onMain { [weak self] in self?.handler?.handleVoiceAIBegin() }
+                    }
+                }
+                return swallowDown(keyCode)
             }
             // Перевод выделенного по хоткею (по умолчанию ⌃⌥T). Глотаем, чтобы 'T' не печаталась.
             //
@@ -804,6 +834,15 @@ final class EventTap {
             let upKey = event.getIntegerValueField(.keyboardEventKeycode)
             if s.voiceEnabled, s.voiceHotkeyMode == "key", keyMatches(upKey, s.voiceHotkeyKeyCode) {
                 voiceKeyArmed = false
+                if s.voiceHoldMode != "toggle", voiceActive, !voiceActiveFromAI {
+                    voiceActive = false
+                    VoiceGate.set(false)
+                    onMain { [weak self] in self?.handler?.handleVoiceEnd() }
+                }
+            }
+            if voiceActiveFromAI, s.voiceEnabled, s.voicePostProcessHotkeyEnabled,
+               keyMatches(upKey, s.voicePostProcessHotkeyKeyCode) {
+                voiceActiveFromAI = false
                 if s.voiceHoldMode != "toggle", voiceActive {
                     voiceActive = false
                     VoiceGate.set(false)
@@ -923,10 +962,13 @@ final class EventTap {
         if keyCode != Int64(s.hotkeyKeyCode) {
             modkeyArmed = false
         }
-        // 🌐 может быть занята НАМИ двумя способами: мгновенная смена языка (ниже) ИЛИ ручной
-        // хоткей конверсии (обрабатывается в switch hotkeyMode). В обоих случаях событие надо
-        // ПРОГЛОТИТЬ, иначе системное действие клавиши сработает параллельно с нашим.
-        let globeIsOurHotkey = (keyCode == 63 && s.hotkeyMode == "modkey" && s.hotkeyKeyCode == 63)
+        // 🌐 может быть занята НАМИ тремя способами: мгновенная смена языка (ниже), ручной
+        // хоткей конверсии или хоткей диктовки (оба modkey 63). Когда это наша клавиша, событие
+        // нужно ПРОГЛОТИТЬ, иначе системное действие 🌐 сработает параллельно.
+        let globeIsOurHotkey = (keyCode == 63 && (
+            (s.hotkeyMode == "modkey" && s.hotkeyKeyCode == 63) ||
+            (s.voiceEnabled && s.voiceHotkeyMode == "modkey" && s.voiceHotkeyKeyCode == 63)
+        ))
 
         // МГНОВЕННОЕ ПЕРЕКЛЮЧЕНИЕ ЯЗЫКА — модификаторные режимы: 🌐/Fn и одиночный модификатор
         // (правый ⌥ и т.п.). Событие глотаем, чтобы приложения не видели «голый» модификатор.
@@ -1195,14 +1237,25 @@ final class EventTap {
         toggleVoice()
     }
 
-    private func toggleVoice() {
+    private func toggleVoice(forcePostProcess: Bool = false) {
         // Решение start/stop — СИНХРОННОЕ и атомарное (VoiceGate.flip), иначе быстрый второй тап
         // видел устаревшее состояние: «нажал — ничего, нажал ещё — пошло» (баг 1-к-8, 09.06).
         // А сами begin/end тянут аудио-teardown, NSSound и RMS-свёртку — их на main (см. VoiceGate).
+        voiceActiveFromAI = false
         let wasActive = VoiceGate.flip()
         if wasActive { onMain { [weak self] in self?.handler?.handleVoiceEnd() } }
+        else if forcePostProcess { onMain { [weak self] in self?.handler?.handleVoiceAIBegin() } }
         else         { onMain { [weak self] in self?.handler?.handleVoiceBegin() } }
         voiceActive = !wasActive
+    }
+
+    private func isVoiceAIHotkey(_ keyCode: Int64, _ flags: CGEventFlags) -> Bool {
+        let s = AppSettings.shared
+        guard s.voiceEnabled, s.voicePostProcessHotkeyEnabled,
+              keyMatches(keyCode, s.voicePostProcessHotkeyKeyCode) else { return false }
+        let want = relevantMods(CGEventFlags(rawValue: s.voicePostProcessHotkeyModifiers))
+        guard !want.isEmpty else { return false }
+        return relevantMods(flags) == want
     }
 
     /// Совпадает ли событие с voice-хоткеем диктовки (клавиша + модификаторы).

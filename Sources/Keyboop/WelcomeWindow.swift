@@ -96,17 +96,17 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
         addWrap(stack, L10n.t("wel.keysNote"), size: 11.5, color: .tertiaryLabelColor)
         addGap(stack, 8)
 
-        // Голос: предложить скачать модель прямо в онбординге.
+        // Голос: предложить скачать рекомендованную модель прямо в онбординге.
         addSection(stack, L10n.t("wel.voiceTitle"))
         addWrap(stack, L10n.t("wel.voiceBody"), size: 12.5, color: .secondaryLabelColor)
-        if ParakeetEngine.modelInstalled {
+        if VoiceController.shared.hasUsableModel {
             let ok = NSTextField(labelWithString: L10n.t("wel.voiceReady"))
             ok.font = .systemFont(ofSize: 12, weight: .semibold); ok.textColor = DS.coral
             stack.addArrangedSubview(ok)
         } else {
             let b = NSButton(title: L10n.t("wel.voiceDownload"), target: self, action: #selector(downloadVoice))
             b.bezelStyle = .rounded
-            b.bezelColor = DS.coral            // акцент: рекомендуемое действие в онбординге (заметный дефолт-движок)
+            b.bezelColor = DS.coral
             b.contentTintColor = .white
             voiceBtn = b
             stack.addArrangedSubview(b)
@@ -372,16 +372,22 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
         guard !voiceDownloading else { return }
         voiceDownloading = true
         voiceBtn?.isEnabled = false; voiceBtn?.title = "0%"
-        Task { [weak self] in
-            let ok = await ParakeetEngine.shared.download(progress: { f in
+        let targetId = ModelDownloader.defaultOnboardingModelId
+        ModelDownloader.shared.download(
+            targetId,
+            progress: { [weak self] f in
                 DispatchQueue.main.async { self?.voiceBtn?.title = "\(Int(f * 100))%" }
-            })
-            await MainActor.run {
+            },
+            done: { [weak self] ok in
                 self?.voiceDownloading = false
                 self?.voiceBtn?.isEnabled = true
+                if ok {
+                    AppSettings.shared.voiceModel = targetId
+                    VoiceController.shared.preload()
+                }
                 self?.voiceBtn?.title = ok ? L10n.t("wel.voiceReady") : L10n.t("wel.voiceDownload")
             }
-        }
+        )
     }
 
     // MARK: helpers

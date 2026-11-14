@@ -342,14 +342,15 @@ final class LayoutManager {
     /// теперь ещё и на диск, то есть ошибка #143 не чинилась бы, а консервировалась. Для сценария
     /// «Русская → Русская ПК» это единственный честный путь: обе стороны кириллические, и никакой
     /// сверкой письменности стейл тут не ловится.
-    func noteCurrentAsUserChoice() {
+    @discardableResult
+    func noteCurrentAsUserChoice() -> Bool? {
         guard let src = Self.liveSelectedSource() ?? TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-              let id = Self.stringProp(src, kTISPropertyInputSourceID) else { return }
+              let id = Self.stringProp(src, kTISPropertyInputSourceID) else { return nil }
         setExactOpinion(id)
         switch Self.script(of: src) {
-        case .cyrillic: remember(id, cyrillic: true)
-        case .latin:    remember(id, cyrillic: false)
-        case .other:    break   // третью письменность не запоминаем: мы её и не выбираем
+        case .cyrillic: remember(id, cyrillic: true); return true
+        case .latin:    remember(id, cyrillic: false); return false
+        case .other:    return nil   // третью письменность не запоминаем: мы её и не выбираем
         }
     }
 

@@ -142,6 +142,13 @@ final class AppSettings {
     /// register(defaults:)). Тумблер жив; явный выбор пользователя register не трогает.
     var liveFixEnabled: Bool { get { d.bool(forKey: "liveFixEnabled") } set { d.set(newValue, forKey: "liveFixEnabled") } }
 
+    /// Предиктивное переключение раскладки до первой буквы (по тексту у курсора, чату и памяти).
+    /// По умолчанию ВКЛ (при всех защитах: пароли, off-программы, dev-режим и ручной выбор пользователя).
+    var predictLayoutEnabled: Bool {
+        get { d.object(forKey: "predictLayoutEnabled") == nil ? true : d.bool(forKey: "predictLayoutEnabled") }
+        set { d.set(newValue, forKey: "predictLayoutEnabled") }
+    }
+
     /// INLINE-починка: замена слова ПРЯМО в колбэке тапа (гонка закрыта по построению, 25.07).
     /// Аварийный рубильник без UI — если у кого-то приложение плохо принимает быструю синтетику:
     /// defaults write ru.keyboop.app inlineLiveFix -bool NO  → вернётся прежний асинхронный путь.
@@ -218,13 +225,8 @@ final class AppSettings {
     var voiceHotkeyKeyCode: Int { get { d.object(forKey: "voiceHotkeyKeyCode") == nil ? 61 : d.integer(forKey: "voiceHotkeyKeyCode") } set { d.set(newValue, forKey: "voiceHotkeyKeyCode") } }
     var voiceHotkeyModifiers: UInt64 { get { let v = d.object(forKey: "voiceHotkeyMods") as? Int; return UInt64(bitPattern: Int64(v ?? Int(CGEventFlags.maskAlternate.rawValue))) } set { d.set(Int(bitPattern: UInt(newValue)), forKey: "voiceHotkeyMods") } }
     var voiceHotkeyKeyLabel: String { get { d.string(forKey: "voiceHotkeyKeyLabel") ?? "правый ⌥" } set { d.set(newValue, forKey: "voiceHotkeyKeyLabel") } }
-    /// Движок распознавания: "parakeet" (ANE, точнее на RU — по умолчанию) или "whisper".
-    #if arch(arm64) && !KEYBOOP_NO_PARAKEET
-    private static let defaultVoiceEngine = "parakeet"
-    #else
-    private static let defaultVoiceEngine = "whisper"   // Intel: Parakeet отсутствует в сборке (нет ANE)
-    #endif
-    var voiceEngine: String { get { d.string(forKey: "voiceEngine") ?? Self.defaultVoiceEngine } set { d.set(newValue, forKey: "voiceEngine") } }
+    /// Движок распознавания: единый `transcribe.cpp` (GGUF + legacy ggml).
+    var voiceEngine: String { get { "transcribe" } set { d.set(newValue, forKey: "voiceEngine") } }
     /// Режим диктовки: "hold" (зажать и говорить) или "toggle" (нажал — старт, нажал ещё — стоп).
     /// НОВЫМ пользователям дефолт — "toggle" (выбор автора 2026-06-25): выставляется ЯВНО на первом
     /// запуске (AppDelegate didInitialSetup). Read-дефолт здесь оставлен "hold" НАМЕРЕННО — чтобы
@@ -433,8 +435,12 @@ final class AppSettings {
     /// Код потокового пути НЕ удалён: в 0.4 фича вернётся уже с продуманным показом (кандидаты —
     /// текущая всплывающая плашка и обыгрывание выреза у MacBook, чтобы текст полз там). Сохранённый
     /// выбор человека тоже не стираем: он пригодится, когда будет что включать.
+    /// Потоковый показ речи на плашке (live streaming / превью во время записи).
+    /// Для моделей transcribe.cpp с нативным стримингом (Nemotron Streaming, Voxtral Realtime)
+    /// работает через `transcribe_stream_*`; для остальных — через фоновые чанки и быстрое превью
+    /// с мгновенной отменой при отпускании клавиши.
     var voiceStreaming: Bool {
-        get { false }
+        get { d.object(forKey: "voiceStreaming") == nil ? true : d.bool(forKey: "voiceStreaming") }
         set { d.set(newValue, forKey: "voiceStreaming") }
     }
 
@@ -491,9 +497,12 @@ final class AppSettings {
         }
         set { d.set(newValue, forKey: "voiceHistoryMinutes") }
     }
-    /// Имя модели whisper (файл ggml-<model>.bin в ~/Library/Application Support/Keyboop/models).
-    /// small — баланс качества RU/пунктуации и скорости (research: ≥ small для стабильной пунктуации).
-    var voiceModel: String { get { d.string(forKey: "voiceModel") ?? "small" } set { d.set(newValue, forKey: "voiceModel") } }
+    /// Идентификатор активной модели `transcribe.cpp` в ~/Library/Application Support/Keyboop/models.
+    /// По умолчанию — `gigaam-v3-e2e-rnnt` (лучшее соотношение точности RU, скорости и размера).
+    var voiceModel: String {
+        get { d.string(forKey: "voiceModel") ?? ModelDownloader.defaultModelId }
+        set { d.set(newValue, forKey: "voiceModel") }
+    }
     /// UID выбранного микрофона ("" = системный по умолчанию).
     var voiceMicUID: String { get { d.string(forKey: "voiceMicUID") ?? "" } set { d.set(newValue, forKey: "voiceMicUID") } }
 
@@ -503,6 +512,75 @@ final class AppSettings {
         get { d.string(forKey: "voiceLanguage") ?? "auto" }   // по умолчанию — авто-определение по речи
         set { d.set(newValue, forKey: "voiceLanguage") }
     }
+
+    /// Удалять слова-паразиты (эээ, ммм, uh, um и др.) после распознавания. По умолчанию ВКЛ.
+    var voiceRemoveFillers: Bool {
+        get { d.object(forKey: "voiceRemoveFillers") == nil ? true : d.bool(forKey: "voiceRemoveFillers") }
+        set { d.set(newValue, forKey: "voiceRemoveFillers") }
+    }
+    /// Схлопывать заикания (3+ подряд идущих повтора одного слова). По умолчанию ВКЛ.
+    var voiceCollapseStutters: Bool {
+        get { d.object(forKey: "voiceCollapseStutters") == nil ? true : d.bool(forKey: "voiceCollapseStutters") }
+        set { d.set(newValue, forKey: "voiceCollapseStutters") }
+    }
+    /// Фоновая нарезка длинных диктовок на естественных паузах (> 10 с). По умолчанию ВКЛ.
+    var voicePauseChunking: Bool {
+        get { d.object(forKey: "voicePauseChunking") == nil ? true : d.bool(forKey: "voicePauseChunking") }
+        set { d.set(newValue, forKey: "voicePauseChunking") }
+    }
+    /// Контекстные профили диктовки по активному приложению (Telegram, IDE, Mail и др.). По умолчанию ВКЛ.
+    var voiceContextProfilesEnabled: Bool {
+        get { d.object(forKey: "voiceContextProfilesEnabled") == nil ? true : d.bool(forKey: "voiceContextProfilesEnabled") }
+        set { d.set(newValue, forKey: "voiceContextProfilesEnabled") }
+    }
+
+    /// On-device / локальная LLM-постобработка каждой диктовки. По умолчанию ВЫКЛ (можно вызывать и отдельным хоткеем).
+    var voicePostProcessEnabled: Bool {
+        get { d.bool(forKey: "voicePostProcessEnabled") }
+        set { d.set(newValue, forKey: "voicePostProcessEnabled") }
+    }
+    /// Провайдер постобработки: "apple" (Apple Intelligence) или "local" (локальный OpenAI-совместимый сервер).
+    var voicePostProcessProvider: String {
+        get { d.string(forKey: "voicePostProcessProvider") ?? VoicePostProcessProvider.apple.rawValue }
+        set { d.set(newValue, forKey: "voicePostProcessProvider") }
+    }
+    var voicePostProcessBaseURL: String {
+        get { d.string(forKey: "voicePostProcessBaseURL") ?? VoicePostProcessor.defaultBaseURL }
+        set { d.set(newValue, forKey: "voicePostProcessBaseURL") }
+    }
+    var voicePostProcessModel: String {
+        get { d.string(forKey: "voicePostProcessModel") ?? VoicePostProcessor.defaultLocalModel }
+        set { d.set(newValue, forKey: "voicePostProcessModel") }
+    }
+    var voicePostProcessAPIKey: String {
+        get { d.string(forKey: "voicePostProcessAPIKey") ?? "" }
+        set { d.set(newValue, forKey: "voicePostProcessAPIKey") }
+    }
+    var voicePostProcessPrompt: String {
+        get {
+            let v = d.string(forKey: "voicePostProcessPrompt")
+            return (v?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? v! : VoicePostProcessor.defaultPrompt
+        }
+        set { d.set(newValue, forKey: "voicePostProcessPrompt") }
+    }
+
+    /// Отдельный опциональный хоткей «Диктовка с AI» (запускает диктовку с принудительной постобработкой).
+    var voicePostProcessHotkeyKeyCode: Int {
+        get { d.object(forKey: "voicePostProcessHotkeyKeyCode") == nil ? -1 : d.integer(forKey: "voicePostProcessHotkeyKeyCode") }
+        set { d.set(newValue, forKey: "voicePostProcessHotkeyKeyCode") }
+    }
+    var voicePostProcessHotkeyModifiers: UInt64 {
+        get {
+            let v = d.object(forKey: "voicePostProcessHotkeyMods") as? Int
+            return UInt64(bitPattern: Int64(v ?? 0))
+        }
+        set { d.set(Int(bitPattern: UInt(newValue)), forKey: "voicePostProcessHotkeyMods") }
+    }
+    var voicePostProcessHotkeyKeyLabel: String {
+        get { d.string(forKey: "voicePostProcessHotkeyKeyLabel") ?? "" }
+        set { d.set(newValue, forKey: "voicePostProcessHotkeyKeyLabel") }
+    }
+    var voicePostProcessHotkeyEnabled: Bool { voicePostProcessHotkeyKeyCode >= 0 }
 
     /// Экспериментально: конвертировать несколько слов группой по хоткею (выключено по умолчанию).
     var groupConvert: Bool { get { d.bool(forKey: "groupConvert") } set { d.set(newValue, forKey: "groupConvert") } }

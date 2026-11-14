@@ -311,19 +311,20 @@ enum HotkeyGuard {
     ///
     /// Добавляя СЛЕДУЮЩИЙ хоткей, добавь его сюда же. Это единственное место, где перечислены все.
     enum Slot: CaseIterable {
-        case convert, voice, translate, instant, snippet, plainPaste, caseChange, pasteDictation
+        case convert, voice, voicePostProcess, translate, instant, snippet, plainPaste, caseChange, pasteDictation
 
         /// Как назвать функцию человеку в тексте «занято: %@».
         var name: String {
             switch self {
-            case .convert:    return L10n.t("is.busy.convert")
-            case .voice:      return L10n.t("is.busy.voice")
-            case .translate:  return L10n.t("is.busy.translate")
-            case .instant:    return L10n.t("is.busy.instant")
-            case .snippet:    return L10n.t("is.busy.snippet")
-            case .plainPaste: return L10n.t("is.busy.paste")
-            case .caseChange: return L10n.t("is.busy.case")
-            case .pasteDictation: return L10n.t("is.busy.pasteLast")
+            case .convert:          return L10n.t("is.busy.convert")
+            case .voice:            return L10n.t("is.busy.voice")
+            case .voicePostProcess: return L10n.t("is.busy.voiceAI")
+            case .translate:        return L10n.t("is.busy.translate")
+            case .instant:          return L10n.t("is.busy.instant")
+            case .snippet:          return L10n.t("is.busy.snippet")
+            case .plainPaste:       return L10n.t("is.busy.paste")
+            case .caseChange:       return L10n.t("is.busy.case")
+            case .pasteDictation:   return L10n.t("is.busy.pasteLast")
             }
         }
 
@@ -337,7 +338,7 @@ enum HotkeyGuard {
         var settingsSection: SettingsSection {
             switch self {
             case .convert, .instant:                  return .switching
-            case .voice, .pasteDictation:             return .voice
+            case .voice, .voicePostProcess, .pasteDictation: return .voice
             case .translate:                          return .translate
             case .snippet, .plainPaste, .caseChange:  return .snippets
             }
@@ -353,6 +354,9 @@ enum HotkeyGuard {
             case .voice:
                 guard s.voiceEnabled else { return nil }
                 return (s.voiceHotkeyMode, s.voiceHotkeyKeyCode, s.voiceHotkeyModifiers)
+            case .voicePostProcess:
+                guard s.voiceEnabled, s.voicePostProcessHotkeyEnabled else { return nil }
+                return ("key", s.voicePostProcessHotkeyKeyCode, s.voicePostProcessHotkeyModifiers)
             case .translate:
                 // У перевода своего режима нет, он всегда «клавиша + модификаторы».
                 return ("key", s.translateHotkeyKeyCode, s.translateHotkeyModifiers)
@@ -721,6 +725,7 @@ final class HotkeyControl: NSView {
         let apply = pendingApply
         stopRecording()
         apply?()
+        GlobeKey.reconcile()
         rebuild()
     }
     private func stopRecording() {
@@ -980,7 +985,7 @@ final class VoiceHotkeyControl: NSView {
     private var peakKey: Int = -1   // keyCode ПЕРВОГО одиночного модификатора (для modkey)
     private func resetPeaks() { peak = []; peakKey = -1 }
     private func count(_ m: CGEventFlags) -> Int {
-        [.maskAlternate, .maskShift, .maskCommand, .maskControl].filter { m.contains($0) }.count
+        [.maskAlternate, .maskShift, .maskCommand, .maskControl, .maskSecondaryFn].filter { m.contains($0) }.count
     }
 
     /// Занята ли эта комбинация модификаторов другим нашим хоткеем, живущим в режиме "combo".
@@ -994,6 +999,7 @@ final class VoiceHotkeyControl: NSView {
         [
             (L10n.t("voice.hkRopt"),  "modkey", 61, CGEventFlags.maskAlternate.rawValue),
             (L10n.t("voice.hkRcmd"),  "modkey", 54, CGEventFlags.maskCommand.rawValue),
+            (L10n.t("voice.hkFn"),    "modkey", 63, CGEventFlags.maskSecondaryFn.rawValue),
             (L10n.t("voice.hkTilde"), "key",    50, CGEventFlags.maskAlternate.rawValue)
         ]
     }
@@ -1028,6 +1034,7 @@ final class VoiceHotkeyControl: NSView {
             case 54: return L10n.t("hk.rCmd"); case 55: return L10n.t("hk.lCmd")
             case 60: return L10n.t("hk.rShift"); case 56: return L10n.t("hk.lShift")
             case 62: return L10n.t("hk.rCtrl"); case 59: return L10n.t("hk.lCtrl")
+            case 63: return L10n.t("voice.hkFn")
             default: return L10n.t("hk.key")
             }
         }
@@ -1062,10 +1069,19 @@ final class VoiceHotkeyControl: NSView {
             if let busy = HotkeyGuard.ourBusy(mode: p.1, keyCode: p.2, mods: p.3, excluding: .voice) {
                 HotkeyGuard.busyAlert(busy); rebuild(); return
             }
+            if let shadowed = InstantSwitchControl.shadows(mode: p.1, keyCode: p.2, mods: p.3) {
+                let a = NSAlert()
+                a.messageText = L10n.t("is.warn.title")
+                a.informativeText = String(format: L10n.t("voice.shadow.body"), shadowed)
+                a.addButton(withTitle: L10n.t("is.warn.ok"))
+                a.addButton(withTitle: L10n.t("common.cancel"))
+                guard a.runModal() == .alertFirstButtonReturn else { rebuild(); return }
+            }
             settings.voiceHotkeyMode = p.1
             settings.voiceHotkeyKeyCode = p.2
             settings.voiceHotkeyModifiers = p.3
             settings.voiceHotkeyKeyLabel = ""
+            GlobeKey.reconcile()
             rebuild()
         } else if i == pop.numberOfItems - 1 {
             startRecording()          // последняя строка — «Назначить свою…» (есть ВСЕГДА)
@@ -1091,6 +1107,7 @@ final class VoiceHotkeyControl: NSView {
         let apply = pendingApply
         stopRecording()
         apply?()
+        GlobeKey.reconcile()
         rebuild()
     }
     private func stopRecording() {
@@ -1106,7 +1123,7 @@ final class VoiceHotkeyControl: NSView {
         if ev.type == .keyDown {
             if ev.keyCode == 53 { stopRecording(); return }   // Esc — отмена
             restartIfFrozen()
-            let mods = cg(ev.modifierFlags)
+            let mods = cg(ev.modifierFlags, includeFn: false)
             guard HotkeyKeys.modifiersSufficient(keyCode: Int(ev.keyCode), mods: mods) else {
                 warnInPanel(HotkeyGuard.needsModifierMessage(),
                             parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
@@ -1140,7 +1157,7 @@ final class VoiceHotkeyControl: NSView {
         }
         // flagsChanged: одиночный модификатор = hold-to-talk (modkey).
         // Замороженный кандидат отпусканием не сбрасываем — иначе не донести мышь до «Назначить».
-        let curMods = cg(ev.modifierFlags)
+        let curMods = cg(ev.modifierFlags, includeFn: ev.keyCode == 63)
         // ⚠️ Показали отказ, а клавиши всё ещё ФИЗИЧЕСКИ зажаты. Их отпускание по одной приходит
         // сюда обычным flagsChanged, и накопитель принимает его за НАЧАЛО нового набора: в
         // кандидат уходит keyCode ОТПУСКАЕМОЙ клавиши с маской от тех, что ещё внизу. Человек
@@ -1188,9 +1205,18 @@ final class VoiceHotkeyControl: NSView {
                     s.voiceHotkeyMode = "modkey"; s.voiceHotkeyKeyCode = pk
                     s.voiceHotkeyModifiers = p.rawValue; s.voiceHotkeyKeyLabel = ""
                 }
-                freeze(HotkeyRecorderPanel.parts(mods: p))
+                if let shadowed = InstantSwitchControl.shadows(mode: "modkey", keyCode: pk, mods: p.rawValue) {
+                    freeze(HotkeyRecorderPanel.parts(mods: p),
+                           warning: String(format: L10n.t("voice.shadow.body"), shadowed))
+                } else {
+                    freeze(HotkeyRecorderPanel.parts(mods: p))
+                }
             } else { resetPeaks() }
         } else {
+            if peak.contains(.maskSecondaryFn),
+               !curMods.intersection([.maskAlternate, .maskShift, .maskCommand, .maskControl]).isEmpty {
+                resetPeaks()
+            }
             if peak.isEmpty, count(curMods) == 1 { peakKey = Int(ev.keyCode) }   // ПЕРВЫЙ одиночный
             if count(curMods) >= count(peak) { peak = curMods }
             live(HotkeyRecorderPanel.parts(mods: curMods))
@@ -1204,15 +1230,17 @@ final class VoiceHotkeyControl: NSView {
         case 58, 61: return .maskAlternate
         case 56, 60: return .maskShift
         case 59, 62: return .maskControl
+        case 63: return .maskSecondaryFn
         default: return []
         }
     }
-    private func cg(_ f: NSEvent.ModifierFlags) -> CGEventFlags {
+    private func cg(_ f: NSEvent.ModifierFlags, includeFn: Bool = false) -> CGEventFlags {
         var m: CGEventFlags = []
         if f.contains(.option) { m.insert(.maskAlternate) }
         if f.contains(.shift) { m.insert(.maskShift) }
         if f.contains(.command) { m.insert(.maskCommand) }
         if f.contains(.control) { m.insert(.maskControl) }
+        if includeFn, m.isEmpty, f.contains(.function) { m.insert(.maskSecondaryFn) }
         return m
     }
 }
@@ -1353,6 +1381,7 @@ final class TranslateHotkeyControl: NSView {
         let apply = pendingApply
         stopRecording()
         apply?()
+        GlobeKey.reconcile()
         rebuild()
     }
     private func stopRecording() {

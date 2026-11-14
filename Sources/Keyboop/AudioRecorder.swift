@@ -74,6 +74,9 @@ final class AudioRecorder: NSObject {
     /// молча выключить одну из них, подписавшись второй.
     private var _onDraft: (([Float]) -> Void)?
     func setDraftHook(_ cb: (([Float]) -> Void)?) { lock.lock(); _onDraft = cb; lock.unlock() }
+    /// Третий независимый потребитель аудиопотока — фоновая нарезка длинных диктовок на паузах.
+    private var _onPauseChunk: (([Float]) -> Void)?
+    func setPauseChunkHook(_ cb: (([Float]) -> Void)?) { lock.lock(); _onPauseChunk = cb; lock.unlock() }
 
     /// Хук «живого уровня» (RMS) для waveform-индикатора, ~12 обновлений/сек.
     private var _onLevel: ((Float) -> Void)?
@@ -479,7 +482,7 @@ extension AudioRecorder: AVCaptureAudioDataOutputSampleBufferDelegate {
             guard capturing else { lock.unlock(); return }   // тёплый холостой ход: отбрасываем молча
             let chunk = Array(UnsafeBufferPointer(start: ch, count: n))
             samples.append(contentsOf: chunk)
-            let cb = _onChunk, lv = _onLevel, draft = _onDraft
+            let cb = _onChunk, lv = _onLevel, draft = _onDraft, pauseCb = _onPauseChunk
             let logNow = !loggedInput
             if logNow { loggedInput = true }
             lock.unlock()
@@ -492,6 +495,7 @@ extension AudioRecorder: AVCaptureAudioDataOutputSampleBufferDelegate {
             }
             cb?(chunk)   // стриминг: отдать чанк живьём (nil в батч-режиме)
             draft?(chunk)   // живой черновик на плашке (nil, когда он выключен или движок не тот)
+            pauseCb?(chunk) // фоновая нарезка длинной диктовки по паузам (nil, если выкл)
             // Троттлинг уровня ПО КАДРАМ (~12/сек при 16кГц), независимо от размера буферов CoreMedia.
             levelFrameAcc += n
             if levelFrameAcc >= 1300 {

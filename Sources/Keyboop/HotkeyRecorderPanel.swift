@@ -134,6 +134,7 @@ final class HotkeyRecorderPanel {
         if mods.contains(.maskAlternate) { out.append("⌥") }
         if mods.contains(.maskShift) { out.append("⇧") }
         if mods.contains(.maskCommand) { out.append("⌘") }
+        if mods.contains(.maskSecondaryFn) { out.append("🌐 Fn") }
         if let keyLabel, !keyLabel.isEmpty { out.append(keyLabel) }
         return out
     }
