@@ -4018,7 +4018,9 @@ final class DetailVC: NSViewController {
             let kcOK  = (savedMode == "key") && (pressedKC == savedKC)
             let modOK = pressedMod == savedMod
             let match = kcOK && modOK
-            let pressedLabel = ev.charactersIgnoringModifiers?.uppercased() ?? "?"
+            // У .flagsChanged нет свойства charactersIgnoringModifiers — обращение к нему бросает
+            // NSInternalInconsistencyException и роняет приложение в модальном цикле (Issue #30).
+            let pressedLabel = ev.type == .keyDown ? (ev.charactersIgnoringModifiers?.uppercased() ?? "?") : ""
             func modStr(_ f: CGEventFlags) -> String {
                 var s = ""
                 if f.contains(.maskControl)  { s += "⌃" }
