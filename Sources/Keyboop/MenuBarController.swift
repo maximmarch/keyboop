@@ -310,15 +310,20 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             let s = NSMutableAttributedString(string: (bare ? "" : " ") + (text.isEmpty ? "" : text + " "),
                                               attributes: [.font: font, .foregroundColor: NSColor.labelColor])
             s.append(NSAttributedString(string: "●", attributes: [.font: font, .foregroundColor: NSColor.systemRed]))
-            button.attributedTitle = s
-            button.imagePosition = bare ? .noImage : .imageLeading
-            button.toolTip = L10n.t("call.tip")
+            if button.attributedTitle != s { button.attributedTitle = s }
+            let targetPos: NSControl.ImagePosition = bare ? .noImage : .imageLeading
+            if button.imagePosition != targetPos { button.imagePosition = targetPos }
+            let tip = L10n.t("call.tip")
+            if button.toolTip != tip { button.toolTip = tip }
             return
         }
-        guard !parts.isEmpty else { button.title = ""; return }
+        // Не трогаем NSStatusBarButton, если строка не изменилась: безусловное присваивание на
+        // каждом тике опроса (2 раза/сек) заставляет AppKit/SkyLight пересобирать constraints и
+        // спамит в WindowServer ошибку `_CGXPackagesSetWindowConstraints: Invalid window` (Issue #36).
         let text = parts.joined(separator: " ")
         // Без значка (hidden) подпись без ведущего пробела; со значком — с отступом от него.
-        button.title = bare ? text : " \(text)"
+        let newTitle = parts.isEmpty ? "" : (bare ? text : " \(text)")
+        if button.title != newTitle { button.title = newTitle }
     }
 
     /// Индикатор диктовки в статус-баре: запись / распознавание / покой.
