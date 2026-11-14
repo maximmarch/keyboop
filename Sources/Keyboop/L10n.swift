@@ -35,6 +35,10 @@ enum L10n {
         strings[key]?[current] ?? strings[key]?[.en] ?? key
     }
 
+    static func t(_ key: String, _ args: CVarArg...) -> String {
+        String(format: t(key), arguments: args)
+    }
+
     /// Локализация единиц размера модели: каталог хранит EN («142 MB», «1.5 GB»),
     /// для RU меняем на «МБ/ГБ». Так EN-интерфейс корректен изначально, а не показывает кириллицу.
     static func size(_ s: String) -> String {
@@ -1626,6 +1630,67 @@ enum L10n {
         "sites.ed.errInvalid":     [.ru: "Некорректный домен. Пример: github.com или *.github.com.", .en: "Invalid domain. Example: github.com or *.github.com."],
         "sites.ed.errTooBroad":    [.ru: "Слишком широкий шаблон домена запрещён (например *.com).", .en: "Overly broad domain patterns (like *.com) are not allowed."],
         "sites.ed.errRegex":       [.ru: "Регулярные выражения не поддерживаются — используйте домен или *.", .en: "Regular expressions are not supported — use a domain or *."],
-        "sites.ed.errNoWildcard":  [.ru: "Неверный формат домена.", .en: "Invalid domain format."]
+        "sites.ed.errNoWildcard":  [.ru: "Неверный формат домена.", .en: "Invalid domain format."],
+
+        // MARK: - KB-004 Динамические сниппеты с переменными
+        "snip.form.title":            [.ru: "Заполнить шаблон «%@»", .en: "Fill template “%@”"],
+        "snip.form.preview":          [.ru: "Предпросмотр", .en: "Preview"],
+        "snip.form.insert":           [.ru: "Вставить", .en: "Insert"],
+        "snip.form.cancel":           [.ru: "Отмена", .en: "Cancel"],
+        "snip.form.requiredPh":       [.ru: "Обязательное поле", .en: "Required"],
+        "snip.form.optionalPh":       [.ru: "Необязательно", .en: "Optional"],
+        "snip.form.chooseNone":       [.ru: "— не выбрано —", .en: "— none —"],
+        "snip.form.missingRequired":  [.ru: "Заполните обязательные поля: %@", .en: "Fill required fields: %@"],
+        "snip.form.clipboardBlocked": [.ru: "Доступ к {{clipboard}} запрещён настройками этого шаблона.", .en: "{{clipboard}} access is not allowed for this template."],
+        "snip.form.emptyResult":      [.ru: "Итоговый текст пуст — триггер сохранён без удаления.", .en: "Rendered text is empty — trigger preserved."],
+        "snip.form.abortTitle":       [.ru: "Вставка шаблона отменена", .en: "Template insertion cancelled"],
+        "snip.form.abortApp":         [.ru: "Фокус перешёл в другое приложение. Исходный триггер остался на месте.", .en: "Focus moved to another app. Trigger left intact."],
+        "snip.form.abortWindow":      [.ru: "Исходное окно было закрыто или сменилось. Текст не изменён.", .en: "Original window changed or closed. Text left untouched."],
+        "snip.form.abortField":       [.ru: "Активное поле ввода изменилось — вставка отменена для безопасности.", .en: "Focused input field changed — insertion aborted safely."],
+        "snip.form.abortSecure":      [.ru: "Поле защищено (Secure Input) — динамические сниппеты здесь не работают.", .en: "Protected input (Secure Input) — dynamic snippets are disabled here."],
+
+        "snip.tpl.newBtn":            [.ru: "Новый шаблон…", .en: "New template…"],
+        "snip.tpl.editBtn":           [.ru: "Настроить как текст или шаблон…", .en: "Edit as text or template…"],
+        "snip.tpl.addTitle":          [.ru: "Новый динамический сниппет", .en: "New dynamic snippet"],
+        "snip.tpl.editTitle":         [.ru: "Редактировать сниппет", .en: "Edit snippet"],
+        "snip.tpl.trigger":           [.ru: "Триггер:", .en: "Trigger:"],
+        "snip.tpl.kind":              [.ru: "Тип:", .en: "Type:"],
+        "snip.tpl.kindPlain":         [.ru: "Обычный текст", .en: "Plain text"],
+        "snip.tpl.kindTemplate":      [.ru: "Шаблон с переменными", .en: "Template with variables"],
+        "snip.tpl.enabled":           [.ru: "Включён", .en: "Enabled"],
+        "snip.tpl.private":           [.ru: "Приватный", .en: "Private"],
+        "snip.tpl.allowClipboard":    [.ru: "Разрешить {{clipboard}}", .en: "Allow {{clipboard}}"],
+        "snip.tpl.body":              [.ru: "Содержимое:", .en: "Content:"],
+        "snip.tpl.addVar":            [.ru: "Добавить переменную ▾", .en: "Add variable ▾"],
+        "snip.tpl.varDate":           [.ru: "Дата ({{date}})", .en: "Date ({{date}})"],
+        "snip.tpl.varDateFmt":        [.ru: "Дата по формату ({{date:dd.MM.yyyy}})", .en: "Formatted date ({{date:dd.MM.yyyy}})"],
+        "snip.tpl.varTime":           [.ru: "Время ({{time}})", .en: "Time ({{time}})"],
+        "snip.tpl.varDateTime":       [.ru: "Дата и время ({{datetime}})", .en: "Date & time ({{datetime}})"],
+        "snip.tpl.varClipboard":      [.ru: "Буфер обмена ({{clipboard}})", .en: "Clipboard ({{clipboard}})"],
+        "snip.tpl.varCustom":         [.ru: "Пользовательская переменная ({{%@}})", .en: "Custom variable ({{%@}})"],
+        "snip.tpl.fieldsHeader":      [.ru: "Поля формы", .en: "Form fields"],
+        "snip.tpl.noFields":          [.ru: "Добавьте переменную вроде {{name}} в текст шаблона — она появится здесь автоматически.", .en: "Add a variable like {{name}} to the template body to configure its field here."],
+        "snip.tpl.fldLabelPh":        [.ru: "Название поля", .en: "Field label"],
+        "snip.tpl.fldDefPh":          [.ru: "По умолчанию", .en: "Default value"],
+        "snip.tpl.fldReq":            [.ru: "Обяз.", .en: "Req."],
+        "snip.tpl.fldOptions":        [.ru: "Варианты:", .en: "Options:"],
+        "snip.tpl.fldOptionsPh":      [.ru: "Через запятую, например: Да, Нет", .en: "Comma-separated, e.g.: Yes, No"],
+        "snip.tpl.typeText":          [.ru: "Строка", .en: "Single line"],
+        "snip.tpl.typeMultiline":     [.ru: "Многострочный", .en: "Multiline"],
+        "snip.tpl.typeDate":          [.ru: "Дата", .en: "Date"],
+        "snip.tpl.typeChoice":        [.ru: "Список", .en: "Choice list"],
+        "snip.tpl.clipboardPreviewSample": [.ru: "[текст из буфера обмена]", .en: "[clipboard text]"],
+        "snip.tpl.warnClipboardOff":  [.ru: "В шаблоне есть {{clipboard}}, но разрешение «Разрешить {{clipboard}}» выключено — при вставке будет пусто.", .en: "Template contains {{clipboard}}, but permission is disabled — it will expand empty."],
+        "snip.tpl.errEmptyTrigger":   [.ru: "Укажите триггер (например ;meeting или !ee).", .en: "Enter a trigger (e.g. ;meeting or !ee)."],
+        "snip.tpl.errSpaceTrigger":   [.ru: "Триггер не должен содержать пробелы или переводы строк.", .en: "Trigger cannot contain spaces or line breaks."],
+        "snip.tpl.errDupTrigger":     [.ru: "Конфликт триггеров: активный сниппет «%@» совпадает по раскладке/регистру.", .en: "Trigger conflict: active snippet “%@” matches by layout/case."],
+        "snip.tpl.diagUnclosed":      [.ru: "Незакрытая переменная `{{`.", .en: "Unclosed variable `{{`."],
+        "snip.tpl.diagUnmatchedClose":[.ru: "Лишняя закрывающая скобка `}}` (экранируйте через \\}}).", .en: "Unmatched closing braces `}}` (escape with \\}})."],
+        "snip.tpl.diagEmptyVar":      [.ru: "Пустое имя переменной `{{}}`.", .en: "Empty variable placeholder `{{}}`."],
+        "snip.tpl.diagNested":        [.ru: "Вложенная скобка `{{` внутри переменной не поддерживается.", .en: "Nested `{{` inside a variable is not supported."],
+        "snip.tpl.diagBadName":       [.ru: "Недопустимое имя переменной `{{%@}}`.", .en: "Invalid variable name `{{%@}}`."],
+        "snip.tpl.diagEmptyFmt":      [.ru: "Не указан формат даты/времени в `{{%@}}`.", .en: "Empty date/time format in `{{%@}}`."],
+        "snip.tpl.diagClipArg":       [.ru: "`{{clipboard}}` не принимает параметры (`{{%@}}`).", .en: "`{{clipboard}}` does not accept arguments (`{{%@}}`)."],
+        "snip.tpl.diagUnknownFn":     [.ru: "Неизвестная встроенная функция `%@`.", .en: "Unknown built-in function `%@`."]
     ]
 }

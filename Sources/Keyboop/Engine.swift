@@ -582,6 +582,11 @@ final class Engine: EventTapHandler {
         }
         noteSecureInput(false)
 
+        if SnippetInsertionCoordinator.shared.isFormActive {
+            liveFixLast = ""
+            return false
+        }
+
         // Ленивая очистка после context-события (клик/Spotlight — каретка сдвинулась): делаем СИНХРОННО
         // здесь, прямо перед обработкой нажатия → первый символ записывается в уже чистый буфер (без гонки).
         if applyPendingContextClear() {
@@ -654,9 +659,27 @@ final class Engine: EventTapHandler {
             let ctx = resolvedContext
             let snipAllowed = !ctx.appHardExcluded && ctx.effectiveSnippets
             if snipKeyOK, snipAllowed, !muted, !Pause.active, !buffer.currentWord.isEmpty,
-               let expansion = SnippetStore.shared.expansion(forTyped: buffer.currentWord) {
-                expandSnippet(trigger: buffer.currentWord, expansion: expansion, whitespace: ws)
-                return true   // граница проглочена — в приложение не уходит
+               let snippet = SnippetStore.shared.snippet(forTyped: buffer.currentWord) {
+                switch snippet.kind {
+                case .plain:
+                    expandSnippet(trigger: buffer.currentWord, expansion: snippet.body, whitespace: ws)
+                    return true   // граница проглочена — в приложение не уходит
+                case .template:
+                    let parsed = SnippetTemplateParser.parse(snippet.body)
+                    guard parsed.isValid else {
+                        DispatchQueue.main.async {
+                            kbLog("snippet: невалидный шаблон (id=\(snippet.id)) — пропущен")
+                        }
+                        break
+                    }
+                    if parsed.hasUserFields {
+                        expandInteractiveTemplate(snippet, trigger: buffer.currentWord, whitespace: ws)
+                        return true
+                    } else {
+                        expandAutoTemplate(snippet, trigger: buffer.currentWord, whitespace: ws, eventTime: eventTime)
+                        return true
+                    }
+                }
             }
             // Enter: чинить надо ДО того, как клавиша уйдёт в приложение — чаты отправляют по Enter
             // мгновенно, и boundary-конверсия (async ниже) опаздывала в пустое поле (репорт 11.07,
@@ -2684,6 +2707,92 @@ final class Engine: EventTapHandler {
         DispatchQueue.main.async { [weak self] in
             self?.playSound()
             kbLog("snippet: \(trigger.count)→\(body.count) симв., граница проглочена")  // контент не логируем
+        }
+    }
+
+    /// Автоматическое раскрытие шаблона БЕЗ пользовательских полей (только date/time/datetime/clipboard).
+    /// Резолвинг выполняется асинхронно на main, чтобы не задерживать WindowServer-колбэк тапа.
+    private func expandAutoTemplate(_ snippet: SnippetV2, trigger: String, whitespace ws: String, eventTime: TimeInterval) {
+        muted = true
+        mutedAt = eventTime
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let clipReader: (() -> String?)? = snippet.allowClipboard ? {
+                NSPasteboard.general.string(forType: .string)
+            } : nil
+            let result = SnippetVariableResolver.resolve(
+                snippet: snippet,
+                fieldValues: [:],
+                fallbackToDefaults: false,
+                clipboardReader: clipReader
+            )
+
+            guard result.canInsert else {
+                kbLog("snippet: авто-шаблон пропущен (пустой результат или невалидный синтаксис)")
+                if result.clipboardBlocked {
+                    AppBanner.shared.show(
+                        title: L10n.t("snip.form.abortTitle"),
+                        body: L10n.t("snip.form.clipboardBlocked"),
+                        autoDismiss: 4.0
+                    )
+                } else {
+                    AppBanner.shared.show(
+                        title: L10n.t("snip.form.abortTitle"),
+                        body: L10n.t("snip.form.emptyResult"),
+                        autoDismiss: 4.0
+                    )
+                }
+                if ws == " " {
+                    TextReplacer.insert(" ") { [weak self] in
+                        guard let self else { return }
+                        self.buffer.boundary(" ")
+                        self.endSyntheticFlight()
+                    }
+                } else {
+                    self.buffer.clear()
+                    self.endSyntheticFlight()
+                }
+                return
+            }
+
+            let body = result.text
+            let glue: String
+            if let last = body.last, last == " " || last == "\t", String(last) == ws { glue = "" } else { glue = ws }
+            TextReplacer.replace(deleteCount: trigger.count, with: body + glue, firstKeySettleMicros: 45_000) { [weak self] in
+                guard let self else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
+            }
+            self.buffer.commitSnippet(expansion: body, whitespace: glue)
+            self.buffer.invalidateGroupHistory()
+            self.playSound()
+            kbLog("snippet-tpl: \(trigger.count)→\(body.count) симв., граница проглочена")
+        }
+    }
+
+    /// Интерактивное раскрытие шаблона с формой заполнения (KB-004).
+    private func expandInteractiveTemplate(_ snippet: SnippetV2, trigger: String, whitespace ws: String) {
+        SnippetInsertionCoordinator.shared.beginInteractiveExpansion(
+            snippet: snippet,
+            trigger: trigger,
+            whitespace: ws
+        ) { [weak self] outcome in
+            guard let self else { return }
+            if let outcome {
+                if outcome.glue.isEmpty {
+                    self.buffer.clear()
+                } else {
+                    self.buffer.commitSnippet(expansion: outcome.insertedText, whitespace: outcome.glue)
+                }
+                self.buffer.invalidateGroupHistory()
+                self.playSound()
+            } else {
+                // При отмене или отказе вставки по проверке контекста: не повторяем триггер на следующем пробеле.
+                if ws == " " {
+                    self.buffer.boundary(" ")
+                } else {
+                    self.buffer.clear()
+                }
+            }
         }
     }
 

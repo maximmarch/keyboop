@@ -16,9 +16,22 @@ private final class FlippedClipView: NSClipView { override var isFlipped: Bool {
 /// Инвариант: всегда ровно одна пустая строка в конце — «куда добавлять». Начал писать в неё → снизу
 /// появляется новая пустая. Сохраняем в SnippetStore на каждое изменение и на конец редактирования.
 final class SnippetsEditor: NSView, NSTextFieldDelegate {
-    private var rows: [(String, String)] = []
+    private struct RowEntry {
+        var id: UUID?
+        var trigger: String
+        var expansion: String
+        var kind: SnippetKind = .plain
+        var enabled: Bool = true
+        var isPrivate: Bool = false
+    }
+
+    private var rows: [RowEntry] = []
     /// Какой список редактируем. Их два и они не связаны: автозамена и сниппеты для вставки.
     private let store: PairListStore
+    private let v2Store: SnippetStore?
+    private let onEditSnippet: ((SnippetV2?) -> Void)?
+    private var isSavingSelf = false
+    private var storeObserver: NSObjectProtocol?
     /// Подписи-приглашения в пустой строке: у списков разный смысл колонок.
     private let phLeft: String
     private let phRight: String
@@ -61,24 +74,60 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
 
     init(frame frameRect: NSRect, store: PairListStore = SnippetStore.shared,
          phLeft: String = "snip.phTrigger", phRight: String = "snip.phExpansion",
-         allowsReorder: Bool = false, monoLeft: Bool = true) {
+         allowsReorder: Bool = false, monoLeft: Bool = true,
+         onEditSnippet: ((SnippetV2?) -> Void)? = nil) {
         self.store = store
+        self.v2Store = store as? SnippetStore
+        self.onEditSnippet = onEditSnippet
         self.phLeft = phLeft
         self.phRight = phRight
         self.allowsReorder = allowsReorder
         self.monoLeft = monoLeft
         super.init(frame: frameRect)
-        rows = store.pairs()
+        loadFromStore()
         normalizeTrailing()
         build()
         rebuild()
+        if let v2Store {
+            storeObserver = NotificationCenter.default.addObserver(
+                forName: .keyboopSnippetsChanged,
+                object: v2Store,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self, !self.isSavingSelf else { return }
+                self.loadFromStore()
+                self.normalizeTrailing()
+                self.rebuild()
+            }
+        }
     }
     required init?(coder: NSCoder) { fatalError("no xib") }
 
+    deinit {
+        if let storeObserver { NotificationCenter.default.removeObserver(storeObserver) }
+    }
+
+    private func loadFromStore() {
+        if let v2Store {
+            rows = v2Store.allSnippets().map {
+                RowEntry(
+                    id: $0.id,
+                    trigger: $0.trigger,
+                    expansion: $0.body,
+                    kind: $0.kind,
+                    enabled: $0.enabled,
+                    isPrivate: $0.isPrivate
+                )
+            }
+        } else {
+            rows = store.pairs().map { RowEntry(id: nil, trigger: $0.0, expansion: $0.1) }
+        }
+    }
+
     /// Всегда ровно одна пустая строка в конце (и без «дыр» — пустые в середине схлопываем).
     private func normalizeTrailing() {
-        rows.removeAll { $0.0.isEmpty && $0.1.isEmpty }
-        rows.append(("", ""))
+        rows.removeAll { $0.trigger.isEmpty && $0.expansion.isEmpty && $0.id == nil }
+        rows.append(RowEntry(id: nil, trigger: "", expansion: ""))
     }
 
     private func build() {
@@ -115,8 +164,17 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
         add.translatesAutoresizingMaskIntoConstraints = false
         addSubview(add)
 
+        var newTemplateBtn: NSButton?
+        if onEditSnippet != nil {
+            let tpl = NSButton(title: L10n.t("snip.tpl.newBtn"), target: self, action: #selector(addTemplateAction))
+            tpl.bezelStyle = .rounded
+            tpl.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(tpl)
+            newTemplateBtn = tpl
+        }
+
         scrollH = scroll.heightAnchor.constraint(equalToConstant: heightForRows(rows.count))
-        NSLayoutConstraint.activate([
+        var constraints: [NSLayoutConstraint] = [
             scroll.topAnchor.constraint(equalTo: topAnchor),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -132,7 +190,12 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
             rowsStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
             rowsStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
             rowsStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
-        ])
+        ]
+        if let tpl = newTemplateBtn {
+            constraints.append(tpl.centerYAnchor.constraint(equalTo: add.centerYAnchor))
+            constraints.append(tpl.leadingAnchor.constraint(equalTo: add.trailingAnchor, constant: 8))
+        }
+        NSLayoutConstraint.activate(constraints)
     }
 
     // MARK: - Построение строк
@@ -153,9 +216,9 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
             guard let h = rowView as? NSStackView,
                   let f = h.arrangedSubviews.compactMap({ $0 as? NSTextField })
                       .first(where: { $0.identifier?.rawValue == "trig" }) else { continue }
-            let c = SnippetStore.canonical(rows[i].0.trimmingCharacters(in: .whitespaces))
+            let c = SnippetStore.canonical(rows[i].trigger.trimmingCharacters(in: .whitespaces))
             let dup = !c.isEmpty && !seen.insert(c).inserted
-            f.textColor = dup ? NSColor.systemRed : nil
+            f.textColor = dup ? NSColor.systemRed : (rows[i].enabled ? nil : NSColor.tertiaryLabelColor)
         }
     }
 
@@ -166,15 +229,47 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
     }
 
     private func makeRow(_ index: Int) -> NSView {
-        let empty = rows[index].0.isEmpty && rows[index].1.isEmpty
+        let item = rows[index]
+        let empty = item.trigger.isEmpty && item.expansion.isEmpty && item.id == nil
         let isLast = index == rows.count - 1
 
-        let trig = field(mono: monoLeft, value: rows[index].0, id: "trig",
+        let trig = field(mono: monoLeft, value: item.trigger, id: "trig",
                          placeholder: isLast ? L10n.t(phLeft) : nil)
-        let exp  = field(mono: false, value: rows[index].1, id: "exp",
-                         placeholder: isLast ? L10n.t(phRight) : nil)
+        let summaryText: String
+        if item.isPrivate && !item.expansion.isEmpty {
+            summaryText = "••••••"
+        } else if item.kind == .template {
+            summaryText = item.expansion
+                .replacingOccurrences(of: "\r\n", with: " ↵ ")
+                .replacingOccurrences(of: "\n", with: " ↵ ")
+        } else {
+            summaryText = item.expansion
+        }
+        let exp = field(mono: false, value: summaryText, id: "exp",
+                        placeholder: isLast ? L10n.t(phRight) : nil)
+        if item.kind == .template || item.isPrivate {
+            exp.isEditable = false
+            exp.textColor = item.enabled ? .secondaryLabelColor : .tertiaryLabelColor
+        } else if !item.enabled {
+            exp.textColor = .tertiaryLabelColor
+        }
+
+        let editTplBtn = NSButton(title: "", target: self, action: #selector(editTemplateRowAction(_:)))
+        editTplBtn.identifier = NSUserInterfaceItemIdentifier("editTpl")
+        editTplBtn.bezelStyle = .regularSquare
+        editTplBtn.isBordered = false
+        let tplCfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        let symName = (item.kind == .template) ? "curlybraces" : "slider.horizontal.3"
+        editTplBtn.image = NSImage(systemSymbolName: symName, accessibilityDescription: L10n.t("snip.tpl.editBtn"))?.withSymbolConfiguration(tplCfg)
+        editTplBtn.imagePosition = .imageOnly
+        editTplBtn.imageScaling = .scaleProportionallyDown
+        editTplBtn.contentTintColor = (item.kind == .template) ? .systemBlue : .secondaryLabelColor
+        editTplBtn.toolTip = L10n.t("snip.tpl.editBtn")
+        editTplBtn.isHidden = empty || (onEditSnippet == nil)
+        editTplBtn.translatesAutoresizingMaskIntoConstraints = false
 
         let trash = NSButton(title: "", target: self, action: #selector(deleteRowAction(_:)))
+        trash.identifier = NSUserInterfaceItemIdentifier("trash")
         trash.bezelStyle = .regularSquare
         trash.isBordered = false
         let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
@@ -196,7 +291,14 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
         grip.onMoved  = { [weak self] p in self?.dragMoved(to: p) }
         grip.onEnded  = { [weak self] in self?.dragEnded() }
 
-        let h = NSStackView(views: allowsReorder ? [grip, trig, exp, trash] : [trig, exp, trash])
+        var arranged: [NSView] = allowsReorder ? [grip, trig, exp] : [trig, exp]
+        if onEditSnippet != nil {
+            arranged.append(editTplBtn)
+            editTplBtn.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        }
+        arranged.append(trash)
+
+        let h = NSStackView(views: arranged)
         h.orientation = .horizontal
         h.alignment = .centerY
         h.spacing = 8
@@ -406,7 +508,11 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
     @discardableResult
     private func syncField(_ f: NSTextField) -> Int? {
         guard let row = rowIndex(of: f), row < rows.count else { return nil }
-        if f.identifier?.rawValue == "trig" { rows[row].0 = f.stringValue } else { rows[row].1 = f.stringValue }
+        if f.identifier?.rawValue == "trig" {
+            rows[row].trigger = f.stringValue
+        } else if rows[row].kind == .plain && !rows[row].isPrivate {
+            rows[row].expansion = f.stringValue
+        }
         return row
     }
 
@@ -416,22 +522,13 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
         markDuplicateTriggers()
         // Начали писать в последней (пустой) строке → строка стала настоящей: показываем её корзину
         // и ручку, добавляем новую пустую снизу.
-        //
-        // ⛔️ ЗДЕСЬ ЖИЛ БАГ «сниппет не добавляется» (автор 10.08). Новая пустая строка в стек
-        // добавлялась, но ВЫСОТА СПИСКА не пересчитывалась: она задана константой по числу строк и
-        // меняется только в `rebuild()`. То есть строка существовала, но оказывалась ЗА нижней
-        // границей прокрутки, и человек видел, что «ничего не произошло». Данные при этом
-        // сохранялись, поэтому после перехода в другой раздел всё оказывалось на месте.
-        //
-        // ⚠️ Полный `rebuild()` здесь звать НЕЛЬЗЯ: он пересоздаёт поля, а человек в этот момент
-        // печатает, и фокус вместе с курсором улетит на первом же символе. Поэтому правим точечно.
-        if row == rows.count - 1, !(rows[row].0.isEmpty && rows[row].1.isEmpty) {
+        if row == rows.count - 1, !(rows[row].trigger.isEmpty && rows[row].expansion.isEmpty) {
             if let h = f.superview as? NSStackView {
                 for v in h.arrangedSubviews {
-                    if let b = v as? NSButton, b.image != nil { b.isHidden = false }   // корзина
+                    if let b = v as? NSButton, b.image != nil { b.isHidden = false }   // корзина / редактирование
                 }
             }
-            rows.append(("", ""))
+            rows.append(RowEntry(id: nil, trigger: "", expansion: ""))
             addRow(rows.count - 1)
             scrollH?.constant = heightForRows(rows.count)   // без этого новая строка уезжает за край
             refreshGrips()
@@ -468,6 +565,28 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
         window?.makeFirstResponder(trig)
     }
 
+    @objc private func addTemplateAction() {
+        onEditSnippet?(nil)
+    }
+
+    @objc private func editTemplateRowAction(_ sender: NSButton) {
+        guard let row = rowIndex(of: sender), row < rows.count,
+              let v2Store, let onEditSnippet else { return }
+        save()
+        let item = rows[row]
+        if let id = item.id, let stored = v2Store.snippet(id: id) {
+            onEditSnippet(stored)
+        } else {
+            let draft = SnippetV2(
+                id: item.id ?? UUID(),
+                trigger: item.trigger,
+                kind: item.kind,
+                body: item.expansion
+            )
+            onEditSnippet(draft)
+        }
+    }
+
     @objc private func deleteRowAction(_ sender: NSButton) {
         guard let row = rowIndex(of: sender), row < rows.count else { return }
         rows.remove(at: row)
@@ -477,8 +596,19 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
     }
 
     private func save() {
-        // В ПОРЯДКЕ строк (по добавлению) — стор сам отфильтрует пустые и схлопнет дубли.
-        store.setAll(rows.map { ($0.0, $0.1) })
+        if let v2Store {
+            isSavingSelf = true
+            let assigned = v2Store.syncInlineRows(rows.map { ($0.id, $0.trigger, $0.expansion) })
+            for i in rows.indices where i < assigned.count {
+                if let newID = assigned[i] {
+                    rows[i].id = newID
+                }
+            }
+            isSavingSelf = false
+        } else {
+            // В ПОРЯДКЕ строк (по добавлению) — стор сам отфильтрует пустые и схлопнет дубли.
+            store.setAll(rows.map { ($0.trigger, $0.expansion) })
+        }
     }
 }
 

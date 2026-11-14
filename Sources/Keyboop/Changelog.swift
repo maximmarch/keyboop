@@ -57,6 +57,19 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        Release(version: "0.5.2",
+            ru: [
+                "Динамические сниппеты с переменными (KB-004): автозамена теперь поддерживает как обычный текст, так и шаблоны с подстановками {{date}}, {{date:dd.MM.yyyy}}, {{time}}, {{datetime}}, опциональным {{clipboard}} и пользовательскими переменными ({{name}}, {{topic}} и др.).",
+                "Компактная форма заполнения шаблона с live-предпросмотром: при срабатывании динамического сниппета можно быстро заполнить текстовые, многострочные поля, дату или выбрать вариант из списка. Шаблоны без пользовательских полей раскрываются сразу без показа окна, а существующие сниппеты автоматически мигрируют без изменений.",
+                "Редактор шаблонов в настройках: кнопка «Новый шаблон…», меню вставки переменных, настройка полей (название, тип, значение по умолчанию, обязательность, порядок), подсветка переменных и проверка синтаксиса/дублей до сохранения.",
+                "Приватность и безопасная вставка: значения формы не сохраняются на диск и не пишутся в лог, {{clipboard}} отключён по умолчанию и разрешается для каждого шаблона отдельно, а перед вставкой Keyboop проверяет, что фокус остался в исходном приложении, окне и поле (и защищает ввод при Secure Input).",
+            ],
+            en: [
+                "Dynamic snippets with variables (KB-004): auto-expansion now supports both plain text snippets and variable templates with {{date}}, {{date:dd.MM.yyyy}}, {{time}}, {{datetime}}, opt-in {{clipboard}}, and custom form fields ({{name}}, {{topic}}, etc.).",
+                "Compact template input form with live preview: fill single-line, multiline, date, or choice fields on trigger and preview the final result before insertion. Templates without user fields expand immediately with no modal popup, and existing static snippets migrate automatically.",
+                "Template editor in Settings: “New template…” sheet with variable insertion menu, field customization (label, type, default value, required flag, order), syntax highlighting, and pre-save error and trigger-collision checks.",
+                "Privacy & safe insertion: entered form values are never persisted or logged, {{clipboard}} requires explicit per-template permission, and Keyboop verifies that the original app, window, and field still have focus (and respects Secure Input) before replacing the trigger.",
+            ]),
         Release(version: "0.5.1",
             ru: [
                 "Правила ввода на уровне сайтов в Google Chrome: в настройках появился раздел «Сайты», где для точных доменов (github.com) и поддоменов (*.github.com) можно отдельно задать автопереключение раскладки, исправление опечаток, автозамену сниппетов, предпочтительную раскладку (RU/EN) и режим исключения (мягкий/выкл.) с наследованием через «Наследовать».",

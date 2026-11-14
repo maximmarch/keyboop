@@ -1139,6 +1139,7 @@ final class DetailVC: NSViewController {
     private weak var sitesDeleteBtn: NSButton?
     private weak var sitesApplyCurrentBtn: NSButton?
     private var siteRuleEditorController: SiteRuleEditorController?
+    private var snippetTemplateEditorController: SnippetTemplateEditorController?
     private var siteObserversInstalled = false
     private let docView = FlippedView()
     private let column = FlippedView()           // колонка контента с ограниченной шириной
@@ -2436,8 +2437,37 @@ final class DetailVC: NSViewController {
         }
     }
 
+    private func openSnippetTemplateEditor(editing: SnippetV2?) {
+        guard let hostWindow = view.window else { return }
+        let controller = SnippetTemplateEditorController(editing: editing) { saved in
+            do {
+                try SnippetStore.shared.upsert(saved)
+                return nil
+            } catch let err as SnippetStoreError {
+                switch err {
+                case .emptyTrigger:
+                    return L10n.t("snip.tpl.errEmptyTrigger")
+                case .triggerContainsWhitespace:
+                    return L10n.t("snip.tpl.errSpaceTrigger")
+                case .duplicateCanonicalTrigger(_, let existingTrigger):
+                    return L10n.t("snip.tpl.errDupTrigger", existingTrigger)
+                case .invalidTemplateSyntax(let diags):
+                    return diags.first.map(SnippetTemplateEditorController.localizedDiagnostic) ?? L10n.t("snip.tpl.diagUnclosed")
+                }
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        snippetTemplateEditorController = controller
+        controller.presentSheet(over: hostWindow) { [weak self] in
+            self?.snippetTemplateEditorController = nil
+        }
+    }
+
     private func buildSnippets() -> NSView {
-        let editor = SnippetsEditor(frame: .zero)
+        let editor = SnippetsEditor(frame: .zero, onEditSnippet: { [weak self] item in
+            self?.openSnippetTemplateEditor(editing: item)
+        })
         editor.translatesAutoresizingMaskIntoConstraints = false
 
         // Мультивыбор клавиш разворота автозамены (пробел/Enter/Tab). Все сняты → автозамена выключена.
