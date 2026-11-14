@@ -44,16 +44,24 @@ final class Engine: EventTapHandler {
         NSSpellChecker.isAutomaticPeriodSubstitutionEnabled
     }
 
+    private var pendingTypographyAfterFlight = false
+
     /// Единая точка завершения полёта синтетики (все completion'ы конверсий).
     private func endSyntheticFlight() {
         if inFlightRealKeys > 0 {
             kbLog("⚠️ в полёт синтетики вклинились реальные клавиши (\(inFlightRealKeys)) — буфер очищен (страховка)")
             liveFixLast = ""
             buffer.clear()
+            TypographyCoordinator.shared.resetContext()
             inFlightRealKeys = 0
+            pendingTypographyAfterFlight = false
         }
         muted = false
         drainPendingManual()
+        if pendingTypographyAfterFlight {
+            pendingTypographyAfterFlight = false
+            runTypographyTypingPassIfNeeded()
+        }
     }
     /// Когда muted подняли — для сторожа застревания (репорт 24.07: «конверсия перестаёт работать,
     /// пока что-то её не оживит»). Если completion синтетики по любой причине не пришёл, muted
@@ -281,6 +289,12 @@ final class Engine: EventTapHandler {
                 self?.refreshContextSnapshot()
             }
             NotificationCenter.default.addObserver(
+                forName: .keyboopTypographySettingsChanged,
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.refreshContextSnapshot()
+            }
+            NotificationCenter.default.addObserver(
                 forName: UserDefaults.didChangeNotification,
                 object: UserDefaults.standard, queue: .main
             ) { [weak self] _ in
@@ -491,6 +505,7 @@ final class Engine: EventTapHandler {
         caretJumpedSinceClear = true
         backspaceSinceJump = false
         buffer.clear()
+        TypographyCoordinator.shared.resetContext()
         UndoLearner.shared.resetContext()
         antiResonance.resetHistory()      // новый контекст — история конверсий неактуальна (заморозка по таймеру сама истечёт)
         pendingContextClear = false
@@ -578,7 +593,7 @@ final class Engine: EventTapHandler {
         // в 0.2.60) — теперь логируем ПЕРЕХОДЫ и находим держателя (pid из ioreg, асинхронно).
         if IsSecureEventInputEnabled() {
             noteSecureInput(true)
-            liveFixLast = ""; buffer.clear(); pendingContextClear = false; return false
+            liveFixLast = ""; buffer.clear(); TypographyCoordinator.shared.resetContext(); pendingContextClear = false; return false
         }
         noteSecureInput(false)
 
@@ -595,6 +610,7 @@ final class Engine: EventTapHandler {
             // Активация чужого приложения (каретка НЕ двигалась): мягкий сброс — забываем завершённый
             // контекст, но СОХРАНЯЕМ набираемое слово (иначе сиротили бы окончание → «ть»→«nm», 29.06).
             buffer.softContextReset()
+            TypographyCoordinator.shared.resetContext()
             antiResonance.resetHistory()
             pendingSoftReset = false
         }
@@ -614,10 +630,12 @@ final class Engine: EventTapHandler {
             // ⌥⌫ / ⌘⌫ стирают слово или строку целиком — мы не знаем сколько, сбрасываем контекст.
             if optOrCmd {
                 buffer.clear()
+                TypographyCoordinator.shared.resetContext()
                 wordEdited = false                   // слово/строка стёрты целиком — следующее слово свежее
                 UndoLearner.shared.resetContext()    // ⌥⌫/⌘⌫ стёрли слово/строку — контекст потерян
             } else {
                 buffer.backspace()
+                TypographyCoordinator.shared.applyBackspace(eraseAllWord: false)
                 wordEdited = true                    // юзер правит слово внутри → live-fix молчит до границы
                 if caretJumpedSinceClear { backspaceSinceJump = true }   // правка после клика, см. задачу 187
                 UndoLearner.shared.observe(current: buffer.currentWord)   // U2: следим за стиранием нашего вывода
@@ -688,6 +706,7 @@ final class Engine: EventTapHandler {
                 return true   // Enter проглочен — уйдёт синтетикой строго после замены
             }
             buffer.boundary(ws, at: eventTime)
+            TypographyCoordinator.shared.appendBoundary(ws)
             // Space/Tab/Enter — тоже реальный текстовый ввод. Раньше Fence B видел только буквы,
             // поэтому второй пробел внутри синтетической замены оставлял модель буфера ложной.
             if muted { inFlightRealKeys += 1 }
@@ -741,6 +760,7 @@ final class Engine: EventTapHandler {
                     kbLog("раскладка: мнение разошлось с системой — принял реальность; слово пропущено (декод был чужой раскладкой)")
                     self.liveFixLast = ""
                     self.buffer.clear()
+                    TypographyCoordinator.shared.resetContext()
                     return
                 }
                 if !canAutoAtBoundary {
@@ -748,6 +768,8 @@ final class Engine: EventTapHandler {
                         self.fixTwoLeadingCaps(word: item.word, item: item)
                         self.fixTypo(word: item.word, item: item)
                     }
+                    self.pendingTypographyAfterFlight = self.muted
+                    if !self.muted { self.runTypographyTypingPassIfNeeded() }
                     return
                 }
                 guard !Pause.active else { return }
@@ -758,11 +780,17 @@ final class Engine: EventTapHandler {
                 if ProcessInfo.processInfo.systemUptime - self.lastRealKeyAt < 0.025 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
                         guard let self else { return }
+                        self.pendingTypographyAfterFlight = false
                         self.convertFromBuffer(manual: false, soft: effectiveMode == "soft")
+                        self.pendingTypographyAfterFlight = self.muted
+                        if !self.muted { self.runTypographyTypingPassIfNeeded() }
                     }
                     return
                 }
+                self.pendingTypographyAfterFlight = false
                 self.convertFromBuffer(manual: false, soft: effectiveMode == "soft")
+                self.pendingTypographyAfterFlight = self.muted
+                if !self.muted { self.runTypographyTypingPassIfNeeded() }
             }
             if (keyCode == 48 || keyCode == 36) && !shortcutSpace {
                 FocusLayoutPredictor.shared.schedulePredict(reason: .focusKey, delay: 0.09)
@@ -780,19 +808,21 @@ final class Engine: EventTapHandler {
             // не то, что человек видит подсвеченным, и конвертируется СОСЕДНЕЕ слово. Человек при
             // этом уверен, что попросил починить выделенное.
             if flags.contains(.maskShift) {
-                buffer.clear(); UndoLearner.shared.resetContext()
+                buffer.clear(); TypographyCoordinator.shared.resetContext(); UndoLearner.shared.resetContext()
             } else if settings.arrowsCancel {
-                buffer.clear(); UndoLearner.shared.resetContext()
+                buffer.clear(); TypographyCoordinator.shared.resetContext(); UndoLearner.shared.resetContext()
             }
         case 53, 117, 115, 116, 119, 121:
             // Esc, Fwd-Delete, Home/End/PageUp/PageDown → навигация, всегда сбрасываем контекст
             liveFixLast = ""
             wordEdited = false
             buffer.clear()
+            TypographyCoordinator.shared.resetContext()
             UndoLearner.shared.resetContext()
         default:
             if cmdOrCtrl {
                 liveFixLast = ""; wordEdited = false; buffer.clear()
+                TypographyCoordinator.shared.resetContext()
                 if flags.contains(.maskCommand) && Self.focusJumpKeyCodes.contains(keyCode) {
                     FocusLayoutPredictor.shared.schedulePredict(reason: .focusKey, delay: 0.09)
                 }
@@ -809,7 +839,14 @@ final class Engine: EventTapHandler {
                                               flags: flags, post: post) { return true }
                 if muted { inFlightRealKeys += 1 }   // клавиша легла внутрь зоны замены (Fence B)
                 buffer.append(characters)
+                TypographyCoordinator.shared.appendTypedText(characters)
                 UndoLearner.shared.observe(current: buffer.currentWord)   // U2: перенабор оригинала = откат
+                // Умная типографика для завершающей пунктуации и закрывающих кавычек/скобок (KB-021).
+                if resolvedContext.effectiveTypography && !Pause.active && Self.shouldTriggerTypographyOnPrintable(characters) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+                        self?.runTypographyTypingPassIfNeeded()
+                    }
+                }
                 // «На лету» → «на паузе» (репорт 24.07: «привет» перепечатался сам в себя со звуком,
                 // «црфе» осталась). Немедленный live-fix ПОД быстрый набор — генератор рассинхрона:
                 // синтетика замены (backspace-ы + перепечатка) летит через ту же очередь событий, и
@@ -1305,6 +1342,8 @@ final class Engine: EventTapHandler {
         // Модель — синхронно (следующая клавиша обязана видеть верный буфер).
         buffer.append(pendingChar)
         buffer.applyConversion(converted: converted)
+        TypographyCoordinator.shared.appendTypedText(pendingChar)
+        TypographyCoordinator.shared.replaceTail(oldSuffix: candidate, newSuffix: converted)
         liveFixLast = converted
         // Хвост: всё, что нельзя в колбэке.
         DispatchQueue.main.async { [weak self] in
@@ -1671,6 +1710,7 @@ final class Engine: EventTapHandler {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.muted = false; self?.drainPendingManual() }
         }
         buffer.clear()
+        TypographyCoordinator.shared.resetContext()
         kbLog("регистр: \(text.count) симв. → \(toUpper ? "ЗАГЛАВНЫЕ" : "строчные") (\(usedSynth ? "печатью" : "через AX")) в \(Engine.frontmostBundleID())")
     }
 
@@ -1678,6 +1718,63 @@ final class Engine: EventTapHandler {
     /// регистр весь документ по случайному нажатию человек нам не простит, а отменить это одним
     /// ⌘Z в приложениях, куда мы печатаем посимвольно, может не получиться.
     private static let caseChangeMaxChars = 5000
+
+    // MARK: - Умная типографика (KB-021)
+
+    func handleTypographyFormatHotkey() {
+        TypographyCoordinator.shared.formatSelectedText(
+            activeLayoutHint: activeLayoutHintForTypography(),
+            beginSynthetic: { [weak self] in self?.muted = true },
+            endSynthetic: { [weak self] in
+                guard let self else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) {
+                    self.endSyntheticFlight()
+                }
+            }
+        )
+    }
+
+    func handleTypographyUndoHotkey() {
+        let ok = TypographyCoordinator.shared.undoLastTypography(
+            currentBundleID: resolvedContext.bundleID,
+            beginSynthetic: { [weak self] in self?.muted = true },
+            endSynthetic: { [weak self] in
+                guard let self else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) {
+                    self.endSyntheticFlight()
+                }
+            }
+        )
+        if !ok { Sounds.beep() }
+    }
+
+    private func activeLayoutHintForTypography() -> String? {
+        switch layout.currentScript() {
+        case .cyrillic: return "ru"
+        case .latin: return "en"
+        case .other: return nil
+        }
+    }
+
+    private func runTypographyTypingPassIfNeeded() {
+        guard !muted, !Pause.active else { return }
+        TypographyCoordinator.shared.evaluateTypingIfNeeded(
+            resolvedContext: resolvedContext,
+            activeLayoutHint: activeLayoutHintForTypography(),
+            beginSynthetic: { [weak self] in self?.muted = true },
+            endSynthetic: { [weak self] in
+                guard let self else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) {
+                    self.endSyntheticFlight()
+                }
+            }
+        )
+    }
+
+    private static func shouldTriggerTypographyOnPrintable(_ s: String) -> Bool {
+        guard s.count == 1, let ch = s.first else { return false }
+        return ch == "\"" || ch == "'" || ch == ")" || ch == "." || ch == "," || ch == "!" || ch == "?" || ch == ";" || ch == ":"
+    }
 
     // MARK: - Конвертация
 
@@ -2044,13 +2141,19 @@ final class Engine: EventTapHandler {
             DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
         }
         let tailT0 = CACurrentMediaTime()
-        if manual { buffer.applyConversion(converted: converted) }
-        else {
+        if manual {
+            buffer.applyConversion(converted: converted)
+            TypographyCoordinator.shared.replaceTail(oldSuffix: word, newSuffix: converted)
+        } else {
             buffer.applyCompletedConversion(converted: converted)       // огрызок следующего слова не трогаем (C2)
             if preservedDoubleSpacePeriod {
                 buffer.applyCompletedTail(completedTail)
                 kbLog("двойной пробел: системная точка сохранена при boundary-конверсии")
             }
+            TypographyCoordinator.shared.replaceTail(
+                oldSuffix: word + item.tail,
+                newSuffix: converted + replacementTail
+            )
         }
         // Обучение на отмене: авто-конверсия → кандидат на откат; ручной ре-флип, отменяющий нашу
         // недавнюю авто-конверсию (U1), — засчитываем как откат.
@@ -2154,6 +2257,7 @@ final class Engine: EventTapHandler {
             DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
         }
         buffer.applyCompletedConversion(converted: fixed)
+        TypographyCoordinator.shared.replaceTail(oldSuffix: word + item.tail, newSuffix: fixed + item.tail)
     }
 
     /// ОПЕЧАТКА В СЛОВЕ: «тедефон» → «телефон» (задача 114). Стоит ровно там же, где правка двух
@@ -2205,6 +2309,7 @@ final class Engine: EventTapHandler {
             DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
         }
         buffer.applyCompletedConversion(converted: fixed)
+        TypographyCoordinator.shared.replaceTail(oldSuffix: word + item.tail, newSuffix: fixed + item.tail)
         return true
     }
 
@@ -2260,6 +2365,7 @@ final class Engine: EventTapHandler {
             DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
         }
         buffer.applyCompletedConversion(converted: fixed)
+        TypographyCoordinator.shared.replaceTail(oldSuffix: word + item.tail, newSuffix: fixed + item.tail)
     }
 
     /// ЧИСТОЕ авто-решение для слова (без побочных эффектов): текст замены + направление + признак
@@ -2409,6 +2515,7 @@ final class Engine: EventTapHandler {
         }
         buffer.applyConversion(converted: fixed)
         buffer.boundary("\n")
+        TypographyCoordinator.shared.replaceTail(oldSuffix: word, newSuffix: fixed + "\n")
         return true
     }
 
@@ -2437,6 +2544,7 @@ final class Engine: EventTapHandler {
         if layout.reconcileWithReality() {
             kbLog("enter-pre: раскладка разошлась с мнением — Enter пропущен без конверсии")
             liveFixLast = ""; buffer.clear()
+            TypographyCoordinator.shared.resetContext()
             return false
         }
         // ⚠️ КЭШИ, НЕ NSWorkspace (01.08). Это САМЫЙ горячий путь проекта: enter-pre выполняется
@@ -2474,7 +2582,7 @@ final class Engine: EventTapHandler {
         // раскладки выше + анти-резонансом ниже; его фантомный риск низкий (слово не завершено,
         // модель им ещё владеет).
         guard antiResonance.allow(word: word, produced: prop.text) else {
-            liveFixLast = ""; buffer.clear(); return false   // резонанс — разрываем цикл, Enter пропускаем
+            liveFixLast = ""; buffer.clear(); TypographyCoordinator.shared.resetContext(); return false   // резонанс — разрываем цикл, Enter пропускаем
         }
         muted = true
         kbLog("\(prop.rescue ? "mixed-rescue" : "convert-word")(enter-pre): \(word.count) симв. → \(prop.toCyrillic ? "RU" : "EN")")   // без контента
@@ -2485,6 +2593,7 @@ final class Engine: EventTapHandler {
         }
         buffer.applyConversion(converted: prop.text)   // экран после замены = converted
         buffer.boundary("\n")                          // граница в модели: Enter уйдёт нашей синтетикой
+        TypographyCoordinator.shared.replaceTail(oldSuffix: word, newSuffix: prop.text + "\n")
         if !prop.rescue { UndoLearner.shared.noteConversion(original: word, converted: prop.text) }
 
         // ⚠️ ХВОСТ ЭТОГО МЕТОДА — САМОЕ ГОРЯЧЕЕ МЕСТО В ПРОЕКТЕ (правка 29.07).
@@ -2699,6 +2808,7 @@ final class Engine: EventTapHandler {
         }
         buffer.commitSnippet(expansion: expansion, whitespace: ws)   // буфер: триггер→раскрытие, затем граница
         buffer.invalidateGroupHistory()   // сниппет изменил длину экрана не 1:1 → группа недействительна (G1)
+        TypographyCoordinator.shared.replaceTail(oldSuffix: trigger, newSuffix: body + glue)
         // ⚠️ ЗВУК И ЛОГ — С КОЛБЭКА ДОЛОЙ (01.08). `playSound()` создаёт NSSound, и первый вызов
         // ЧИТАЕТ ФАЙЛ С ДИСКА (/System/Library/Sounds или наш ресурс) прямо внутри окна, которое
         // WindowServer нам отмеряет. От звука и строки лога не зависит ни одно следующее событие,
@@ -2746,10 +2856,12 @@ final class Engine: EventTapHandler {
                     TextReplacer.insert(" ") { [weak self] in
                         guard let self else { return }
                         self.buffer.boundary(" ")
+                        TypographyCoordinator.shared.appendBoundary(" ")
                         self.endSyntheticFlight()
                     }
                 } else {
                     self.buffer.clear()
+                    TypographyCoordinator.shared.resetContext()
                     self.endSyntheticFlight()
                 }
                 return
@@ -2763,6 +2875,7 @@ final class Engine: EventTapHandler {
                 DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
             }
             self.buffer.commitSnippet(expansion: body, whitespace: glue)
+            TypographyCoordinator.shared.replaceTail(oldSuffix: trigger, newSuffix: body + glue)
             self.buffer.invalidateGroupHistory()
             self.playSound()
             kbLog("snippet-tpl: \(trigger.count)→\(body.count) симв., граница проглочена")
@@ -2780,8 +2893,10 @@ final class Engine: EventTapHandler {
             if let outcome {
                 if outcome.glue.isEmpty {
                     self.buffer.clear()
+                    TypographyCoordinator.shared.resetContext()
                 } else {
                     self.buffer.commitSnippet(expansion: outcome.insertedText, whitespace: outcome.glue)
+                    TypographyCoordinator.shared.replaceTail(oldSuffix: trigger, newSuffix: outcome.insertedText + outcome.glue)
                 }
                 self.buffer.invalidateGroupHistory()
                 self.playSound()
@@ -2789,8 +2904,10 @@ final class Engine: EventTapHandler {
                 // При отмене или отказе вставки по проверке контекста: не повторяем триггер на следующем пробеле.
                 if ws == " " {
                     self.buffer.boundary(" ")
+                    TypographyCoordinator.shared.appendBoundary(" ")
                 } else {
                     self.buffer.clear()
+                    TypographyCoordinator.shared.resetContext()
                 }
             }
         }

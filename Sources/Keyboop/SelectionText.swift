@@ -59,6 +59,20 @@ enum SelectionText {
         return nil
     }
 
+    /// Строгое чтение выделения ТОЛЬКО через Accessibility API без каких-либо обращений к буферу обмена (KB-021 FR-07).
+    static func readAXOnly() -> (text: String, writeBack: ((String) -> Bool)?)? {
+        lastCopyLooksLikeCanvasNode = false
+        lastReadRefusedMultiline = false
+        guard let (element, text) = readAX() else { return nil }
+        let owner = ownerApp(of: element)
+        let path = axWritePath(gecko: isGecko(bundleID: owner.bid, bundleURL: owner.url), text: text)
+        if path == .refuse {
+            lastReadRefusedMultiline = true
+            kbLog("selection-ax: отказ для \(owner.bid): \(geckoRefusalReason(text))")
+        }
+        return (text, makeWriteBack(path, element: element, original: text))
+    }
+
     private static func readAX() -> (element: AXUIElement, text: String)? {
         let sys = AXUIElementCreateSystemWide()
         var focused: CFTypeRef?

@@ -30,6 +30,10 @@ protocol EventTapHandler: AnyObject {
     func handleCaseHotkey()
     /// Вставить текст последней диктовки туда, где сейчас каретка (задача 242).
     func handlePasteDictationHotkey()
+    /// Исправить типографику выделенного текста (KB-021 FR-07).
+    func handleTypographyFormatHotkey()
+    /// Отменить последнее типографическое преобразование (KB-021 FR-09).
+    func handleTypographyUndoHotkey()
 }
 
 /// Глобальный наблюдатель клавиатуры (CGEventTap, АКТИВНЫЙ `.defaultTap` — нужен Accessibility,
@@ -748,6 +752,26 @@ final class EventTap {
                     // повторы тоже — иначе из-под зажатого сочетания посыплется сама буква.
                     if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
                         onMain { [weak self] in self?.handler?.handlePasteDictationHotkey() }
+                    }
+                    return swallowDown(keyCode)
+                }
+            }
+            // Умная типографика выделенного текста и отмена последнего автоформатирования (KB-021).
+            let ts = TypographySettingsStore.shared
+            if ts.formatHotkeyEnabled, keyMatches(keyCode, ts.formatKeyCode) {
+                let want = relevantMods(CGEventFlags(rawValue: ts.formatModifiers))
+                if !want.isEmpty, relevantMods(event.flags) == want {
+                    if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                        onMain { [weak self] in self?.handler?.handleTypographyFormatHotkey() }
+                    }
+                    return swallowDown(keyCode)
+                }
+            }
+            if ts.undoHotkeyEnabled, keyMatches(keyCode, ts.undoKeyCode) {
+                let want = relevantMods(CGEventFlags(rawValue: ts.undoModifiers))
+                if !want.isEmpty, relevantMods(event.flags) == want {
+                    if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                        onMain { [weak self] in self?.handler?.handleTypographyUndoHotkey() }
                     }
                     return swallowDown(keyCode)
                 }

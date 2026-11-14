@@ -491,6 +491,12 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         case .pasteDictation:
             c = ("pasteDictation", s.pasteDictationEnabled, "key", s.pasteDictationKeyCode,
                  s.pasteDictationModifiers, "")
+        case .typographyFormat:
+            let t = TypographySettingsStore.shared
+            c = ("typoFormat", t.formatHotkeyEnabled, "key", t.formatKeyCode, t.formatModifiers, "")
+        case .typographyUndo:
+            let t = TypographySettingsStore.shared
+            c = ("typoUndo", t.undoHotkeyEnabled, "key", t.undoKeyCode, t.undoModifiers, "")
         }
         let combo = "\(c.mode)/\(c.keyCode)/\(c.mods)"
         return "\(c.key)=" + (c.on ? combo : "выкл(\(combo))") + c.tail

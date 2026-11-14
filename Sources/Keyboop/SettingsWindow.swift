@@ -63,7 +63,7 @@ enum SettingsSection: Int, CaseIterable {
     /// функции, потом система, потом «про нас». Голосовой набор стоит третьим, а не пятым: это
     /// второй двигатель приложения и первая тема по числу отзывов (21 из 73 содержательных).
     /// `rawValue` нигде не сохраняется, поэтому переставлять здесь безопасно.
-    case switching, exceptions, sites, ambiguous, voice, snippets, translate, general, updates, privacy, about
+    case switching, exceptions, sites, ambiguous, voice, snippets, typography, translate, general, updates, privacy, about
 
     /// Что показываем в левом меню. «Спорные слова» — подстраница «Исключений» (кнопка внутри):
     /// в меню это был бы одиннадцатый пункт ради списка, который открывают раз в жизни.
@@ -83,6 +83,7 @@ enum SettingsSection: Int, CaseIterable {
         case .sites:      return "sec.sites"
         case .ambiguous:  return "sec.ambiguous"
         case .snippets:   return "sec.snippets"
+        case .typography: return "sec.typography"
         case .translate:  return "sec.translate"
         case .voice:      return "sec.voice"
         case .general:    return "sec.general"
@@ -98,6 +99,7 @@ enum SettingsSection: Int, CaseIterable {
         case .sites:      return "globe"
         case .ambiguous:  return "arrow.left.arrow.right"
         case .snippets:   return "wand.and.stars"
+        case .typography: return "textformat.abc"
         case .translate:  return "character.bubble"
         case .voice:      return "mic"
         case .general:    return "gearshape"
@@ -1377,6 +1379,7 @@ final class DetailVC: NSViewController {
         case .sites:      built = buildSites()
         case .ambiguous:  built = buildAmbiguous()
         case .snippets:   built = buildSnippets()
+        case .typography: built = buildTypography()
         case .translate:  built = buildTranslate()
         case .voice:      built = buildVoice()
         case .general:    built = buildGeneral()
@@ -2621,6 +2624,263 @@ final class DetailVC: NSViewController {
     @objc private func toggleSnipSpace(_ s: NSButton) { settings.snippetExpandSpace = (s.state == .on); refreshSnipDisabled() }
     @objc private func toggleSnipEnter(_ s: NSButton) { settings.snippetExpandEnter = (s.state == .on); refreshSnipDisabled() }
     @objc private func toggleSnipTab(_ s: NSButton)   { settings.snippetExpandTab   = (s.state == .on); refreshSnipDisabled() }
+
+    private weak var typoModePopup: NSPopUpButton?
+    private weak var typoRulesList: TypographyRuleCheckListView?
+
+    static let typoFormatPresets: [(String, Int, UInt64)] = [
+        ("⌃⌥T", 17, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
+        ("⌃⇧T", 17, CGEventFlags([.maskControl, .maskShift]).rawValue),
+        ("⌥⌘T", 17, CGEventFlags([.maskAlternate, .maskCommand]).rawValue),
+    ]
+
+    static let typoUndoPresets: [(String, Int, UInt64)] = [
+        ("⌃⌥Z", 6, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
+        ("⌃⇧Z", 6, CGEventFlags([.maskControl, .maskShift]).rawValue),
+        ("⌃⌥⌫", 51, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
+    ]
+
+    private func buildTypography() -> NSView {
+        let store = TypographySettingsStore.shared
+
+        let modePop = NSPopUpButton()
+        modePop.addItems(withTitles: [
+            L10n.t("typo.mode.minimal"),
+            L10n.t("typo.mode.standard"),
+            L10n.t("typo.mode.custom"),
+        ])
+        switch store.mode {
+        case .minimal:  modePop.selectItem(at: 0)
+        case .standard: modePop.selectItem(at: 1)
+        case .custom:   modePop.selectItem(at: 2)
+        }
+        modePop.target = self
+        modePop.action = #selector(typoModeChanged(_:))
+        typoModePopup = modePop
+
+        let langPop = NSPopUpButton()
+        langPop.addItems(withTitles: [
+            L10n.t("typo.lang.auto"),
+            L10n.t("typo.lang.ru"),
+            L10n.t("typo.lang.en"),
+        ])
+        switch store.language {
+        case .auto: langPop.selectItem(at: 0)
+        case .ru:   langPop.selectItem(at: 1)
+        case .en:   langPop.selectItem(at: 2)
+        }
+        langPop.target = self
+        langPop.action = #selector(typoLangChanged(_:))
+
+        let fmtPop = NSPopUpButton()
+        var fmtTitles = Self.typoFormatPresets.map(\.0)
+        var fmtSel = Self.typoFormatPresets.firstIndex {
+            $0.1 == store.formatKeyCode && $0.2 == store.formatModifiers
+        }
+        if fmtSel == nil, store.formatHotkeyEnabled, !store.formatKeyLabel.isEmpty {
+            fmtTitles.append(store.formatKeyLabel)
+            fmtSel = fmtTitles.count - 1
+        }
+        fmtPop.addItems(withTitles: fmtTitles + [L10n.t("snip.pickCustom")])
+        fmtPop.selectItem(at: fmtSel ?? 0)
+        fmtPop.target = self
+        fmtPop.action = #selector(typoFormatComboChanged(_:))
+
+        var fmtRows: [NSView] = [
+            switchRow(L10n.t("typo.hotkey.format"), L10n.t("typo.hotkey.formatSub"), store.formatHotkeyEnabled,
+                      #selector(toggleTypoFormatHotkey(_:)), key: "typo.hotkey.format"),
+        ]
+        if store.formatHotkeyEnabled {
+            fmtRows.append(controlRow(L10n.t("typo.hotkey.combo"), fmtPop, key: "typo.hotkey.combo"))
+        }
+
+        let undoPop = NSPopUpButton()
+        var undoTitles = Self.typoUndoPresets.map(\.0)
+        var undoSel = Self.typoUndoPresets.firstIndex {
+            $0.1 == store.undoKeyCode && $0.2 == store.undoModifiers
+        }
+        if undoSel == nil, store.undoHotkeyEnabled, !store.undoKeyLabel.isEmpty {
+            undoTitles.append(store.undoKeyLabel)
+            undoSel = undoTitles.count - 1
+        }
+        undoPop.addItems(withTitles: undoTitles + [L10n.t("snip.pickCustom")])
+        undoPop.selectItem(at: undoSel ?? 0)
+        undoPop.target = self
+        undoPop.action = #selector(typoUndoComboChanged(_:))
+
+        var undoRows: [NSView] = [
+            switchRow(L10n.t("typo.hotkey.undo"), L10n.t("typo.hotkey.undoSub"), store.undoHotkeyEnabled,
+                      #selector(toggleTypoUndoHotkey(_:)), key: "typo.hotkey.undo"),
+        ]
+        if store.undoHotkeyEnabled {
+            undoRows.append(controlRow(L10n.t("typo.hotkey.undoCombo"), undoPop, key: "typo.hotkey.undoCombo"))
+        }
+
+        let rulesView = TypographyRuleCheckListView()
+        typoRulesList = rulesView
+        rulesView.onChanged = { [weak self] in
+            switch TypographySettingsStore.shared.mode {
+            case .minimal:  self?.typoModePopup?.selectItem(at: 0)
+            case .standard: self?.typoModePopup?.selectItem(at: 1)
+            case .custom:   self?.typoModePopup?.selectItem(at: 2)
+            }
+        }
+        let rulesBox = NSStackView(views: [rulesView])
+        rulesBox.orientation = .vertical
+        rulesBox.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+
+        let excView = TypographyExcludedAppsView()
+        let excBox = NSStackView(views: [excView])
+        excBox.orientation = .vertical
+        excBox.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+
+        let sandboxView = TypographySandboxView()
+        let sandboxBox = NSStackView(views: [sandboxView])
+        sandboxBox.orientation = .vertical
+        sandboxBox.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+
+        return vstack([
+            blockTitle("typo.title"),
+            sub(L10n.t("typo.sub")),
+            group(DS.itemGap - 6),
+            card([
+                switchRow(L10n.t("typo.enabled"), L10n.t("typo.enabledSub"), store.enabled,
+                          #selector(toggleTypographyEnabled(_:)), key: "typo.enabled"),
+                controlRow(L10n.t("typo.mode"), modePop, subtitle: L10n.t("typo.modeSub"), key: "typo.mode"),
+                controlRow(L10n.t("typo.lang"), langPop, key: "typo.lang"),
+                switchRow(L10n.t("typo.preview"), L10n.t("typo.previewSub"), store.showSelectionPreview,
+                          #selector(toggleTypographyPreview(_:)), key: "typo.preview"),
+            ]),
+            group(DS.itemGap),
+            sectionTitle(L10n.t("typo.sec.hotkeys")),
+            card(fmtRows + undoRows),
+            group(DS.itemGap),
+            sectionTitle(L10n.t("typo.sec.rules")),
+            card([rulesBox], vPad: 2),
+            group(DS.itemGap),
+            sectionTitle(L10n.t("typo.sec.exclusions")),
+            card([excBox], vPad: 2),
+            group(DS.itemGap),
+            sectionTitle(L10n.t("typo.sec.sandbox")),
+            card([sandboxBox], vPad: 2),
+        ])
+    }
+
+    @objc private func toggleTypographyEnabled(_ s: NSSwitch) {
+        TypographySettingsStore.shared.enabled = (s.state == .on)
+        reshow()
+    }
+
+    @objc private func toggleTypographyPreview(_ s: NSSwitch) {
+        TypographySettingsStore.shared.showSelectionPreview = (s.state == .on)
+    }
+
+    @objc private func typoModeChanged(_ p: NSPopUpButton) {
+        let modes: [TypographyMode] = [.minimal, .standard, .custom]
+        let idx = max(0, min(modes.count - 1, p.indexOfSelectedItem))
+        TypographySettingsStore.shared.mode = modes[idx]
+        typoRulesList?.reloadStates()
+    }
+
+    @objc private func typoLangChanged(_ p: NSPopUpButton) {
+        let langs: [TypographyLanguageMode] = [.auto, .ru, .en]
+        let idx = max(0, min(langs.count - 1, p.indexOfSelectedItem))
+        TypographySettingsStore.shared.language = langs[idx]
+    }
+
+    @objc private func toggleTypoFormatHotkey(_ sw: NSSwitch) {
+        let store = TypographySettingsStore.shared
+        if sw.state == .on {
+            let free = Self.typoFormatPresets.first {
+                HotkeyGuard.ourBusy(mode: "key", keyCode: $0.1, mods: $0.2, excluding: .typographyFormat) == nil
+            }
+            guard let preset = free else {
+                sw.state = .off
+                HotkeyGuard.busyAlert(L10n.t("is.busy.snippetNoFree"))
+                return
+            }
+            store.formatKeyCode = preset.1
+            store.formatModifiers = preset.2
+            store.formatKeyLabel = preset.0
+        } else {
+            store.formatKeyCode = -1
+            store.formatModifiers = 0
+            store.formatKeyLabel = ""
+        }
+        NotificationCenter.default.post(name: .keyboopTypographySettingsChanged, object: store)
+        reshow()
+    }
+
+    @objc private func typoFormatComboChanged(_ p: NSPopUpButton) {
+        let i = p.indexOfSelectedItem
+        if i == p.numberOfItems - 1 {
+            startHotkeyRecording(what: L10n.t("hkrec.what.typoFormat"), slot: .typographyFormat) { code, mods, label in
+                let store = TypographySettingsStore.shared
+                store.formatKeyCode = code
+                store.formatModifiers = mods.rawValue
+                store.formatKeyLabel = label
+                NotificationCenter.default.post(name: .keyboopTypographySettingsChanged, object: store)
+            }
+            return
+        }
+        guard i >= 0, i < Self.typoFormatPresets.count else { return }
+        let preset = Self.typoFormatPresets[i]
+        if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: preset.1, mods: preset.2, excluding: .typographyFormat) {
+            HotkeyGuard.busyAlert(busy); reshow(); return
+        }
+        let store = TypographySettingsStore.shared
+        store.formatKeyCode = preset.1
+        store.formatModifiers = preset.2
+        store.formatKeyLabel = preset.0
+        NotificationCenter.default.post(name: .keyboopTypographySettingsChanged, object: store)
+    }
+
+    @objc private func toggleTypoUndoHotkey(_ sw: NSSwitch) {
+        let store = TypographySettingsStore.shared
+        if sw.state == .on {
+            let free = Self.typoUndoPresets.first {
+                HotkeyGuard.ourBusy(mode: "key", keyCode: $0.1, mods: $0.2, excluding: .typographyUndo) == nil
+            }
+            guard let preset = free else {
+                sw.state = .off
+                HotkeyGuard.busyAlert(L10n.t("is.busy.snippetNoFree"))
+                return
+            }
+            store.undoKeyCode = preset.1
+            store.undoModifiers = preset.2
+            store.undoKeyLabel = preset.0
+        } else {
+            store.undoKeyCode = -1
+            store.undoModifiers = 0
+            store.undoKeyLabel = ""
+        }
+        NotificationCenter.default.post(name: .keyboopTypographySettingsChanged, object: store)
+        reshow()
+    }
+
+    @objc private func typoUndoComboChanged(_ p: NSPopUpButton) {
+        let i = p.indexOfSelectedItem
+        if i == p.numberOfItems - 1 {
+            startHotkeyRecording(what: L10n.t("hkrec.what.typoUndo"), slot: .typographyUndo) { code, mods, label in
+                let store = TypographySettingsStore.shared
+                store.undoKeyCode = code
+                store.undoModifiers = mods.rawValue
+                store.undoKeyLabel = label
+                NotificationCenter.default.post(name: .keyboopTypographySettingsChanged, object: store)
+            }
+            return
+        }
+        guard i >= 0, i < Self.typoUndoPresets.count else { return }
+        let preset = Self.typoUndoPresets[i]
+        if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: preset.1, mods: preset.2, excluding: .typographyUndo) {
+            HotkeyGuard.busyAlert(busy); reshow(); return
+        }
+        let store = TypographySettingsStore.shared
+        store.undoKeyCode = preset.1
+        store.undoModifiers = preset.2
+        store.undoKeyLabel = preset.0
+        NotificationCenter.default.post(name: .keyboopTypographySettingsChanged, object: store)
+    }
 
     /// Приватность — чистая страница доверия (только манифест, без посторонних контролов).
     private func buildPrivacy() -> NSView {
@@ -6395,10 +6655,11 @@ private final class SiteRulesTableView: NSView, NSTableViewDataSource, NSTableVi
         translatesAutoresizingMaskIntoConstraints = false
 
         let cols: [(id: String, titleKey: String, w: CGFloat)] = [
-            ("site", "sites.col.site", 205),
-            ("typo", "sites.col.typo", 145),
-            ("layout", "sites.col.layout", 105),
-            ("snippets", "sites.col.snippets", 105)
+            ("site", "sites.col.site", 180),
+            ("typo", "sites.col.typo", 125),
+            ("layout", "sites.col.layout", 90),
+            ("snippets", "sites.col.snippets", 85),
+            ("typography", "sites.col.typography", 95)
         ]
         for colSpec in cols {
             let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(colSpec.id))
@@ -6508,6 +6769,8 @@ private final class SiteRulesTableView: NSView, NSTableViewDataSource, NSTableVi
             text = formatLayoutColumn(for: rule)
         case "snippets":
             text = formatToggle(rule.snippets)
+        case "typography":
+            text = formatToggle(rule.typography)
         default:
             text = ""
         }
@@ -6582,6 +6845,7 @@ private final class SiteRuleEditorController: NSObject, NSTextFieldDelegate {
     private let autoSwitchPop = NSPopUpButton()
     private let typoFixPop = NSPopUpButton()
     private let snippetsPop = NSPopUpButton()
+    private let typographyPop = NSPopUpButton()
     private let layoutPop = NSPopUpButton()
     private let modePop = NSPopUpButton()
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
@@ -6614,12 +6878,13 @@ private final class SiteRuleEditorController: NSObject, NSTextFieldDelegate {
         browserPop.selectItem(at: b == .chrome ? 1 : 0)
 
         let toggleTitles = [L10n.t("sites.val.inherit"), L10n.t("sites.val.on"), L10n.t("sites.val.off")]
-        for pop in [autoSwitchPop, typoFixPop, snippetsPop] {
+        for pop in [autoSwitchPop, typoFixPop, snippetsPop, typographyPop] {
             pop.addItems(withTitles: toggleTitles)
         }
         autoSwitchPop.selectItem(at: toggleIndex(editing?.autoSwitch ?? .inherit))
         typoFixPop.selectItem(at: toggleIndex(editing?.typoFix ?? .inherit))
         snippetsPop.selectItem(at: toggleIndex(editing?.snippets ?? .inherit))
+        typographyPop.selectItem(at: toggleIndex(editing?.typography ?? .inherit))
 
         layoutPop.addItems(withTitles: [L10n.t("sites.val.inherit"), L10n.t("sites.val.ru"), L10n.t("sites.val.en")])
         layoutPop.selectItem(at: layoutIndex(editing?.preferredLayout ?? .inherit))
@@ -6665,6 +6930,7 @@ private final class SiteRuleEditorController: NSObject, NSTextFieldDelegate {
             [formLabel(L10n.t("sites.ed.autoSwitch")), autoSwitchPop],
             [formLabel(L10n.t("sites.ed.typoFix")), typoFixPop],
             [formLabel(L10n.t("sites.ed.snippets")), snippetsPop],
+            [formLabel(L10n.t("sites.ed.typography")), typographyPop],
             [formLabel(L10n.t("sites.ed.preferredLayout")), layoutPop],
             [formLabel(L10n.t("sites.ed.exceptionMode")), modePop]
         ])
@@ -6762,6 +7028,7 @@ private final class SiteRuleEditorController: NSObject, NSTextFieldDelegate {
             autoSwitch: toggleValue(autoSwitchPop.indexOfSelectedItem),
             typoFix: toggleValue(typoFixPop.indexOfSelectedItem),
             snippets: toggleValue(snippetsPop.indexOfSelectedItem),
+            typography: toggleValue(typographyPop.indexOfSelectedItem),
             preferredLayout: layoutValue(layoutPop.indexOfSelectedItem),
             exceptionMode: modeValue(modePop.indexOfSelectedItem)
         )

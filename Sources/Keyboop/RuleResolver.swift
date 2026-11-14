@@ -10,6 +10,7 @@ struct ResolvedInputContext: Equatable {
     let effectiveAutoSwitch: Bool
     let effectiveTypoFix: Bool
     let effectiveSnippets: Bool
+    let effectiveTypography: Bool
     let effectiveExceptionMode: String   // "" | "soft" | "off"
     let effectivePreferredLayout: String // "" | "ru" | "en"
     let sitePreferredLayoutExplicit: Bool
@@ -24,6 +25,7 @@ struct ResolvedInputContext: Equatable {
         effectiveAutoSwitch: false,
         effectiveTypoFix: false,
         effectiveSnippets: false,
+        effectiveTypography: false,
         effectiveExceptionMode: "",
         effectivePreferredLayout: "",
         sitePreferredLayoutExplicit: false,
@@ -51,12 +53,46 @@ enum RuleResolver {
         let globalAutoEnabled: Bool
         let globalTypoFixEnabled: Bool
         let globalSnippetsEnabled: Bool
+        let globalTypographyEnabled: Bool
+        let appTypographyExcluded: Bool
         let developerMode: Bool
         let appIsDev: Bool
         let appMode: String          // "" | "soft" | "off"
         let appLayout: String        // "" | "ru" | "en"
         let siteSnapshot: WebsiteContextSnapshot
         let matchedRule: SiteRule?
+
+        init(
+            bundleID: String,
+            secureInput: Bool,
+            pauseActive: Bool,
+            globalAutoEnabled: Bool,
+            globalTypoFixEnabled: Bool,
+            globalSnippetsEnabled: Bool,
+            globalTypographyEnabled: Bool = false,
+            appTypographyExcluded: Bool = false,
+            developerMode: Bool,
+            appIsDev: Bool,
+            appMode: String,
+            appLayout: String,
+            siteSnapshot: WebsiteContextSnapshot,
+            matchedRule: SiteRule?
+        ) {
+            self.bundleID = bundleID
+            self.secureInput = secureInput
+            self.pauseActive = pauseActive
+            self.globalAutoEnabled = globalAutoEnabled
+            self.globalTypoFixEnabled = globalTypoFixEnabled
+            self.globalSnippetsEnabled = globalSnippetsEnabled
+            self.globalTypographyEnabled = globalTypographyEnabled
+            self.appTypographyExcluded = appTypographyExcluded
+            self.developerMode = developerMode
+            self.appIsDev = appIsDev
+            self.appMode = appMode
+            self.appLayout = appLayout
+            self.siteSnapshot = siteSnapshot
+            self.matchedRule = matchedRule
+        }
     }
 
     static func resolve(_ input: Input) -> ResolvedInputContext {
@@ -74,6 +110,7 @@ enum RuleResolver {
                 effectiveAutoSwitch: false,
                 effectiveTypoFix: false,
                 effectiveSnippets: false,
+                effectiveTypography: false,
                 effectiveExceptionMode: "off",
                 effectivePreferredLayout: "",
                 sitePreferredLayoutExplicit: false,
@@ -92,6 +129,7 @@ enum RuleResolver {
                 effectiveAutoSwitch: false,
                 effectiveTypoFix: false,
                 effectiveSnippets: false,
+                effectiveTypography: false,
                 effectiveExceptionMode: input.appMode,
                 effectivePreferredLayout: "",
                 sitePreferredLayoutExplicit: false,
@@ -111,6 +149,7 @@ enum RuleResolver {
                 effectiveAutoSwitch: false,
                 effectiveTypoFix: false,
                 effectiveSnippets: false,
+                effectiveTypography: false,
                 effectiveExceptionMode: "off",
                 effectivePreferredLayout: input.appLayout,
                 sitePreferredLayoutExplicit: false,
@@ -123,6 +162,9 @@ enum RuleResolver {
         let baseAuto = input.globalAutoEnabled
         let baseTypo = input.globalTypoFixEnabled
         let baseSnippets = input.globalSnippetsEnabled
+        let baseTypography = input.globalTypographyEnabled
+            && !input.appTypographyExcluded
+            && !TypographyContextAnalyzer.isDefaultTerminalOrCodeApp(input.bundleID)
         let baseLayout = input.appLayout
 
         // Без активного правила сайта (или не в браузере / домен неизвестен) — уровни 5–6.
@@ -138,6 +180,7 @@ enum RuleResolver {
                 effectiveAutoSwitch: baseAuto,
                 effectiveTypoFix: baseTypo,
                 effectiveSnippets: baseSnippets,
+                effectiveTypography: baseTypography,
                 effectiveExceptionMode: baseMode,
                 effectivePreferredLayout: baseLayout,
                 sitePreferredLayoutExplicit: false,
@@ -190,6 +233,17 @@ enum RuleResolver {
             }
         }
 
+        let effectiveTypography: Bool
+        if siteTurnsOff || input.appTypographyExcluded {
+            effectiveTypography = false
+        } else {
+            switch rule.typography {
+            case .inherit: effectiveTypography = baseTypography
+            case .enable: effectiveTypography = true
+            case .disable: effectiveTypography = false
+            }
+        }
+
         let effectiveLayout: String
         let siteLayoutExplicit: Bool
         switch rule.preferredLayout {
@@ -213,6 +267,7 @@ enum RuleResolver {
             effectiveAutoSwitch: effectiveAuto,
             effectiveTypoFix: effectiveTypo,
             effectiveSnippets: effectiveSnip,
+            effectiveTypography: effectiveTypography,
             effectiveExceptionMode: effectiveMode,
             effectivePreferredLayout: effectiveLayout,
             sitePreferredLayoutExplicit: siteLayoutExplicit,
@@ -223,6 +278,7 @@ enum RuleResolver {
     /// Удобный хелпер для живого состояния приложения.
     static func resolveCurrent(bundleID: String) -> ResolvedInputContext {
         let settings = AppSettings.shared
+        let typoStore = TypographySettingsStore.shared
         let snap = WebsiteContextProvider.shared.snapshot(forBundleID: bundleID)
         let matched: SiteRule?
         if let domain = snap.activeDomain, let browser = snap.activeBrowser {
@@ -237,6 +293,8 @@ enum RuleResolver {
             globalAutoEnabled: settings.autoEnabled,
             globalTypoFixEnabled: settings.typoFix,
             globalSnippetsEnabled: !settings.snippetsDisabled,
+            globalTypographyEnabled: typoStore.enabled,
+            appTypographyExcluded: typoStore.isAppExcluded(bundleID),
             developerMode: settings.developerMode,
             appIsDev: Engine.isDevBundleID(bundleID),
             appMode: Engine.appMode(for: bundleID),

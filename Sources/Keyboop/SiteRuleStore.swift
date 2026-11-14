@@ -64,9 +64,32 @@ struct SiteRule: Codable, Equatable, Identifiable {
     var autoSwitch: SiteRuleToggle
     var typoFix: SiteRuleToggle
     var snippets: SiteRuleToggle
+    var typography: SiteRuleToggle
     var preferredLayout: SitePreferredLayout
     var exceptionMode: SiteExceptionMode
     var updatedAt: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case id, domainPattern, displayName, enabled, browser
+        case autoSwitch, typoFix, snippets, typography
+        case preferredLayout, exceptionMode, updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        domainPattern = try c.decode(String.self, forKey: .domainPattern)
+        displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
+        enabled = try c.decode(Bool.self, forKey: .enabled)
+        browser = try c.decode(SiteBrowser.self, forKey: .browser)
+        autoSwitch = try c.decode(SiteRuleToggle.self, forKey: .autoSwitch)
+        typoFix = try c.decode(SiteRuleToggle.self, forKey: .typoFix)
+        snippets = try c.decode(SiteRuleToggle.self, forKey: .snippets)
+        typography = try c.decodeIfPresent(SiteRuleToggle.self, forKey: .typography) ?? .inherit
+        preferredLayout = try c.decode(SitePreferredLayout.self, forKey: .preferredLayout)
+        exceptionMode = try c.decode(SiteExceptionMode.self, forKey: .exceptionMode)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+    }
 
     init(
         id: UUID = UUID(),
@@ -77,6 +100,7 @@ struct SiteRule: Codable, Equatable, Identifiable {
         autoSwitch: SiteRuleToggle = .inherit,
         typoFix: SiteRuleToggle = .inherit,
         snippets: SiteRuleToggle = .inherit,
+        typography: SiteRuleToggle = .inherit,
         preferredLayout: SitePreferredLayout = .inherit,
         exceptionMode: SiteExceptionMode = .inherit,
         updatedAt: Date = Date()
@@ -90,6 +114,7 @@ struct SiteRule: Codable, Equatable, Identifiable {
         self.autoSwitch = autoSwitch
         self.typoFix = typoFix
         self.snippets = snippets
+        self.typography = typography
         self.preferredLayout = preferredLayout
         self.exceptionMode = exceptionMode
         self.updatedAt = updatedAt

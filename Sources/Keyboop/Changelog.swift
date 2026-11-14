@@ -57,6 +57,19 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        Release(version: "0.5.3",
+            ru: [
+                "Умная типографика (KB-021): консервативное офлайн-форматирование текста при наборе и по команде для выделения — парные русские «ёлочки» (включая вложенные „…“), длинное тире (слово -- слово → слово — слово), неразрывные пробелы U+00A0 и опциональный U+202F перед единицами измерения, валютами и сокращениями (10 кг, 25 %, 100 ₽, 2026 г., № 15), многоточие … и символы © ® ™.",
+                "Защита кода и безопасных контекстов: Keyboop автоматически пропускает терминалы, IDE, блоки кода, ссылки, пути к файлам, ISO-даты и CLI-флаги вроде git commit --amend; добавлены отдельные исключения приложений и настройка типографики на уровне сайтов в разделе «Сайты» (наследовать / включить / выключить).",
+                "Работа с выделением без буфера обмена и точный откат: хоткей форматирования выделенного текста читает и заменяет текст строго через Accessibility с окном предпросмотра «Было / Стало», а отдельное сочетание отмены возвращает точные исходные символы, включая обычный пробел вместо неразрывного.",
+                "Новый раздел настроек «Типографика»: по умолчанию выключен и стартует в безопасном минимальном режиме, включает выбор пресетов и отдельных правил, справку по пробелам U+0020 / U+00A0 / U+202F и изолированную область «Попробовать».",
+            ],
+            en: [
+                "Smart Typography (KB-021): conservative offline formatting while typing and for selected text — paired Russian guillemets «…» (with nested „…“), em-dash (word -- word → word — word), non-breaking spaces U+00A0 (and optional U+202F) for units, currencies, and abbreviations (10 kg, 25 %, $100, № 15), ellipsis …, and © ® ™.",
+                "Code & safe-context protection: Keyboop automatically skips terminals, IDEs, inline/fenced code, URLs, file paths, ISO dates, and CLI flags like git commit --amend; added dedicated per-app exclusions and per-site typography toggles in Sites rules (Inherit / Enable / Disable).",
+                "Clipboard-free selection formatting & exact undo: the selection formatting shortcut reads and writes strictly via Accessibility with a Before / After preview sheet, and a dedicated undo shortcut restores exact original characters including space codepoints.",
+                "New Typography settings section: disabled by default and starting in the safe Minimal preset, with per-rule checkboxes, U+0020 / U+00A0 / U+202F reference guide, and an isolated “Try it” sandbox.",
+            ]),
         Release(version: "0.5.2",
             ru: [
                 "Динамические сниппеты с переменными (KB-004): автозамена теперь поддерживает как обычный текст, так и шаблоны с подстановками {{date}}, {{date:dd.MM.yyyy}}, {{time}}, {{datetime}}, опциональным {{clipboard}} и пользовательскими переменными ({{name}}, {{topic}} и др.).",
