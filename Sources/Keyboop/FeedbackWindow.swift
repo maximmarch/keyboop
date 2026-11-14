@@ -497,6 +497,9 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         case .typographyUndo:
             let t = TypographySettingsStore.shared
             c = ("typoUndo", t.undoHotkeyEnabled, "key", t.undoKeyCode, t.undoModifiers, "")
+        case .pasteQueueNext:
+            let q = PasteQueueSettingsStore.shared
+            c = ("pasteQueue", q.hotkeyEnabled, "key", q.hotkeyKeyCode, q.hotkeyModifiers, "")
         }
         let combo = "\(c.mode)/\(c.keyCode)/\(c.mods)"
         return "\(c.key)=" + (c.on ? combo : "выкл(\(combo))") + c.tail

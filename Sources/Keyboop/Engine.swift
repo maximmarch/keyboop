@@ -318,6 +318,12 @@ final class Engine: EventTapHandler {
                 guard SnippetPicker.shared.pickLastDictation() else { return }
                 self?.handlePasteDictationHotkey()
             }
+            // Очередь вставки (KB-022): печать идёт через Engine, чтобы на время полёта синтетики
+            // был поднят `muted` — вставленное не должно обрабатываться как новый набор.
+            PasteQueueSystem.shared.executor = { [weak self] text, done in
+                self?.insertFromPasteQueue(text, done: done) ?? false
+            }
+            PasteQueueSystem.shared.install()
             // Открытие и закрытие Spotlight системой не объявляется, поэтому наблюдатель сообщает
             // об этом сам — и дальше всё идёт тем же путём, что и обычная смена программы.
             SpotlightWatch.onChange = { [weak self] in
@@ -1641,6 +1647,32 @@ final class Engine: EventTapHandler {
         muted = true
         TextReplacer.insert(text) { [weak self] in self?.endSyntheticFlight() }
         kbLog("последняя диктовка: вставляю \(text.count) симв.")   // только длина, принцип №2
+    }
+
+    /// ОЧЕРЕДЬ ВСТАВКИ (KB-022): следующий элемент по своему сочетанию. ⌘V не трогается никогда.
+    func handlePasteQueueNextHotkey() {
+        DispatchQueue.main.async { PasteQueueCoordinator.shared.pasteNext() }
+    }
+
+    /// Печать элемента очереди. false — наша синтетика ещё летит, ничего не отправлено.
+    /// Буфер набора и контекст типографики чистим: вставленный текст — не ввод человека, и
+    /// достраивать по нему конверсию, опечатки или кавычки нельзя.
+    fileprivate func insertFromPasteQueue(_ text: String,
+                                          done: @escaping (TextReplacer.QueueTypingResult) -> Void) -> Bool {
+        guard !mutedStuckCheck() else { kbLog("очередь вставки: синтетика в полёте, пропускаю"); return false }
+        buffer.clear()
+        liveFixLast = ""
+        TypographyCoordinator.shared.resetContext()
+        muted = true
+        TextReplacer.insertQueueText(text) { [weak self] result in
+            self?.endSyntheticFlight()
+            // Вклинившиеся во время печати клавиши endSyntheticFlight уже учёл; контекст после
+            // вставки всё равно чужой — начинаем следующее слово с чистого листа.
+            self?.buffer.clear()
+            TypographyCoordinator.shared.resetContext()
+            done(result)
+        }
+        return true
     }
 
     /// СМЕНА РЕГИСТРА ВЫДЕЛЕННОГО ТЕКСТА (задача 122).

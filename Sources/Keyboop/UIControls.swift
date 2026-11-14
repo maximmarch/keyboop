@@ -311,7 +311,7 @@ enum HotkeyGuard {
     ///
     /// Добавляя СЛЕДУЮЩИЙ хоткей, добавь его сюда же. Это единственное место, где перечислены все.
     enum Slot: CaseIterable {
-        case convert, voice, voicePostProcess, translate, instant, snippet, plainPaste, caseChange, pasteDictation, typographyFormat, typographyUndo
+        case convert, voice, voicePostProcess, translate, instant, snippet, plainPaste, caseChange, pasteDictation, typographyFormat, typographyUndo, pasteQueueNext
 
         /// Как назвать функцию человеку в тексте «занято: %@».
         var name: String {
@@ -327,6 +327,7 @@ enum HotkeyGuard {
             case .pasteDictation:   return L10n.t("is.busy.pasteLast")
             case .typographyFormat: return L10n.t("is.busy.typoFormat")
             case .typographyUndo:   return L10n.t("is.busy.typoUndo")
+            case .pasteQueueNext:   return L10n.t("is.busy.pasteQueue")
             }
         }
 
@@ -342,7 +343,7 @@ enum HotkeyGuard {
             case .convert, .instant:                  return .switching
             case .voice, .voicePostProcess, .pasteDictation: return .voice
             case .translate:                          return .translate
-            case .snippet, .plainPaste, .caseChange:  return .snippets
+            case .snippet, .plainPaste, .caseChange, .pasteQueueNext:  return .snippets
             case .typographyFormat, .typographyUndo:  return .typography
             }
         }
@@ -386,6 +387,10 @@ enum HotkeyGuard {
                 let t = TypographySettingsStore.shared
                 guard t.undoHotkeyEnabled else { return nil }
                 return ("key", t.undoKeyCode, t.undoModifiers)
+            case .pasteQueueNext:
+                let q = PasteQueueSettingsStore.shared
+                guard q.hotkeyEnabled else { return nil }
+                return ("key", q.hotkeyKeyCode, q.hotkeyModifiers)
             }
         }
     }

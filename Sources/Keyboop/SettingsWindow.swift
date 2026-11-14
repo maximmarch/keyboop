@@ -2589,6 +2589,9 @@ final class DetailVC: NSViewController {
             sectionTitle(L10n.t("paste.section")),
             card(plainRows),
             group(DS.itemGap),
+            sectionTitle(L10n.t("pq.section")),
+            card(pasteQueueRows()),
+            group(DS.itemGap),
             // ПРАВКА ТЕКСТА (перенесено из «Переключения», автор 11.08). Обе настройки чинят не
             // раскладку, а сам набранный текст, и в разделе про конверсию читались как её часть —
             // тем более что стояли прямо под «После слова», среди клавиш-триггеров конверсии.
@@ -3400,6 +3403,107 @@ final class DetailVC: NSViewController {
             self?.settings.pasteDictationKeyCode = code
             self?.settings.pasteDictationModifiers = mods.rawValue
             self?.settings.pasteDictationKeyLabel = label
+        }
+    }
+
+    // MARK: - Очередь вставки (KB-022)
+
+    static let pasteQueuePresets: [(String, Int, UInt64)] = [
+        ("⌃⇧Q", 12, CGEventFlags([.maskControl, .maskShift]).rawValue),
+        ("⌃⌥Q", 12, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
+    ]
+
+    private func pasteQueueRows() -> [NSView] {
+        let q = PasteQueueSettingsStore.shared
+        let pop = NSPopUpButton()
+        var titles = Self.pasteQueuePresets.map { $0.0 }
+        var sel = Self.pasteQueuePresets.firstIndex {
+            $0.1 == q.hotkeyKeyCode && $0.2 == q.hotkeyModifiers
+        }
+        if sel == nil, q.hotkeyEnabled, !q.hotkeyLabel.isEmpty {
+            titles.append(q.hotkeyLabel)
+            sel = titles.count - 1
+        }
+        pop.addItems(withTitles: titles + [L10n.t("snip.pickCustom")])
+        pop.selectItem(at: sel ?? 0)
+        pop.target = self; pop.action = #selector(pasteQueueComboChanged(_:))
+
+        let compPop = NSPopUpButton()
+        compPop.addItems(withTitles: [
+            L10n.t("pq.set.keep"), L10n.t("pq.set.restart"), L10n.t("pq.set.clear")
+        ])
+        let compIndex = PasteQueueCompletionMode.allCases.firstIndex(of: q.completionMode) ?? 0
+        compPop.selectItem(at: compIndex)
+        compPop.target = self; compPop.action = #selector(pasteQueueCompletionChanged(_:))
+
+        var rows: [NSView] = [
+            switchRow(L10n.t("pq.set.hotkey"), L10n.t("pq.set.hotkeySub"), q.hotkeyEnabled,
+                      #selector(togglePasteQueueHotkey(_:)), help: L10n.t("pq.set.help"),
+                      key: "pq.set.hotkey")
+        ]
+        if q.hotkeyEnabled {
+            rows.append(controlRow(L10n.t("pq.set.assign"), pop, key: "pq.set.assign"))
+        }
+        rows.append(controlRow(L10n.t("pq.set.completion"), compPop, key: "pq.set.completion"))
+        rows.append(switchRow(L10n.t("pq.set.manual"), L10n.t("pq.set.manualSub"), q.manualPickAdvances,
+                              #selector(togglePasteQueueManualAdvances(_:)), key: "pq.set.manual"))
+        return rows
+    }
+
+    @objc private func togglePasteQueueHotkey(_ sw: NSSwitch) {
+        let q = PasteQueueSettingsStore.shared
+        if sw.state == .on {
+            let free = Self.pasteQueuePresets.first {
+                HotkeyGuard.ourBusy(mode: "key", keyCode: $0.1, mods: $0.2, excluding: .pasteQueueNext) == nil
+            }
+            guard let preset = free else {
+                startPasteQueueHotkeyRecording()
+                return
+            }
+            q.hotkeyKeyCode = preset.1
+            q.hotkeyModifiers = preset.2
+            q.hotkeyLabel = preset.0
+        } else {
+            q.hotkeyKeyCode = -1
+            q.hotkeyModifiers = 0
+            q.hotkeyLabel = ""
+        }
+        reshow()
+    }
+
+    @objc private func pasteQueueComboChanged(_ p: NSPopUpButton) {
+        let q = PasteQueueSettingsStore.shared
+        let i = p.indexOfSelectedItem
+        if i == p.numberOfItems - 1 {
+            startPasteQueueHotkeyRecording()
+            return
+        }
+        guard i >= 0, i < Self.pasteQueuePresets.count else { return }
+        let preset = Self.pasteQueuePresets[i]
+        if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: preset.1, mods: preset.2, excluding: .pasteQueueNext) {
+            HotkeyGuard.busyAlert(busy); reshow(); return
+        }
+        q.hotkeyKeyCode = preset.1
+        q.hotkeyModifiers = preset.2
+        q.hotkeyLabel = preset.0
+    }
+
+    @objc private func pasteQueueCompletionChanged(_ p: NSPopUpButton) {
+        let i = p.indexOfSelectedItem
+        guard i >= 0, i < PasteQueueCompletionMode.allCases.count else { return }
+        PasteQueueSettingsStore.shared.completionMode = PasteQueueCompletionMode.allCases[i]
+    }
+
+    @objc private func togglePasteQueueManualAdvances(_ sw: NSSwitch) {
+        PasteQueueSettingsStore.shared.manualPickAdvances = (sw.state == .on)
+    }
+
+    private func startPasteQueueHotkeyRecording() {
+        startHotkeyRecording(what: L10n.t("hkrec.what.pasteQueue"), slot: .pasteQueueNext) { code, mods, label in
+            let q = PasteQueueSettingsStore.shared
+            q.hotkeyKeyCode = code
+            q.hotkeyModifiers = mods.rawValue
+            q.hotkeyLabel = label
         }
     }
 

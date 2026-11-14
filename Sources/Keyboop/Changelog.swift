@@ -57,6 +57,19 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        Release(version: "0.5.4",
+            ru: [
+                "Очередь вставки (KB-022): собирайте несколько текстовых значений из истории, буфера обмена или выделенного текста и вставляйте их по одному в разные поля отдельной настраиваемой горячей клавишей (по умолчанию не назначена; системный ⌘V не перехватывается).",
+                "Окно «История → Очередь»: таблица с позицией и состоянием каждого элемента, компактный индикатор прогресса над списком, перестановка и правка элементов перед вставкой, пакетное добавление из истории, вставка выбранного элемента или всех элементов с разделителем, а также полное управление с клавиатуры.",
+                "Безопасная прямая вставка: переводы строк передаются как текст (без случайной отправки формы через Enter), буфер обмена не подменяется как fallback, при отказе до отправки позиция сохраняется, а при частичном сбое очередь встаёт на паузу без автоматического повтора.",
+                "Приватность: очередь живёт только в оперативной памяти до выхода из Keyboop, не пишется в логи и настройки, отсекает скрытые данные менеджеров паролей и умеет маскировать приватные элементы (включая скрытие от захвата экрана).",
+            ],
+            en: [
+                "Paste Queue (KB-022): collect multiple text items from history, clipboard, or Accessibility selection and paste them sequentially into different fields using a dedicated configurable shortcut (unassigned by default; ⌘V is never intercepted).",
+                "History → Queue tab: live table showing order and status, compact progress banner, reordering and editing before paste, multi-select batch add from history, paste-selected or paste-all with custom separator, and full keyboard navigation.",
+                "Safe direct typing: line breaks are inserted as text rather than submit-Enter presses, no implicit clipboard-swap fallback is used, pre-send refusals leave the pointer unchanged, and partial-send errors pause the queue without auto-retrying.",
+                "Privacy: queue contents live strictly in RAM for the current session, are excluded from logs and Settings, reject concealed password-manager entries, and support sensitive masking plus screen-share protection.",
+            ]),
         Release(version: "0.5.3",
             ru: [
                 "Умная типографика (KB-021): консервативное офлайн-форматирование текста при наборе и по команде для выделения — парные русские «ёлочки» (включая вложенные „…“), длинное тире (слово -- слово → слово — слово), неразрывные пробелы U+00A0 и опциональный U+202F перед единицами измерения, валютами и сокращениями (10 кг, 25 %, 100 ₽, 2026 г., № 15), многоточие … и символы © ® ™.",

@@ -9,6 +9,11 @@ import UniformTypeIdentifiers
 final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, NSSearchFieldDelegate {
     /// Окно истории, которое сейчас показано: клик по значку в Dock возвращает именно его.
     static weak var frontmost: VoiceHistoryWindowController?
+    private enum Tab: Int { case history = 0, queue = 1 }
+    private var activeTab: Tab = .history
+    private let tabSwitch = NSSegmentedControl()
+    private let queuePanel = PasteQueuePanel()
+    private var secondaryBar = NSStackView()
     private var all: [VoiceHistory.Entry] = []
     private var filtered: [VoiceHistory.Entry] = []
     private let search = NSSearchField()
@@ -69,9 +74,20 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     func show() {
-        // Опциональный пароль (HistoryGate): спрашиваем при ОТКРЫТИИ окна. Уже открытое окно
-        // просто фронтим без повторного вопроса; закрыл — при следующем открытии спросим снова.
-        if window?.isVisible != true, HistoryGate.enabled {
+        showTab(.history)
+    }
+
+    func showQueue() {
+        showTab(.queue)
+    }
+
+    private func showTab(_ tab: Tab) {
+        activeTab = tab
+        tabSwitch.selectedSegment = tab.rawValue
+        applyTabVisibility()
+        // Опциональный пароль (HistoryGate): спрашиваем при ОТКРЫТИИ окна на вкладке «История».
+        // Сама очередь хранится в оперативной памяти текущей сессии и доступна сразу.
+        if tab == .history, window?.isVisible != true, HistoryGate.enabled {
             HistoryGate.promptUnlock { [weak self] ok in
                 guard ok else { return }
                 self?.reallyShow()
@@ -99,6 +115,12 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         NotificationCenter.default.removeObserver(self, name: .keyboopVoiceHistoryChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(historyChanged),
                                                name: .keyboopVoiceHistoryChanged, object: nil)
+        NotificationCenter.default.removeObserver(self, name: .keyboopPasteQueueChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(pasteQueueChanged),
+                                               name: .keyboopPasteQueueChanged, object: nil)
+        updateQueueTabTitle()
+        updateScreenSharingProtection()
+        if activeTab == .queue { queuePanel.focusTable() }
     }
 
     @objc private func historyChanged() {
@@ -138,6 +160,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         DockPresence.release(.history)
         refreshTimer?.invalidate()
         NotificationCenter.default.removeObserver(self, name: .keyboopVoiceHistoryChanged, object: nil)
+        NotificationCenter.default.removeObserver(self, name: .keyboopPasteQueueChanged, object: nil)
     }
 
     // MARK: UI
@@ -160,6 +183,22 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         drop.onDrop = { [weak self] url in self?.beginImport(url: url) }
         bg.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(bg)
+
+        // Вкладки: История | Очередь (KB-022 §5).
+        tabSwitch.segmentCount = 2
+        tabSwitch.setLabel(L10n.t("pq.tab.history"), forSegment: 0)
+        tabSwitch.setLabel(L10n.t("pq.tab.queue"), forSegment: 1)
+        tabSwitch.selectedSegment = 0
+        tabSwitch.trackingMode = .selectOne
+        tabSwitch.segmentStyle = .rounded
+        tabSwitch.target = self; tabSwitch.action = #selector(tabChanged(_:))
+        tabSwitch.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(tabSwitch)
+
+        queuePanel.translatesAutoresizingMaskIntoConstraints = false
+        queuePanel.isHidden = true
+        queuePanel.onSensitivityChanged = { [weak self] _ in self?.updateScreenSharingProtection() }
+        bg.addSubview(queuePanel)
 
         search.placeholderString = L10n.t("hist.search")
         search.translatesAutoresizingMaskIntoConstraints = false
@@ -297,6 +336,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         // как одна кнопка.
         secondaryBar.orientation = .horizontal; secondaryBar.spacing = 16; secondaryBar.alignment = .centerY
         secondaryBar.translatesAutoresizingMaskIntoConstraints = false
+        self.secondaryBar = secondaryBar
         bg.addSubview(secondaryBar)
         bg.addSubview(recordBtn)
 
@@ -306,7 +346,15 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
             bg.topAnchor.constraint(equalTo: content.topAnchor),
             bg.bottomAnchor.constraint(equalTo: content.bottomAnchor),
 
-            search.topAnchor.constraint(equalTo: bg.safeAreaLayoutGuide.topAnchor, constant: 8),
+            tabSwitch.topAnchor.constraint(equalTo: bg.safeAreaLayoutGuide.topAnchor, constant: 6),
+            tabSwitch.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
+
+            queuePanel.topAnchor.constraint(equalTo: tabSwitch.bottomAnchor, constant: 10),
+            queuePanel.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 14),
+            queuePanel.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -14),
+            queuePanel.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -12),
+
+            search.topAnchor.constraint(equalTo: tabSwitch.bottomAnchor, constant: 10),
             search.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 14),
             search.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -14),
 
@@ -343,6 +391,63 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         let press = NSPressGestureRecognizer(target: self, action: #selector(longPressOpacity(_:)))
         press.minimumPressDuration = 0.5
         bg.addGestureRecognizer(press)
+        updateQueueTabTitle()
+        applyTabVisibility()
+    }
+
+    @objc private func tabChanged(_ s: NSSegmentedControl) {
+        let next = Tab(rawValue: s.selectedSegment) ?? .history
+        if next == .history, HistoryGate.enabled, all.isEmpty {
+            HistoryGate.promptUnlock { [weak self] ok in
+                guard let self else { return }
+                if ok {
+                    self.activeTab = .history
+                    self.applyTabVisibility()
+                    self.reload()
+                } else {
+                    self.tabSwitch.selectedSegment = Tab.queue.rawValue
+                }
+            }
+            return
+        }
+        activeTab = next
+        applyTabVisibility()
+        if activeTab == .queue { queuePanel.reload(); queuePanel.focusTable() }
+    }
+
+    private func applyTabVisibility() {
+        let isQueue = (activeTab == .queue)
+        queuePanel.isHidden = !isQueue
+        search.isHidden = isQueue
+        scroll.isHidden = isQueue
+        secondaryBar.isHidden = isQueue
+        recordBtn.isHidden = isQueue
+        if isQueue {
+            progressBox.isHidden = true
+            emptyView.isHidden = true
+        } else {
+            emptyView.isHidden = !filtered.isEmpty
+            if AudioImporter.shared.isRunning, let p = AudioImporter.shared.lastProgress { showProgress(p) }
+        }
+        updateScreenSharingProtection()
+    }
+
+    @objc private func pasteQueueChanged() {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateQueueTabTitle()
+            self?.updateScreenSharingProtection()
+        }
+    }
+
+    private func updateQueueTabTitle() {
+        let count = PasteQueueStore.shared.items.count
+        let base = L10n.t("pq.tab.queue")
+        tabSwitch.setLabel(count > 0 ? "\(base) (\(count))" : base, forSegment: Tab.queue.rawValue)
+    }
+
+    private func updateScreenSharingProtection() {
+        let hasSensitive = PasteQueueStore.shared.items.contains(where: \.isSensitive)
+        window?.sharingType = (activeTab == .queue && hasSensitive) ? .none : .readOnly
     }
 
     /// Мелкая вторичная иконка (приглушённая, без рамки) — поверх окон / настройки / очистить.
@@ -412,7 +517,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         // короткие записи → они выглядели как узкие «чат-пузыри» справа). Теперь все ровные.
         filtered.prefix(shownLimit).forEach(appendCard)
         if filtered.count > shownLimit { listStack.addArrangedSubview(moreButton()) }
-        emptyView.isHidden = !filtered.isEmpty
+        emptyView.isHidden = (activeTab != .history) || !filtered.isEmpty
     }
     private func appendCard(_ e: VoiceHistory.Entry) {
         let c = card(e)
@@ -450,6 +555,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         let kind = kindBadge(e)
 
         let copy = cardIcon("doc.on.doc", L10n.t("hist.copy"), #selector(copyEntry(_:)), tag)
+        let queueAdd = cardIcon("text.badge.plus", L10n.t("pq.card.add"), #selector(addEntryToQueue(_:)), tag)
         let del = cardIcon("trash", L10n.t("hist.del"), #selector(deleteEntry(_:)), tag)
 
         let text = WrappingLabel(string: e.text)
@@ -470,7 +576,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         if long { bodyViews.append(expandButton(tag: tag, expanded: isExpanded, count: e.text.count)) }
         // Порядок действий по решению автора 04.09: скопировать → (сохранить текст) → сохранить
         // аудио → удалить. Копирование первое как самое частое, удаление последнее как необратимое.
-        var actions: [NSButton] = [copy]
+        var actions: [NSButton] = [copy, queueAdd]
         if e.isImported {
             actions.append(cardIcon("doc.plaintext", L10n.t("hist.saveText"), #selector(saveText(_:)), tag))
         }
@@ -606,6 +712,16 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         NSPasteboard.general.setString(all[s.tag].text, forType: .string)
         NSPasteboard.general.kbNoteOurs()   // иначе история буфера запишет нашу же копию
         // короткий визуальный отклик: галочка на 1 c
+        let prev = s.image
+        s.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
+        s.contentTintColor = DS.coral
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak s] in
+            s?.image = prev; s?.contentTintColor = .secondaryLabelColor
+        }
+    }
+    @objc private func addEntryToQueue(_ s: NSButton) {
+        guard s.tag >= 0, s.tag < all.count else { return }
+        PasteQueueSystem.addHistory([all[s.tag]])
         let prev = s.image
         s.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
         s.contentTintColor = DS.coral

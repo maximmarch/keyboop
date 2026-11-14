@@ -75,6 +75,17 @@ enum AXScreenCheck {
         return sel.length > 0
     }
 
+    /// Есть ли вообще фокусный элемент у системы (KB-022: проверка фокуса перед вставкой из
+    /// очереди). Только чтение, тот же жёсткий таймаут 50 мс; содержимое не читается.
+    static func hasFocusedElement() -> Bool {
+        let sys = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(sys, 0.05)
+        var focusedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
+              let focusedAny = focusedRef else { return false }
+        return CFGetTypeID(focusedAny) == AXUIElementGetTypeID()
+    }
+
     /// Текст до каретки уже заканчивается этим суффиксом? nil = не знаем (AX молчит) — тогда
     /// вызывающий действует как раньше. Пробельный хвост сравниваем без придирок к \u{00A0}.
     static func caretEndsWith(_ suffix: String) -> Bool? {

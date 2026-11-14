@@ -617,6 +617,86 @@ enum TextReplacer {
         return true
     }
 
+    /// Итог печати элемента очереди вставки (KB-022).
+    enum QueueTypingResult: Equatable {
+        case sent
+        case refusedSecure       // писать нельзя (Secure Input / поле пароля) — ничего не отправлено
+        case refusedUnsupported  // поле не принимает синтетический Unicode — ничего не отправлено
+        case partial             // сбой посреди отправки — часть текста могла уйти
+    }
+
+    /// ПЕЧАТЬ ЭЛЕМЕНТА ОЧЕРЕДИ ВСТАВКИ (KB-022). Отличия от `insert` — и все они про безопасность:
+    ///
+    ///  • Итог возвращается честно: отказ ДО первого события и сбой ПОСРЕДИ отправки различаются,
+    ///    потому что очередь в первом случае стоит на месте, а во втором встаёт на паузу.
+    ///  • Перевод строки печатается как ТЕКСТ (символ `\n` в Unicode-строке события), а не клавишей
+    ///    Return. И даже его событие несёт флаг Shift: если программа всё-таки прочитает его как
+    ///    Enter, это будет Shift+Enter — в мессенджерах это новая строка, а не «Отправить».
+    ///  • Удалённые рабочие столы (`frontAppNeedsPhysicalTyping`) отклоняются: там текст пришлось бы
+    ///    набирать физическими клавишами, и перевод строки стал бы настоящим Return.
+    ///  • Буфер обмена не трогается ни в каком случае, запасного пути через ⌘V нет.
+    static func insertQueueText(_ text: String, completion: @escaping (QueueTypingResult) -> Void) {
+        let finish = { (r: QueueTypingResult) in DispatchQueue.main.async { completion(r) } }
+        synthQueue.async {
+            guard SecureInputPolicy.canWrite("очередь вставки \(text.count) симв.") else {
+                kbLog("synth: писать нельзя — очередь вставки (\(text.count) симв.) пропущена")
+                finish(.refusedSecure); return
+            }
+            if frontAppNeedsPhysicalTyping {
+                kbLog("synth: очередь вставки — поле не принимает Unicode (удалённый стол), не печатаем")
+                finish(.refusedUnsupported); return
+            }
+            let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+                                 .replacingOccurrences(of: "\r", with: "\n")
+            let src = CGEventSource(stateID: .privateState)
+            var sentAny = false
+            var chunk: [UniChar] = []
+            func flush() -> Bool {
+                guard !chunk.isEmpty else { return true }
+                defer { chunk.removeAll(keepingCapacity: true) }
+                guard postUnicodeChunkChecked(chunk, flags: [], source: src) else { return false }
+                sentAny = true
+                usleep(800)
+                return true
+            }
+            for ch in normalized {
+                if ch == "\n" {
+                    guard flush() else { finish(sentAny ? .partial : .refusedUnsupported); return }
+                    guard postUnicodeChunkChecked([0x0A], flags: .maskShift, source: src) else {
+                        finish(sentAny ? .partial : .refusedUnsupported); return
+                    }
+                    sentAny = true
+                    usleep(1800)
+                    continue
+                }
+                let units = Array(String(ch).utf16)
+                if chunk.count + units.count > 12 {
+                    guard flush() else { finish(sentAny ? .partial : .refusedUnsupported); return }
+                }
+                chunk.append(contentsOf: units)
+            }
+            guard flush() else { finish(sentAny ? .partial : .refusedUnsupported); return }
+            finish(.sent)
+        }
+    }
+
+    /// Пара keyDown/keyUp с Unicode-строкой; false — событие не создалось (ничего из пары не ушло).
+    private static func postUnicodeChunkChecked(_ chunk: [UniChar], flags: CGEventFlags,
+                                                source: CGEventSource?) -> Bool {
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return false }
+        for e in [down, up] {
+            e.flags = flags
+            e.setIntegerValueField(.eventSourceUserData, value: kbSyntheticMarker)
+            chunk.withUnsafeBufferPointer { buf in
+                e.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
+            }
+        }
+        down.post(tap: synthPostTap)
+        up.post(tap: synthPostTap)
+        return true
+    }
+
     private static func postUnicodeChunk(_ chunk: [UniChar], keyDown: Bool, source: CGEventSource?) {
         guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: keyDown) else { return }
         event.flags = []
