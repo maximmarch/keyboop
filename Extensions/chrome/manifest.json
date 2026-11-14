@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Keyboop Site Context",
+  "version": "0.5.1",
+  "description": "Reports only the active tab domain to Keyboop on macOS for automatic per-site typing rules. Never reads page contents or full URLs.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAktHZAIfIKzZphEKgle3UxODZaPoLyWLl+/AM+dnAWPavY7O9UqEWv06BaRZCeSP/0vhZSWCaOh+TRCSB5ICxK0R0fbXlxP8MYCwBXX6Y1n3E2dfSlvedKm6a/2ox54yDdIcDeGR2llBiNqsXHw/DvFD0weuqNYghG9tzii6SBwAvMddLtM0F2Vg0Xgxh17mpohGQat8ajq574QgBcmNIBiA8NFWpd9HaWF3ro+1iA2Q6cQR4YiMKFBkNv6KmsLU2XogZsDxej3e83NQIcF8iZTYZgIDzybC5iZJVAId5K1rw5vma+UH6HJJguuS77v5x8v/cNDnO8B0A1Qk1kMrkpQIDAQAB",
+  "permissions": [
+    "tabs",
+    "nativeMessaging",
+    "alarms",
+    "storage"
+  ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Keyboop Site Context",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  }
+}

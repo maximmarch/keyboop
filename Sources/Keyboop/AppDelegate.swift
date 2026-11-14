@@ -173,9 +173,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             languageData.wordsRu.contains(w) || languageData.wordsEn.contains(w)
         }
         engine = Engine()
+        WebsiteContextProvider.shared.start()
         menuBar = MenuBarController(layout: engine.layout)
         menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
         menuBar.onOpenPrivacy = { [weak self] in self?.openSettings(section: .privacy) }
+        menuBar.onAddSiteRule = { [weak self] domain, browser in
+            self?.openAddSiteRule(domain: domain, browser: browser)
+        }
         menuBar.onShowVoiceHistory = { [weak self] in self?.openVoiceHistory() }
         menuBar.onQuickDictate = { [weak self] in self?.engine.toggleVoiceFromMenu() }
         // Правду о доступах меню берёт в момент открытия, а не помнит с запуска (см.
@@ -186,7 +190,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.menuBar.needsPermission = !(self.engineRunning && Permissions.inputMonitoringGranted())
         }
         // Меню показывает паузу, значит обязано перерисоваться, когда она началась или кончилась.
-        Pause.onChange = { [weak self] in self?.menuBar.refreshAfterPauseChange() }
+        Pause.onChange = { [weak self] in
+            self?.engine.refreshContextSnapshot()
+            self?.menuBar.refreshAfterPauseChange()
+        }
         // Реализация жеста остаётся в дереве, но в 0.4.6 не создаём detector вообще: это закрывает
         // и обычный opt-in, и KEYBOOP_SLAP_DIAG, и сохранённый defaults из прежней Dev-сборки.
         if ReleaseFeatures.slap { configureSlapGesture() }
@@ -255,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Dev-помощник: запуск с --settings[=snippets] сразу открывает Настройки (на нужном разделе).
         if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--settings") }) {
             let sec: SettingsSection? = arg.contains("snippets") ? .snippets
+                                      : arg.contains("sites") ? .sites
                                       : arg.contains("ambiguous") ? .ambiguous
                                       : arg.contains("voice") ? .voice : nil
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.openSettings(section: sec) }
@@ -1213,6 +1221,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWC == nil { settingsWC = SettingsWindowController() }
         settingsWC?.show(section: section)
     }
+
+    private func openAddSiteRule(domain: String, browser: SiteBrowser) {
+        if settingsWC == nil { settingsWC = SettingsWindowController() }
+        settingsWC?.showAddSiteRule(domain: domain, browser: browser)
+    }
     private func openVoiceHistory() {
         if historyWC == nil {
             historyWC = VoiceHistoryWindowController()
@@ -1370,6 +1383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // второй: запуск из DMG обновления при живом старом снимал hidutil-ремап у него под ногами —
         // Caps молча переставал менять язык, тумблер оставался включённым. То же с ролью 🌐.
         guard !isSecondaryInstance else { return }
+        WebsiteContextProvider.shared.stop()
         // Caps-remap снимаем локально. SPU + 🌐 принадлежат одной helper-транзакции: после закрытия
         // локального HID helper сначала доказывает OFF и лишь затем возвращает клавишу.
         CapsRemap.removeIfOurs()

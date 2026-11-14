@@ -820,6 +820,11 @@ final class FocusLayoutPredictor {
             resetActiveContext()
             return
         }
+        let siteResolved = RuleResolver.resolveCurrent(bundleID: bid)
+        if siteResolved.sitePreferredLayoutExplicit || siteResolved.effectiveExceptionMode == "off" {
+            resetActiveContext()
+            return
+        }
         if AppSettings.shared.developerMode && Engine.isDevBundleID(bid) {
             resetActiveContext()
             return

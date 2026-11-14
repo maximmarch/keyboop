@@ -57,6 +57,19 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        Release(version: "0.5.1",
+            ru: [
+                "Правила ввода на уровне сайтов в Google Chrome: в настройках появился раздел «Сайты», где для точных доменов (github.com) и поддоменов (*.github.com) можно отдельно задать автопереключение раскладки, исправление опечаток, автозамену сниппетов, предпочтительную раскладку (RU/EN) и режим исключения (мягкий/выкл.) с наследованием через «Наследовать».",
+                "Расширение для Chrome и нативный мост (KeyboopNativeHost): расширение передаёт только домен активной вкладки (без полных URL, параметров запроса и текста страниц; вкладки Инкогнито по умолчанию игнорируются). При сбое или устаревании связи Keyboop безопасно возвращается к правилам приложения.",
+                "Строгая иерархия приоритетов: Secure Input, пауза «Не мешать», глобальное отключение Keyboop и жёсткие исключения macOS-приложений всегда главнее правил сайтов.",
+                "Быстрое создание и диагностика: в меню появился пункт «Добавить правило для текущего сайта…» и строка активного профиля («Профиль: …»), а в настройках — кнопка «Применить к текущему сайту» и установка системного моста Chrome в один клик.",
+            ],
+            en: [
+                "Per-site typing rules for Google Chrome: a new Sites section in Settings lets you configure auto-switch, typo correction, snippet expansion, preferred layout (RU/EN), and exception mode (Soft/Off) for exact domains (github.com) and subdomains (*.github.com), with “Inherit” fallback to app and global defaults.",
+                "Chrome extension & Native Messaging bridge (KeyboopNativeHost): only the active tab's domain is shared—never full URLs, query parameters, or page contents (Incognito tabs are ignored by default). If the bridge disconnects or goes stale, Keyboop falls back cleanly to app-level rules.",
+                "Strict rule priority order: Secure Input, Pause, global auto-switch disable, and hard macOS app exclusions always outrank site rules.",
+                "Quick creation & diagnostics: added “Add rule for current site…” and an active site profile row in the menu bar menu, plus “Apply to current site” and one-click Chrome Native Messaging bridge setup in Settings.",
+            ]),
         Release(version: "0.5.0",
             ru: [
                 "Голосовой ввод переведён на единый движок transcribe.cpp (вместо отдельных whisper.cpp и FluidAudio). На Apple Silicon распознавание идёт на GPU через Metal, на Intel — на процессоре; все модели из списка теперь работают на обеих архитектурах.",

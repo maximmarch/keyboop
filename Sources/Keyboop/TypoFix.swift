@@ -284,8 +284,9 @@ final class TypoFix {
     }
 
     /// Исправление для слова, либо nil. Стоимость — один поиск в словаре, никакого перебора.
-    func numericSuggestion(_ word: String) -> String? {
-        guard ready, AppSettings.shared.typoFix else { return nil }
+    func numericSuggestion(_ word: String, enabledOverride: Bool? = nil) -> String? {
+        let enabled = enabledOverride ?? AppSettings.shared.typoFix
+        guard ready, enabled else { return nil }
         // Отзыв #218: точка на физической клавише в русской раскладке даёт `ю`. Это именно
         // исправление опечатки, поэтому оно уважает общий тумблер и штатную отмену нашей правки.
         // Раскладку целиком не переключаем: после `1.8` человек может продолжить русским `мм`.
@@ -301,8 +302,9 @@ final class TypoFix {
     ///
     /// Метод O(1) и поэтому годится для синхронного enter-pre: Telegram не успеет отправить слово
     /// до правки, а полный механический перебор в горячий callback мы не переносим.
-    func curatedSuggestion(_ word: String) -> String? {
-        guard ready, AppSettings.shared.typoFix else { return nil }
+    func curatedSuggestion(_ word: String, enabledOverride: Bool? = nil) -> String? {
+        let enabled = enabledOverride ?? AppSettings.shared.typoFix
+        guard ready, enabled else { return nil }
         guard let parts = punctuationWrappedCore(word) else { return nil }
         let w = parts.core.lowercased()
         guard w.count >= 4 else { return nil }
@@ -316,10 +318,11 @@ final class TypoFix {
     }
 
     /// Исправление для слова, либо nil. Стоимость — один поиск в словаре, никакого перебора.
-    func suggest(_ word: String) -> String? {
-        guard ready, AppSettings.shared.typoFix else { return nil }
-        if let fixed = numericSuggestion(word) { return fixed }
-        if let fixed = curatedSuggestion(word) { return fixed }
+    func suggest(_ word: String, enabledOverride: Bool? = nil) -> String? {
+        let enabled = enabledOverride ?? AppSettings.shared.typoFix
+        guard ready, enabled else { return nil }
+        if let fixed = numericSuggestion(word, enabledOverride: enabled) { return fixed }
+        if let fixed = curatedSuggestion(word, enabledOverride: enabled) { return fixed }
         let w = word.lowercased()
         guard w.count >= 4, w.allSatisfy({ $0.isLetter }) else { return nil }
         // Смешанные огрызки не наши: там работает конверсия раскладки, а не правка опечаток.

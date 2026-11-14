@@ -63,7 +63,7 @@ enum SettingsSection: Int, CaseIterable {
     /// функции, потом система, потом «про нас». Голосовой набор стоит третьим, а не пятым: это
     /// второй двигатель приложения и первая тема по числу отзывов (21 из 73 содержательных).
     /// `rawValue` нигде не сохраняется, поэтому переставлять здесь безопасно.
-    case switching, exceptions, ambiguous, voice, snippets, translate, general, updates, privacy, about
+    case switching, exceptions, sites, ambiguous, voice, snippets, translate, general, updates, privacy, about
 
     /// Что показываем в левом меню. «Спорные слова» — подстраница «Исключений» (кнопка внутри):
     /// в меню это был бы одиннадцатый пункт ради списка, который открывают раз в жизни.
@@ -80,6 +80,7 @@ enum SettingsSection: Int, CaseIterable {
         switch self {
         case .switching: return "sec.switching"
         case .exceptions: return "sec.exceptions"
+        case .sites:      return "sec.sites"
         case .ambiguous:  return "sec.ambiguous"
         case .snippets:   return "sec.snippets"
         case .translate:  return "sec.translate"
@@ -94,6 +95,7 @@ enum SettingsSection: Int, CaseIterable {
         switch self {
         case .switching: return "keyboard"
         case .exceptions: return "tag"
+        case .sites:      return "globe"
         case .ambiguous:  return "arrow.left.arrow.right"
         case .snippets:   return "wand.and.stars"
         case .translate:  return "character.bubble"
@@ -315,6 +317,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         sidebar.onSelect = { [weak self] s in self?.detail.show(s) }
         detail.observeCapsRemap()
+        detail.observeSiteChanges()
         if ReleaseFeatures.slap { detail.observeSlapAvailability() }
         detail.onLanguageChanged = { [weak self] in
             // Тоже откладываем: приходит из action popup'а языка, а reshow сносит сам popup.
@@ -737,6 +740,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
     }
 
+    func showAddSiteRule(domain: String, browser: SiteBrowser) {
+        show(section: .sites)
+        DispatchQueue.main.async { [weak self] in
+            self?.detail.openSiteRuleEditor(editing: nil, prefillDomain: domain, prefillBrowser: browser)
+        }
+    }
+
     /// Dev: отрендерить раздел в PNG (отладка дизайна без Screen Recording).
     func dump(section i: Int, to path: String) {
         // ⚠️ .aqua, а не .darkAqua (28.07). Рендер идёт в СВЕТЛУЮ подложку, поэтому под тёмной темой
@@ -1121,6 +1131,15 @@ final class DetailVC: NSViewController {
     private weak var ppBaseURLField: NSTextField?
     private weak var ppModelField: NSTextField?
     private weak var ppKeyField: NSSecureTextField?
+    private weak var sitesTableView: SiteRulesTableView?
+    private weak var sitesBridgeStatusLabel: NSTextField?
+    private weak var sitesBridgeOutcomeLabel: NSTextField?
+    private weak var sitesBridgeInstallBtn: NSButton?
+    private weak var sitesEditBtn: NSButton?
+    private weak var sitesDeleteBtn: NSButton?
+    private weak var sitesApplyCurrentBtn: NSButton?
+    private var siteRuleEditorController: SiteRuleEditorController?
+    private var siteObserversInstalled = false
     private let docView = FlippedView()
     private let column = FlippedView()           // колонка контента с ограниченной шириной
     private var contentStack: NSStackView?
@@ -1354,6 +1373,7 @@ final class DetailVC: NSViewController {
         switch section {
         case .switching:  built = buildSwitching()
         case .exceptions: built = buildExceptions()
+        case .sites:      built = buildSites()
         case .ambiguous:  built = buildAmbiguous()
         case .snippets:   built = buildSnippets()
         case .translate:  built = buildTranslate()
@@ -1510,6 +1530,21 @@ final class DetailVC: NSViewController {
                                               object: nil, queue: .main) { [weak self] _ in
             guard let self, self.currentSection == .switching else { return }
             self.reshow()
+        }
+    }
+
+    func observeSiteChanges() {
+        guard !siteObserversInstalled else { return }
+        siteObserversInstalled = true
+        NotificationCenter.default.addObserver(forName: .keyboopSiteContextChanged,
+                                               object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.currentSection == .sites else { return }
+            self.refreshSitesStateUI()
+        }
+        NotificationCenter.default.addObserver(forName: .keyboopSiteRulesChanged,
+                                               object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.currentSection == .sites else { return }
+            self.refreshSitesStateUI()
         }
     }
 
@@ -2205,6 +2240,201 @@ final class DetailVC: NSViewController {
     @objc private func openAmbiguous() { (view.window?.windowController as? SettingsWindowController)?.show(section: .ambiguous) }
 
     @objc private func backToExceptions() { (view.window?.windowController as? SettingsWindowController)?.show(section: .exceptions) }
+
+    private func buildSites() -> NSView {
+        let statusLbl = NSTextField(labelWithString: "")
+        statusLbl.font = .systemFont(ofSize: 13)
+        statusLbl.lineBreakMode = .byTruncatingTail
+        sitesBridgeStatusLabel = statusLbl
+        let statusWrap = NSStackView(views: [statusLbl])
+        statusWrap.orientation = .horizontal
+        statusWrap.alignment = .centerY
+        statusWrap.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+
+        let installBtn = NSButton(title: L10n.t("sites.installBridge"), target: self, action: #selector(installChromeBridge))
+        installBtn.bezelStyle = .rounded
+        sitesBridgeInstallBtn = installBtn
+
+        let revealBtn = NSButton(title: L10n.t("sites.openExtension"), target: self, action: #selector(revealChromeExtension))
+        revealBtn.bezelStyle = .rounded
+
+        let outcomeLbl = NSTextField(labelWithString: "")
+        outcomeLbl.font = .systemFont(ofSize: 11.5)
+        outcomeLbl.textColor = .secondaryLabelColor
+        outcomeLbl.isHidden = true
+        sitesBridgeOutcomeLabel = outcomeLbl
+        let outcomeWrap = NSStackView(views: [outcomeLbl])
+        outcomeWrap.orientation = .horizontal
+        outcomeWrap.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 8, right: 14)
+
+        let tableView = SiteRulesTableView()
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.onSelectionChange = { [weak self] _ in
+            self?.updateSiteTableButtonStates()
+        }
+        tableView.onDoubleClick = { [weak self] rule in
+            self?.openSiteRuleEditor(editing: rule, prefillDomain: nil, prefillBrowser: nil)
+        }
+        tableView.onToggleEnabled = { ruleID, enabled in
+            SiteRuleStore.shared.setEnabled(id: ruleID, enabled: enabled)
+        }
+        sitesTableView = tableView
+
+        let addBtn = NSButton(title: L10n.t("sites.btn.add"), target: self, action: #selector(addSiteRuleClicked))
+        addBtn.bezelStyle = .rounded
+        let editBtn = NSButton(title: L10n.t("sites.btn.edit"), target: self, action: #selector(editSiteRuleClicked))
+        editBtn.bezelStyle = .rounded
+        sitesEditBtn = editBtn
+        let delBtn = NSButton(title: L10n.t("sites.btn.delete"), target: self, action: #selector(deleteSiteRuleClicked))
+        delBtn.bezelStyle = .rounded
+        sitesDeleteBtn = delBtn
+        let applyCurrentBtn = NSButton(title: L10n.t("sites.btn.applyCurrent"), target: self, action: #selector(applyCurrentSiteClicked))
+        applyCurrentBtn.bezelStyle = .rounded
+        sitesApplyCurrentBtn = applyCurrentBtn
+
+        let views: [NSView] = [
+            title(L10n.t("sites.title")),
+            sub(L10n.t("sites.subtitle")),
+            group(6),
+            sectionTitle(L10n.t("sites.bridgeTitle")),
+            card([
+                statusWrap,
+                buttonRow([installBtn, revealBtn]),
+                outcomeWrap,
+                switchRow(L10n.t("sites.incognito"), L10n.t("sites.incognitoSub"),
+                          SiteRuleStore.shared.trackIncognito, #selector(toggleSiteTrackIncognito(_:)),
+                          key: "sites.incognito")
+            ]),
+            hint(L10n.t("sites.bridgeHint")),
+            group(8),
+            sectionTitle(L10n.t("sites.rulesTitle")),
+            card([tableView]),
+            buttonRow([addBtn, editBtn, delBtn, applyCurrentBtn]),
+            hint(L10n.t("sites.rulesHint"))
+        ]
+
+        let stack = vstack(views)
+        refreshSitesStateUI()
+        return stack
+    }
+
+    private func refreshSitesStateUI() {
+        let connected = WebsiteContextProvider.shared.isConnected
+        let state = WebsiteContextProvider.chromeBridgeInstallState()
+        if let lbl = sitesBridgeStatusLabel {
+            if connected {
+                lbl.stringValue = L10n.t("sites.bridgeConnected")
+                lbl.textColor = .systemGreen
+            } else {
+                switch state {
+                case .installed:
+                    lbl.stringValue = L10n.t("sites.bridgeInstalled")
+                    lbl.textColor = .labelColor
+                case .needsUpdate:
+                    lbl.stringValue = L10n.t("sites.bridgeNeedsUpdate")
+                    lbl.textColor = .systemOrange
+                case .notInstalled:
+                    lbl.stringValue = L10n.t("sites.bridgeNotInstalled")
+                    lbl.textColor = .secondaryLabelColor
+                case .hostMissing:
+                    lbl.stringValue = L10n.t("sites.bridgeHostMissing")
+                    lbl.textColor = .systemRed
+                }
+            }
+        }
+        if let btn = sitesBridgeInstallBtn {
+            let needsUpdate = (state == .installed || state == .needsUpdate)
+            btn.title = L10n.t(needsUpdate ? "sites.reinstallBridge" : "sites.installBridge")
+            btn.isEnabled = (state != .hostMissing)
+        }
+        sitesTableView?.reloadRules(SiteRuleStore.shared.allRules)
+        updateSiteTableButtonStates()
+    }
+
+    private func updateSiteTableButtonStates() {
+        let hasSel = sitesTableView?.selectedRule != nil
+        sitesEditBtn?.isEnabled = hasSel
+        sitesDeleteBtn?.isEnabled = hasSel
+        sitesApplyCurrentBtn?.isEnabled = WebsiteContextProvider.shared.activeSiteForQuickAdd() != nil
+    }
+
+    @objc private func installChromeBridge() {
+        do {
+            try WebsiteContextProvider.installChromeNativeBridge()
+            sitesBridgeOutcomeLabel?.stringValue = L10n.t("sites.bridgeInstalledOk")
+            sitesBridgeOutcomeLabel?.textColor = .systemGreen
+            sitesBridgeOutcomeLabel?.isHidden = false
+            refreshSitesStateUI()
+        } catch {
+            sitesBridgeOutcomeLabel?.stringValue = String(format: L10n.t("sites.bridgeInstallFail"), error.localizedDescription)
+            sitesBridgeOutcomeLabel?.textColor = .systemRed
+            sitesBridgeOutcomeLabel?.isHidden = false
+        }
+    }
+
+    @objc private func revealChromeExtension() {
+        guard let dir = WebsiteContextProvider.extensionDirectoryURL() else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([dir])
+    }
+
+    @objc private func toggleSiteTrackIncognito(_ s: NSSwitch) {
+        SiteRuleStore.shared.trackIncognito = (s.state == .on)
+    }
+
+    @objc private func addSiteRuleClicked() {
+        openSiteRuleEditor(editing: nil, prefillDomain: nil, prefillBrowser: nil)
+    }
+
+    @objc private func editSiteRuleClicked() {
+        guard let rule = sitesTableView?.selectedRule else { return }
+        openSiteRuleEditor(editing: rule, prefillDomain: nil, prefillBrowser: nil)
+    }
+
+    @objc private func deleteSiteRuleClicked() {
+        guard let rule = sitesTableView?.selectedRule else { return }
+        SiteRuleStore.shared.remove(id: rule.id)
+    }
+
+    @objc private func applyCurrentSiteClicked() {
+        guard let active = WebsiteContextProvider.shared.activeSiteForQuickAdd() else { return }
+        openSiteRuleEditor(editing: nil, prefillDomain: active.domain, prefillBrowser: active.browser)
+    }
+
+    func openSiteRuleEditor(editing: SiteRule?, prefillDomain: String?, prefillBrowser: SiteBrowser?) {
+        guard let hostWindow = view.window else { return }
+        let existing: SiteRule?
+        if let editing {
+            existing = editing
+        } else if let dom = prefillDomain {
+            existing = SiteRuleStore.shared.matchingRule(
+                forNormalizedDomain: dom,
+                browser: prefillBrowser ?? .chrome
+            )
+        } else {
+            existing = nil
+        }
+
+        let editor = SiteRuleEditorController(
+            editing: existing,
+            prefillDomain: prefillDomain,
+            prefillBrowser: prefillBrowser
+        ) { [weak self] savedRule in
+            do {
+                try SiteRuleStore.shared.upsert(savedRule)
+                self?.refreshSitesStateUI()
+                self?.sitesTableView?.selectRule(id: savedRule.id)
+                return nil
+            } catch let err as DomainValidationError {
+                return SiteRuleEditorController.localizedValidationMessage(for: err)
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        siteRuleEditorController = editor
+        editor.presentSheet(over: hostWindow) { [weak self] in
+            self?.siteRuleEditorController = nil
+        }
+    }
 
     private func buildSnippets() -> NSView {
         let editor = SnippetsEditor(frame: .zero)
@@ -5260,6 +5490,7 @@ final class DetailVC: NSViewController {
         for v in views {
             let wide = v is NSScrollView || v is NSTokenField || v is SnippetsEditor || v is NSStackView
                 || v is CardView   // карточки — во всю ширину колонки
+                || v is SiteRulesTableView
                 || v is NSSegmentedControl   // переключатель движка — две широкие кнопки на всю ширину
                 || v is NSButton   // чекбоксы: пин к ширине колонки → длинная подпись переносится, не торчит
                 || v is ChipFlowView   // поток чипов — знает ширину для переноса + считает высоту
@@ -6108,5 +6339,471 @@ extension DetailVC: NSTextFieldDelegate, NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
         guard let tv = notification.object as? NSTextView, tv === ppPromptTextView else { return }
         settings.voicePostProcessPrompt = tv.string
+    }
+}
+
+// MARK: - KB-001: Таблица правил для сайтов и модальный редактор
+
+private final class SiteRulesTableView: NSView, NSTableViewDataSource, NSTableViewDelegate {
+    private let scrollView = NSScrollView()
+    private let tableView = NSTableView()
+    private let emptyLabel = NSTextField(wrappingLabelWithString: L10n.t("sites.empty"))
+
+    private var rules: [SiteRule] = []
+    var onSelectionChange: ((SiteRule?) -> Void)?
+    var onDoubleClick: ((SiteRule) -> Void)?
+    var onToggleEnabled: ((UUID, Bool) -> Void)?
+
+    var selectedRule: SiteRule? {
+        let row = tableView.selectedRow
+        guard row >= 0, row < rules.count else { return nil }
+        return rules[row]
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        let cols: [(id: String, titleKey: String, w: CGFloat)] = [
+            ("site", "sites.col.site", 205),
+            ("typo", "sites.col.typo", 145),
+            ("layout", "sites.col.layout", 105),
+            ("snippets", "sites.col.snippets", 105)
+        ]
+        for colSpec in cols {
+            let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(colSpec.id))
+            col.title = L10n.t(colSpec.titleKey)
+            col.width = colSpec.w
+            col.minWidth = 80
+            tableView.addTableColumn(col)
+        }
+
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.usesAlternatingRowBackgroundColors = false
+        tableView.allowsMultipleSelection = false
+        tableView.allowsEmptySelection = true
+        tableView.rowHeight = 34
+        tableView.target = self
+        tableView.doubleAction = #selector(rowDoubleClicked)
+        tableView.focusRingType = .none
+
+        scrollView.documentView = tableView
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.drawsBackground = false
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(scrollView)
+
+        emptyLabel.font = .systemFont(ofSize: 12.5)
+        emptyLabel.textColor = .secondaryLabelColor
+        emptyLabel.alignment = .center
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(emptyLabel)
+
+        NSLayoutConstraint.activate([
+            scrollView.topAnchor.constraint(equalTo: topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            heightAnchor.constraint(equalToConstant: 210),
+
+            emptyLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            emptyLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
+            emptyLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func reloadRules(_ newRules: [SiteRule]) {
+        let selectedID = selectedRule?.id
+        rules = newRules
+        emptyLabel.isHidden = !rules.isEmpty
+        tableView.reloadData()
+        if let selectedID, let idx = rules.firstIndex(where: { $0.id == selectedID }) {
+            tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+        }
+        onSelectionChange?(selectedRule)
+    }
+
+    func selectRule(id: UUID) {
+        guard let idx = rules.firstIndex(where: { $0.id == id }) else { return }
+        tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+        tableView.scrollRowToVisible(idx)
+        onSelectionChange?(selectedRule)
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { rules.count }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        onSelectionChange?(selectedRule)
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row >= 0, row < rules.count, let colID = tableColumn?.identifier.rawValue else { return nil }
+        let rule = rules[row]
+
+        if colID == "site" {
+            let cell = NSView()
+            let check = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleRuleEnabled(_:)))
+            check.state = rule.enabled ? .on : .off
+            check.tag = row
+            check.translatesAutoresizingMaskIntoConstraints = false
+
+            let titleText = rule.displayName != nil ? "\(rule.effectiveTitle) (\(rule.domainPattern))" : rule.domainPattern
+            let label = NSTextField(labelWithString: titleText)
+            label.font = .systemFont(ofSize: 12.5, weight: rule.enabled ? .medium : .regular)
+            label.textColor = rule.enabled ? .labelColor : .tertiaryLabelColor
+            label.lineBreakMode = .byTruncatingTail
+            label.translatesAutoresizingMaskIntoConstraints = false
+
+            cell.addSubview(check)
+            cell.addSubview(label)
+            NSLayoutConstraint.activate([
+                check.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+                check.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                label.leadingAnchor.constraint(equalTo: check.trailingAnchor, constant: 4),
+                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+            ])
+            return cell
+        }
+
+        let text: String
+        switch colID {
+        case "typo":
+            text = formatAutofixColumn(for: rule)
+        case "layout":
+            text = formatLayoutColumn(for: rule)
+        case "snippets":
+            text = formatToggle(rule.snippets)
+        default:
+            text = ""
+        }
+
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 12.5)
+        label.textColor = rule.enabled ? .labelColor : .tertiaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        let wrap = NSView()
+        wrap.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 4),
+            label.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -4),
+            label.centerYAnchor.constraint(equalTo: wrap.centerYAnchor)
+        ])
+        return wrap
+    }
+
+    private func formatAutofixColumn(for rule: SiteRule) -> String {
+        if rule.exceptionMode == .off { return L10n.t("sites.val.disabled") }
+        if rule.exceptionMode == .soft { return L10n.t("sites.val.soft") }
+        if rule.autoSwitch == rule.typoFix { return formatToggle(rule.typoFix) }
+        return "\(formatToggle(rule.autoSwitch)) / \(formatToggle(rule.typoFix))"
+    }
+
+    private func formatLayoutColumn(for rule: SiteRule) -> String {
+        switch rule.preferredLayout {
+        case .ru: return L10n.t("sites.val.ru")
+        case .en: return L10n.t("sites.val.en")
+        case .inherit:
+            if rule.exceptionMode == .off || rule.autoSwitch == .disable {
+                return L10n.t("sites.val.keep")
+            }
+            return L10n.t("sites.val.auto")
+        }
+    }
+
+    private func formatToggle(_ toggle: SiteRuleToggle) -> String {
+        switch toggle {
+        case .inherit: return L10n.t("sites.val.inherit")
+        case .enable:  return L10n.t("sites.val.on")
+        case .disable: return L10n.t("sites.val.off")
+        }
+    }
+
+    @objc private func toggleRuleEnabled(_ sender: NSButton) {
+        let idx = sender.tag
+        guard idx >= 0, idx < rules.count else { return }
+        onToggleEnabled?(rules[idx].id, sender.state == .on)
+    }
+
+    @objc private func rowDoubleClicked() {
+        let row = tableView.clickedRow
+        guard row >= 0, row < rules.count else { return }
+        onDoubleClick?(rules[row])
+    }
+}
+
+private final class SiteRuleEditorController: NSObject, NSTextFieldDelegate {
+    private let editingID: UUID?
+    private let onSave: (SiteRule) -> String?
+
+    private var sheetWindow: NSWindow?
+    private weak var hostWindow: NSWindow?
+    private var completionHandler: (() -> Void)?
+
+    private let domainField = NSTextField()
+    private let nameField = NSTextField()
+    private let enabledSwitch = NSSwitch()
+    private let browserPop = NSPopUpButton()
+    private let autoSwitchPop = NSPopUpButton()
+    private let typoFixPop = NSPopUpButton()
+    private let snippetsPop = NSPopUpButton()
+    private let layoutPop = NSPopUpButton()
+    private let modePop = NSPopUpButton()
+    private let errorLabel = NSTextField(wrappingLabelWithString: "")
+    private let saveButton = NSButton(title: L10n.t("sites.ed.save"), target: nil, action: nil)
+
+    init(
+        editing: SiteRule?,
+        prefillDomain: String?,
+        prefillBrowser: SiteBrowser?,
+        onSave: @escaping (SiteRule) -> String?
+    ) {
+        self.editingID = editing?.id
+        self.onSave = onSave
+        super.init()
+        configureFields(editing: editing, prefillDomain: prefillDomain, prefillBrowser: prefillBrowser)
+    }
+
+    private func configureFields(editing: SiteRule?, prefillDomain: String?, prefillBrowser: SiteBrowser?) {
+        domainField.placeholderString = L10n.t("sites.ed.domainPh")
+        domainField.stringValue = editing?.domainPattern ?? prefillDomain ?? ""
+        domainField.delegate = self
+
+        nameField.placeholderString = L10n.t("sites.ed.namePh")
+        nameField.stringValue = editing?.displayName ?? ""
+
+        enabledSwitch.state = (editing?.enabled ?? true) ? .on : .off
+
+        browserPop.addItems(withTitles: [L10n.t("sites.val.anyBrowser"), L10n.t("sites.val.chrome")])
+        let b = editing?.browser ?? prefillBrowser ?? .any
+        browserPop.selectItem(at: b == .chrome ? 1 : 0)
+
+        let toggleTitles = [L10n.t("sites.val.inherit"), L10n.t("sites.val.on"), L10n.t("sites.val.off")]
+        for pop in [autoSwitchPop, typoFixPop, snippetsPop] {
+            pop.addItems(withTitles: toggleTitles)
+        }
+        autoSwitchPop.selectItem(at: toggleIndex(editing?.autoSwitch ?? .inherit))
+        typoFixPop.selectItem(at: toggleIndex(editing?.typoFix ?? .inherit))
+        snippetsPop.selectItem(at: toggleIndex(editing?.snippets ?? .inherit))
+
+        layoutPop.addItems(withTitles: [L10n.t("sites.val.inherit"), L10n.t("sites.val.ru"), L10n.t("sites.val.en")])
+        layoutPop.selectItem(at: layoutIndex(editing?.preferredLayout ?? .inherit))
+
+        modePop.addItems(withTitles: [L10n.t("sites.val.inherit"), L10n.t("sites.val.soft"), L10n.t("sites.val.disabled")])
+        modePop.selectItem(at: modeIndex(editing?.exceptionMode ?? .inherit))
+
+        errorLabel.font = .systemFont(ofSize: 11.5)
+        errorLabel.textColor = .systemRed
+        errorLabel.isHidden = true
+    }
+
+    func presentSheet(over window: NSWindow, onDismiss: @escaping () -> Void) {
+        self.hostWindow = window
+        self.completionHandler = onDismiss
+
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 450, height: 420),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        w.title = L10n.t(editingID == nil ? "sites.ed.addTitle" : "sites.ed.editTitle")
+        sheetWindow = w
+
+        let content = NSView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        w.contentView = content
+
+        let heading = NSTextField(labelWithString: w.title)
+        heading.font = .systemFont(ofSize: 16, weight: .semibold)
+
+        let domainHint = NSTextField(wrappingLabelWithString: L10n.t("sites.ed.domainHint"))
+        domainHint.font = .systemFont(ofSize: 11)
+        domainHint.textColor = .secondaryLabelColor
+
+        let grid = NSGridView(views: [
+            [formLabel(L10n.t("sites.ed.domain")), domainField],
+            [NSView(), domainHint],
+            [formLabel(L10n.t("sites.ed.name")), nameField],
+            [formLabel(L10n.t("sites.ed.enabled")), enabledSwitch],
+            [formLabel(L10n.t("sites.ed.browser")), browserPop],
+            [formLabel(L10n.t("sites.ed.autoSwitch")), autoSwitchPop],
+            [formLabel(L10n.t("sites.ed.typoFix")), typoFixPop],
+            [formLabel(L10n.t("sites.ed.snippets")), snippetsPop],
+            [formLabel(L10n.t("sites.ed.preferredLayout")), layoutPop],
+            [formLabel(L10n.t("sites.ed.exceptionMode")), modePop]
+        ])
+        grid.rowSpacing = 10
+        grid.columnSpacing = 12
+        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 1).xPlacement = .fill
+        grid.translatesAutoresizingMaskIntoConstraints = false
+
+        let cancelButton = NSButton(title: L10n.t("sites.ed.cancel"), target: self, action: #selector(cancelClicked))
+        cancelButton.bezelStyle = .rounded
+        cancelButton.keyEquivalent = "\u{1b}"
+
+        saveButton.bezelStyle = .rounded
+        saveButton.keyEquivalent = "\r"
+        saveButton.target = self
+        saveButton.action = #selector(saveClicked)
+
+        let buttons = NSStackView(views: [NSView(), cancelButton, saveButton])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+
+        let stack = NSStackView(views: [heading, grid, errorLabel, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 14
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            buttons.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            domainField.widthAnchor.constraint(greaterThanOrEqualToConstant: 230)
+        ])
+
+        validateCurrentInput()
+        window.beginSheet(w) { [weak self] _ in
+            self?.sheetWindow = nil
+            self?.completionHandler?()
+        }
+    }
+
+    private func formLabel(_ text: String) -> NSTextField {
+        let lbl = NSTextField(labelWithString: text)
+        lbl.font = .systemFont(ofSize: 12.5)
+        lbl.alignment = .right
+        return lbl
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        validateCurrentInput()
+    }
+
+    @discardableResult
+    private func validateCurrentInput() -> String? {
+        do {
+            let norm = try SiteRuleStore.normalizeDomainPattern(domainField.stringValue)
+            errorLabel.stringValue = ""
+            errorLabel.isHidden = true
+            saveButton.isEnabled = true
+            return norm
+        } catch let err as DomainValidationError {
+            errorLabel.stringValue = Self.localizedValidationMessage(for: err)
+            errorLabel.isHidden = domainField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            saveButton.isEnabled = false
+            return nil
+        } catch {
+            errorLabel.stringValue = error.localizedDescription
+            errorLabel.isHidden = false
+            saveButton.isEnabled = false
+            return nil
+        }
+    }
+
+    @objc private func cancelClicked() {
+        closeSheet(response: .cancel)
+    }
+
+    @objc private func saveClicked() {
+        guard let normalized = validateCurrentInput() else {
+            errorLabel.isHidden = false
+            return
+        }
+        let rule = SiteRule(
+            id: editingID ?? UUID(),
+            domainPattern: normalized,
+            displayName: nameField.stringValue,
+            enabled: enabledSwitch.state == .on,
+            browser: browserPop.indexOfSelectedItem == 1 ? .chrome : .any,
+            autoSwitch: toggleValue(autoSwitchPop.indexOfSelectedItem),
+            typoFix: toggleValue(typoFixPop.indexOfSelectedItem),
+            snippets: toggleValue(snippetsPop.indexOfSelectedItem),
+            preferredLayout: layoutValue(layoutPop.indexOfSelectedItem),
+            exceptionMode: modeValue(modePop.indexOfSelectedItem)
+        )
+        if let errMsg = onSave(rule) {
+            errorLabel.stringValue = errMsg
+            errorLabel.isHidden = false
+            return
+        }
+        closeSheet(response: .OK)
+    }
+
+    private func closeSheet(response: NSApplication.ModalResponse) {
+        guard let hostWindow, let sheetWindow else { return }
+        hostWindow.endSheet(sheetWindow, returnCode: response)
+    }
+
+    private func toggleIndex(_ t: SiteRuleToggle) -> Int {
+        switch t {
+        case .inherit: return 0
+        case .enable:  return 1
+        case .disable: return 2
+        }
+    }
+
+    private func toggleValue(_ idx: Int) -> SiteRuleToggle {
+        switch idx {
+        case 1: return .enable
+        case 2: return .disable
+        default: return .inherit
+        }
+    }
+
+    private func layoutIndex(_ l: SitePreferredLayout) -> Int {
+        switch l {
+        case .inherit: return 0
+        case .ru:      return 1
+        case .en:      return 2
+        }
+    }
+
+    private func layoutValue(_ idx: Int) -> SitePreferredLayout {
+        switch idx {
+        case 1: return .ru
+        case 2: return .en
+        default: return .inherit
+        }
+    }
+
+    private func modeIndex(_ m: SiteExceptionMode) -> Int {
+        switch m {
+        case .inherit: return 0
+        case .soft:    return 1
+        case .off:     return 2
+        }
+    }
+
+    private func modeValue(_ idx: Int) -> SiteExceptionMode {
+        switch idx {
+        case 1: return .soft
+        case 2: return .off
+        default: return .inherit
+        }
+    }
+
+    static func localizedValidationMessage(for error: DomainValidationError) -> String {
+        switch error {
+        case .empty:                 return L10n.t("sites.ed.errEmpty")
+        case .regexNotAllowed:       return L10n.t("sites.ed.errRegex")
+        case .invalidCharacters:     return L10n.t("sites.ed.errInvalid")
+        case .invalidLabel:          return L10n.t("sites.ed.errInvalid")
+        case .singleLabelNotAllowed: return L10n.t("sites.ed.errTooBroad")
+        case .overlyBroadWildcard:   return L10n.t("sites.ed.errTooBroad")
+        }
     }
 }

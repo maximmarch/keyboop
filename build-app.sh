@@ -239,6 +239,33 @@ if [ "${KEYBOOP_UNIVERSAL:-}" = "1" ]; then
   echo "  universal: $(lipo -archs "$APP/Contents/MacOS/Keyboop")"
 fi
 
+# Native Messaging Host для браузерного расширения (KB-001).
+if [ -f Sources/KeyboopNativeHost/main.swift ]; then
+  mkdir -p "$APP/Contents/Helpers"
+  swiftc -O Sources/KeyboopNativeHost/main.swift \
+    -o "$APP/Contents/Helpers/KeyboopNativeHost" \
+    -swift-version 5 -target arm64-apple-macos13.0 \
+    -framework Foundation
+  if [ "${KEYBOOP_UNIVERSAL:-}" = "1" ]; then
+    mv "$APP/Contents/Helpers/KeyboopNativeHost" "$APP/Contents/Helpers/.KeyboopNativeHost-arm64"
+    swiftc -O Sources/KeyboopNativeHost/main.swift \
+      -o "$APP/Contents/Helpers/.KeyboopNativeHost-x86" \
+      -swift-version 5 -target x86_64-apple-macos13.0 \
+      -framework Foundation
+    lipo -create "$APP/Contents/Helpers/.KeyboopNativeHost-arm64" "$APP/Contents/Helpers/.KeyboopNativeHost-x86" \
+         -output "$APP/Contents/Helpers/KeyboopNativeHost"
+    rm -f "$APP/Contents/Helpers/.KeyboopNativeHost-arm64" "$APP/Contents/Helpers/.KeyboopNativeHost-x86"
+  fi
+  chmod +x "$APP/Contents/Helpers/KeyboopNativeHost"
+fi
+
+# Chrome WebExtension в ресурсах бандла (для быстрого открытия/загрузки из Настроек → Сайты).
+if [ -d Extensions/chrome ]; then
+  mkdir -p "$APP/Contents/Resources/Extensions"
+  ditto Extensions/chrome "$APP/Contents/Resources/Extensions/chrome"
+  echo "  ресурс: Extensions/chrome (браузерный мост KB-001)"
+fi
+
 # Языковые данные (триграммы/словари) в bundle Resources
 cp Sources/Keyboop/Resources/*.json "$APP/Contents/Resources/" 2>/dev/null || echo "  (нет Resources/*.json — детектор будет без данных)"
 # Знак Keyboop (template) для waveform в строке меню
@@ -271,8 +298,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>            <string>Keyboop</string>
     <key>CFBundleDisplayName</key>     <string>Keyboop</string>
     <key>CFBundleIdentifier</key>      <string>ru.keyboop.app</string>
-    <key>CFBundleVersion</key>         <string>0.5.0</string>
-    <key>CFBundleShortVersionString</key> <string>0.5.0</string>
+    <key>CFBundleVersion</key>         <string>0.5.1</string>
+    <key>CFBundleShortVersionString</key> <string>0.5.1</string>
     <!-- Штамп сборки: подставляется ниже (sed по __BUILD_STAMP__). Логируется при запуске, чтобы по
          логу было ВИДНО, какую именно сборку гоняем. Прецедент 21.07: диагностировали баг по логу
          процесса, стартовавшего на 11 минут РАНЬШЕ пересборки, — то есть по коду без свежих правок. -->
@@ -401,6 +428,13 @@ codesign -f -s "$SIGN_ID" $CS_OPTS "$FV/Autoupdate"
 codesign -f -s "$SIGN_ID" $CS_OPTS "$FW" \
   && echo "  Sparkle.framework встроен и переподписан ($SIGN_ID)" \
   || { echo "  ⚠️  ОШИБКА переподписи Sparkle"; [ "${KEYBOOP_RELEASE:-}" = "1" ] && exit 1; }
+
+if [ -f "$APP/Contents/Helpers/KeyboopNativeHost" ]; then
+  if ! codesign -f -s "$SIGN_ID" $CS_OPTS "$APP/Contents/Helpers/KeyboopNativeHost" 2>/dev/null; then
+    [ "${KEYBOOP_RELEASE:-}" = "1" ] && { echo "  ⚠️  ОШИБКА подписи KeyboopNativeHost"; exit 1; }
+    codesign -f -s - "$APP/Contents/Helpers/KeyboopNativeHost" >/dev/null 2>&1 || true
+  fi
+fi
 
 # Подписываем само приложение (после вложенных — печатает бандл целиком).
 if codesign --force --sign "$SIGN_ID" --entitlements "$ENT" $CS_OPTS "$APP" 2>/dev/null; then

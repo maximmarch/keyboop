@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Keyboop Site Context</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    }
+    body {
+      margin: 0;
+      padding: 12px 14px;
+      width: 280px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #8e8e93;
+      flex: none;
+    }
+    .dot.ok { background: #34c759; }
+    .dot.warn { background: #ff9500; }
+    .dot.err { background: #ff3b30; }
+    .row {
+      margin: 6px 0;
+      color: CanvasText;
+    }
+    .muted {
+      color: GrayText;
+      font-size: 11.5px;
+      margin-top: 8px;
+    }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span id="dot" class="dot"></span>
+    <span>Keyboop Site Context</span>
+  </div>
+  <div id="bridgeStatus" class="row">Проверка соединения…</div>
+  <div id="domainRow" class="row">Домен: <code id="domain">—</code></div>
+  <div id="errorRow" class="muted" hidden></div>
+  <div class="muted">Передаётся только домен активной вкладки. URL-пути, параметры и содержимое страниц не читаются.</div>
+  <script src="popup.js"></script>
+</body>
+</html>

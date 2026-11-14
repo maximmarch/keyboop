@@ -20,6 +20,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onOpenSettings: (() -> Void)?
     /// Открыть настройки сразу на «Приватности» — туда ведёт строка про скрытый ввод.
     var onOpenPrivacy: (() -> Void)?
+    /// Открыть «Сайты» и сразу показать редактор правила для текущего домена (KB-001 FR-5).
+    var onAddSiteRule: ((_ domain: String, _ browser: SiteBrowser) -> Void)?
+    private var pendingQuickSite: (domain: String, browser: SiteBrowser)?
     var onShowVoiceHistory: (() -> Void)?
     /// Старт диктовки из быстрого действия (задача 21).
     var onQuickDictate: (() -> Void)?
@@ -694,6 +697,32 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
+        let frontBID = Engine.frontmostBundleID()
+        let resolvedCtx = RuleResolver.resolveCurrent(bundleID: frontBID)
+        let quickSite = WebsiteContextProvider.shared.activeSiteForQuickAdd()
+        pendingQuickSite = quickSite
+
+        if resolvedCtx.browser != nil, let rule = resolvedCtx.matchedRule {
+            let summary = siteProfileSummary(for: rule, resolved: resolvedCtx)
+            let prof = NSMenuItem(
+                title: String(format: L10n.t("menu.siteProfilePrefix"), "\(rule.effectiveTitle) · \(summary)"),
+                action: nil,
+                keyEquivalent: ""
+            )
+            prof.isEnabled = false
+            prof.image = icon("globe")
+            menu.addItem(prof)
+            menu.addItem(.separator())
+        } else if resolvedCtx.browser != nil,
+                  (resolvedCtx.siteStatus == .disconnected || resolvedCtx.siteStatus == .extensionMissing),
+                  !SiteRuleStore.shared.allRules.isEmpty {
+            let disc = NSMenuItem(title: L10n.t("menu.siteDisconnected"), action: nil, keyEquivalent: "")
+            disc.isEnabled = false
+            disc.image = icon("globe")
+            menu.addItem(disc)
+            menu.addItem(.separator())
+        }
+
         // Галочка состояния и иконка живут в РАЗНЫХ колонках, поэтому на переключателе уживаются обе.
         // ⚠️ БУКВЫ БЕЗ МОДИФИКАТОРОВ — ЭТО ЯРЛЫКИ ВНУТРИ ОТКРЫТОГО МЕНЮ, А НЕ ГЛОБАЛЬНЫЕ ХОТКЕИ
         // (задача 123). Пока меню закрыто, они не значат ничего и ничего ни у кого не отнимают;
@@ -778,6 +807,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+
+        let addSite = NSMenuItem(title: L10n.t("menu.siteAddCurrent"), action: #selector(addCurrentSiteRule), keyEquivalent: "")
+        addSite.target = self
+        addSite.isEnabled = (quickSite != nil)
+        addSite.image = icon("globe")
+        menu.addItem(addSite)
 
         // Настройки — отдельной группой между двумя разделителями: системная шестерёнка не задевает соседей.
         let prefs = NSMenuItem(title: L10n.t("menu.settings"), action: #selector(openSettings), keyEquivalent: ",")
@@ -911,6 +946,36 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         if let uid = s.representedObject as? String { settings.voiceMicUID = uid; buildMenu() }
     }
     @objc private func openSettings() { onOpenSettings?() }
+    @objc private func addCurrentSiteRule() {
+        guard let site = pendingQuickSite ?? WebsiteContextProvider.shared.activeSiteForQuickAdd() else { return }
+        onAddSiteRule?(site.domain, site.browser)
+    }
+
+    private func siteProfileSummary(for rule: SiteRule, resolved: ResolvedInputContext) -> String {
+        if resolved.effectiveExceptionMode == "off" || rule.exceptionMode == .off {
+            return L10n.t("menu.siteSummaryModeOff")
+        }
+        var parts: [String] = []
+        if rule.autoSwitch == .disable || !resolved.effectiveAutoSwitch {
+            parts.append(L10n.t("menu.siteSummaryAutoOff"))
+        }
+        if rule.typoFix == .disable {
+            parts.append(L10n.t("menu.siteSummaryTypoOff"))
+        }
+        if rule.snippets == .disable {
+            parts.append(L10n.t("menu.siteSummarySnipOff"))
+        }
+        if rule.exceptionMode == .soft {
+            parts.append(L10n.t("menu.siteSummarySoft"))
+        }
+        if rule.preferredLayout == .ru {
+            parts.append(L10n.t("sites.val.ru"))
+        } else if rule.preferredLayout == .en {
+            parts.append(L10n.t("sites.val.en"))
+        }
+        if parts.isEmpty { return L10n.t("menu.siteSummaryDefault") }
+        return parts.joined(separator: ", ")
+    }
     @objc private func showVoiceHistory() { onShowVoiceHistory?() }
     @objc private func checkUpdatesItem() { onCheckUpdates?() }
 

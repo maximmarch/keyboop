@@ -104,7 +104,10 @@ final class Engine: EventTapHandler {
         // ⚠️ Меню надо ПЕРЕРИСОВАТЬ прямо здесь (ревью 28.07). buildMenu() зовётся из onLayoutMaybeChanged,
         // то есть по факту УДАЧНОЙ конверсии, а при Secure Input конверсий нет по определению —
         // строка «что мешает» в своём главном случае просто не появлялась бы.
-        DispatchQueue.main.async { MenuBarController.shared?.refresh() }
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshContextSnapshot()
+            MenuBarController.shared?.refresh()
+        }
         if !on {
             AppHealth.secureInputHolder = nil
             let held = max(0, Int(Date().timeIntervalSince(secureInputSince)))   // часы могли перевести назад
@@ -260,7 +263,28 @@ final class Engine: EventTapHandler {
                 // клик мышью идёт отдельным путём (handleContextReset → полный clear, каретка сдвинута).
                 self?.pendingSoftReset = true
                 self?.refreshFrontmostAppCache()   // inline-путь читает кеш (в колбэке NSWorkspace нельзя)
+                if SiteBrowser.from(bundleID: self?.frontAppBID ?? "") != nil {
+                    WebsiteContextProvider.shared.requestFreshContext()
+                }
                 FocusLayoutPredictor.shared.schedulePredict(reason: .appActivated)
+            }
+            NotificationCenter.default.addObserver(
+                forName: .keyboopSiteContextChanged,
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.refreshContextSnapshot()
+            }
+            NotificationCenter.default.addObserver(
+                forName: .keyboopSiteRulesChanged,
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.refreshContextSnapshot()
+            }
+            NotificationCenter.default.addObserver(
+                forName: UserDefaults.didChangeNotification,
+                object: UserDefaults.standard, queue: .main
+            ) { [weak self] _ in
+                self?.refreshContextSnapshot()
             }
             NotificationCenter.default.addObserver(
                 forName: NSSpellChecker.didChangeAutomaticPeriodSubstitutionNotification,
@@ -627,7 +651,8 @@ final class Engine: EventTapHandler {
             // внутри колбэка тапа, а тот вызов дёргает NSWorkspace (см. предупреждение у
             // refreshFrontmostAppCache). Сегодня я уже уронил весь ввод в системе, положив дорогой
             // вызов на горячий путь, — второй раз не надо.
-            let snipAllowed = frontAppMode != "off" && !(settings.developerMode && frontAppIsDev)
+            let ctx = resolvedContext
+            let snipAllowed = !ctx.appHardExcluded && ctx.effectiveSnippets
             if snipKeyOK, snipAllowed, !muted, !Pause.active, !buffer.currentWord.isEmpty,
                let expansion = SnippetStore.shared.expansion(forTyped: buffer.currentWord) {
                 expandSnippet(trigger: buffer.currentWord, expansion: expansion, whitespace: ws)
@@ -659,12 +684,23 @@ final class Engine: EventTapHandler {
                 autoTrigger = false
                 silentLog("devapp", "авто молчит: dev-режим в IDE/терминале")
             }
-            // Программа-исключение: "off" — совсем не трогаем; "soft" — мягко (см. convertFromBuffer).
-            let appMode = frontAppMode
-            if appMode == "off" {
+            // Программа-исключение / правило сайта: "off" — не трогаем; "soft" — мягко (см. convertFromBuffer).
+            let effectiveMode = ctx.effectiveExceptionMode
+            if frontAppMode == "off" {
                 autoTrigger = false
                 silentLog("appoff", "авто молчит: приложение в исключениях (режим «выкл»)")
+            } else if !ctx.effectiveAutoSwitch {
+                autoTrigger = false
+                if ctx.matchedRule != nil {
+                    silentLog("siteoff", "авто молчит: отключено правилом активного сайта")
+                }
             }
+            let canAutoAtBoundary = autoTrigger && ctx.effectiveAutoSwitch
+            let canTypoOnlyAtBoundary = !canAutoAtBoundary
+                && !ctx.appHardExcluded
+                && ctx.effectiveExceptionMode != "off"
+                && !Pause.active
+                && ctx.effectiveTypoFix
             let tBoundary = ProcessInfo.processInfo.systemUptime
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
                 guard let self = self else { return }
@@ -684,7 +720,14 @@ final class Engine: EventTapHandler {
                     self.buffer.clear()
                     return
                 }
-                guard autoTrigger, self.settings.autoEnabled, !Pause.active else { return }
+                if !canAutoAtBoundary {
+                    if canTypoOnlyAtBoundary, let item = self.buffer.wordForConversion(completedOnly: true) {
+                        self.fixTwoLeadingCaps(word: item.word, item: item)
+                        self.fixTypo(word: item.word, item: item)
+                    }
+                    return
+                }
+                guard !Pause.active else { return }
                 // Fence A (аудит): юзер уже печатает следующее слово — не стреляем синтетикой в
                 // разгар набора (реальная клавиша между нашими backspace'ами = «gприветhello»).
                 // ОДНА отсрочка 40мс; печатает и дальше — стреляем всё равно (completedOnly-цель
@@ -692,11 +735,11 @@ final class Engine: EventTapHandler {
                 if ProcessInfo.processInfo.systemUptime - self.lastRealKeyAt < 0.025 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
                         guard let self else { return }
-                        self.convertFromBuffer(manual: false, soft: appMode == "soft")
+                        self.convertFromBuffer(manual: false, soft: effectiveMode == "soft")
                     }
                     return
                 }
-                self.convertFromBuffer(manual: false, soft: appMode == "soft")
+                self.convertFromBuffer(manual: false, soft: effectiveMode == "soft")
             }
             if (keyCode == 48 || keyCode == 36) && !shortcutSpace {
                 FocusLayoutPredictor.shared.schedulePredict(reason: .focusKey, delay: 0.09)
@@ -751,7 +794,7 @@ final class Engine: EventTapHandler {
                 // в буфере — после неё → буфер ≠ экран → детектор судит не то, что видно. Теперь
                 // live-fix стреляет через 150мс ТИШИНЫ: пальцы замерли — синтетике никто не мешает.
                 // На границе слова (пробел/Enter) конверсия как была — без задержки.
-                if settings.liveFixEnabled && settings.autoEnabled && !Pause.active {
+                if settings.liveFixEnabled && resolvedContext.effectiveAutoSwitch && !Pause.active {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.pauseFixTick() }
                 }
             }
@@ -805,6 +848,14 @@ final class Engine: EventTapHandler {
     /// Только для лога решений. Имя (`localizedName`) тут звать нельзя — это NSWorkspace на горячем
     /// пути, а bundle id уже посчитан строкой ниже и стоит ноль.
     private var frontAppBID = ""
+    /// Иммутабельный снимок эффективных правил ввода (FR-4), пересчитанный на main.
+    /// Горячий callback читает только его, без походов в UserDefaults/сокет/NSWorkspace.
+    private(set) var resolvedContext: ResolvedInputContext = .empty
+
+    func currentResolvedContext() -> ResolvedInputContext {
+        resolvedContext
+    }
+
     func refreshFrontmostAppCache() {
         let bid = Engine.frontmostBundleID()
         frontAppBID = bid
@@ -830,15 +881,48 @@ final class Engine: EventTapHandler {
         // Длинная пауза только РАСШИРЯЕТ это окно: 24мс → 54мс, и промахов стало больше.
         // Настоящее лечение — глотать реальные клавиши на время полёта и доигрывать их после (задача
         // #19), а до тех пор держим окно минимальным.
-        applyForcedLayout(for: bid)
+        refreshContextSnapshot(fromAppActivation: true)
     }
     private var frontAppIsChromium = false
     private var frontAppIsRemote = false
+
+    func refreshContextSnapshot(fromAppActivation: Bool = false) {
+        let bid = frontAppBID.isEmpty ? Engine.frontmostBundleID() : frontAppBID
+        if frontAppBID.isEmpty { frontAppBID = bid }
+        let prev = resolvedContext
+        let next = RuleResolver.resolveCurrent(bundleID: bid)
+        resolvedContext = next
+
+        if !fromAppActivation, prev.bundleID == next.bundleID, prev.siteContextKey != next.siteContextKey, next.browser != nil {
+            pendingSoftReset = true
+            liveFixLast = ""
+            UndoLearner.shared.resetContext()
+            antiResonance.resetHistory()
+            if !next.sitePreferredLayoutExplicit {
+                FocusLayoutPredictor.shared.schedulePredict(reason: .appActivated)
+            }
+        }
+
+        if fromAppActivation {
+            applyForcedLayout(for: bid, context: next)
+            forcedSiteLayoutLastKey = next.siteContextKey
+        } else if next.siteContextKey != forcedSiteLayoutLastKey {
+            forcedSiteLayoutLastKey = next.siteContextKey
+            if next.sitePreferredLayoutExplicit {
+                applyLayoutIfNeeded(next.effectivePreferredLayout, logPrefix: "раскладка сайта")
+            }
+        }
+
+        if prev != next {
+            MenuBarController.shared?.refresh()
+        }
+    }
 
     /// Последняя программа, для которой мы уже применили жёсткую раскладку. Уведомление об активации
     /// прилетает и на возврат фокуса внутри той же программы — без этой памяти мы перебивали бы
     /// раскладку человеку каждый раз, когда он кликнул мимо и обратно.
     private var forcedLayoutLastBid = ""
+    private var forcedSiteLayoutLastKey = ""
 
     /// ЖЁСТКАЯ РАСКЛАДКА НА ПРОГРАММУ (просьба Жени Сенина из BigGeek, 01.08.2026).
     ///
@@ -853,7 +937,7 @@ final class Engine: EventTapHandler {
     /// сторож, возвращающий раскладку силой, — это программа, которая спорит с хозяином. Поэтому
     /// память по bundle id: сработали один раз на активацию и молчим, пока фокус не уйдёт в другую
     /// программу и не вернётся.
-    private func applyForcedLayout(for bid: String) {
+    private func applyForcedLayout(for bid: String, context: ResolvedInputContext) {
         guard !bid.isEmpty else { return }
         guard bid != forcedLayoutLastBid else { return }   // та же программа — уже применяли
         // ⚠️ Spotlight — НАКЛАДКА поверх программы, а не переход в другую. Его собственную жёсткую
@@ -862,14 +946,18 @@ final class Engine: EventTapHandler {
         // которую человек, возможно, только что переключился сам. Это тот же запрет спорить с
         // хозяином, что и абзацем выше, просто на другом пути.
         if bid != "com.apple.Spotlight" { forcedLayoutLastBid = bid }
-        let want = ExceptionStore.shared.appLayout(bid)
+        let want = context.effectivePreferredLayout
+        applyLayoutIfNeeded(want, logPrefix: "жёсткая раскладка: \(bid)")
+    }
+
+    private func applyLayoutIfNeeded(_ want: String, logPrefix: String) {
         guard want == "en" || want == "ru" else { return }
         let toCyrillic = (want == "ru")
         // Уже в нужной раскладке — не дёргаем систему зря (и не порождаем лишний звук/индикатор).
         guard layout.currentIsCyrillic() != toCyrillic else { return }
         layout.selectLayout(cyrillic: toCyrillic)
         onLayoutMaybeChanged?()
-        kbLog("жёсткая раскладка: \(bid) → \(want.uppercased())")
+        kbLog("\(logPrefix) → \(want.uppercased())")
     }
 
     /// Electron-приложений становится больше, чем мы успеваем вписывать bundle id (Claude, Cursor,
@@ -1013,9 +1101,10 @@ final class Engine: EventTapHandler {
         //     backspace-ами. Когда атомарности нет, правильный ответ мид-слово НЕ ТРОГАТЬ ВОВСЕ.
         //     Конверсия на границе слова при этом работает как обычно, человек теряет только
         //     правку на лету, и теряет её ТИХО, а не порчей текста.
+        let ctx = resolvedContext
         guard settings.inlineLiveFix else { maybeLiveFix(); return }   // аварийный откат по тумблеру
         guard inlineHealthy else { return }                            // тап нездоров — делаем МЕНЬШЕ, а не рискованнее
-        guard settings.liveFixEnabled, settings.autoEnabled else { return }
+        guard settings.liveFixEnabled, ctx.effectiveAutoSwitch else { return }
         guard Warm.isReady else { return }
         guard !mutedStuckCheck() else { return }
         guard !wordEdited else { return }
@@ -1026,8 +1115,7 @@ final class Engine: EventTapHandler {
         guard word.count >= 4, word.count <= 16, word != liveFixLast else { return }
         // Кэши, не NSWorkspace: путь идёт по таймеру на main, а main общий с колбэком тапа —
         // задержка здесь так же откладывает доставку нажатий (01.08).
-        if settings.developerMode && frontAppIsDev { return }
-        guard frontAppMode.isEmpty else { return }
+        guard !ctx.appHardExcluded, ctx.effectiveExceptionMode.isEmpty else { return }
         guard !frontAppIsChromium else { return }   // вставка там ненадёжна — мид-слова не трогаем
         guard !frontAppIsRemote else { return }     // remote desktop теряет Unicode payload и шлёт carrier key
         guard !secureInputWasOn else { return }
@@ -1077,11 +1165,11 @@ final class Engine: EventTapHandler {
         if pauseFixGotCount % 10 == 1 {
             kbLog("pause-fix: пустышек отправлено \(pauseFixSentCount), дошло \(pauseFixGotCount)")
         }
-        guard settings.inlineLiveFix, inlineHealthy, settings.liveFixEnabled, settings.autoEnabled, !Pause.active else { return }
+        let ctx = resolvedContext
+        guard settings.inlineLiveFix, inlineHealthy, settings.liveFixEnabled, ctx.effectiveAutoSwitch, !Pause.active else { return }
         guard Warm.isReady, !muted, !wordEdited else { return }
         guard ProcessInfo.processInfo.systemUptime - lastRealKeyAt >= 0.14 else { return }
-        guard !frontAppIsDev || !settings.developerMode else { return }
-        guard frontAppMode.isEmpty else { return }
+        guard !ctx.appHardExcluded, ctx.effectiveExceptionMode.isEmpty else { return }
         guard !frontAppIsChromium else { return }
         guard !frontAppIsRemote else { return }
         guard !secureInputWasOn else { return }
@@ -1149,10 +1237,10 @@ final class Engine: EventTapHandler {
     }
 
     private func tryInlineLiveFix(pendingChar: String, pendingKeyCode: Int64, flags: CGEventFlags, post: (CGEvent) -> Void) -> Bool {
-        guard settings.inlineLiveFix, inlineHealthy, settings.liveFixEnabled, settings.autoEnabled, !Pause.active else { return false }
+        let ctx = resolvedContext
+        guard settings.inlineLiveFix, inlineHealthy, settings.liveFixEnabled, ctx.effectiveAutoSwitch, !Pause.active else { return false }
         guard Warm.isReady, !muted, !wordEdited else { return false }   // F7: асинхронная синтетика в полёте → молчим
-        guard !frontAppIsDev || !settings.developerMode else { return false }
-        guard frontAppMode.isEmpty else { return false }          // приложение в исключениях (off/soft)
+        guard !ctx.appHardExcluded, ctx.effectiveExceptionMode.isEmpty else { return false }          // приложение/сайт в исключениях (off/soft)
         // F6 (ревью 25.07): Chromium/Electron игнорируют Unicode-события и печатают носитель как «a»,
         // а backspace'ы при этом доходят → слово удалено, вставки нет. Наш открытый репорт (Workflowy,
         // 24.07) — ровно про это. Пока вставка в Chromium не решена, inline там ЗАПРЕЩЁН: у этих
@@ -1217,11 +1305,9 @@ final class Engine: EventTapHandler {
         // ПОСЛЕДНИЙ вызов серии — через 150мс после того, как пальцы остановились.
         guard ProcessInfo.processInfo.systemUptime - lastRealKeyAt >= 0.14 else { return }
         let word = buffer.currentWord
+        let ctx = resolvedContext
         guard word.count >= 4, word != liveFixLast else { return }
-        if settings.developerMode && frontAppIsDev { return }   // кэш, не NSWorkspace (01.08)
-        // Программа-исключение (встроенная или пользовательская): off/soft → НЕ чиним на лету
-        // (видеоредакторы/терминалы/код — синтетика мид-слова там особенно нежелательна).
-        if !frontAppMode.isEmpty { return }   // кэш, не NSWorkspace (01.08)
+        guard ctx.effectiveAutoSwitch, !ctx.appHardExcluded, ctx.effectiveExceptionMode.isEmpty else { return }   // кэш, не NSWorkspace (01.08)
         // ⚠️ Chromium/Electron (добавлено 28.07, дыра найдена при разборе #19): здесь этой проверки
         // НЕ БЫЛО, хотя inline-путь Chromium запрещает с 0.2.68 (F6). То есть мид-словная правка в
         // Chromium шла ИМЕННО этим путём — а там Unicode-вставка ненадёжна (Workflowy/Slack):
@@ -2018,6 +2104,10 @@ final class Engine: EventTapHandler {
     /// не трогаем из-за требования строчной третьей буквы.
     private func fixTwoLeadingCaps(word: String, item: (word: String, tail: String, deleteCount: Int)) {
         guard settings.twoCapsFix else { return }
+        let ctx = resolvedContext
+        if ctx.appHardExcluded || ctx.effectiveExceptionMode == "off" || ctx.matchedRule?.typoFix == .disable {
+            return
+        }
         let ch = Array(word)
         guard ch.count >= 3 else { return }
         guard ch.allSatisfy({ $0.isLetter }) else { return }
@@ -2062,7 +2152,7 @@ final class Engine: EventTapHandler {
     ///   • слово не в пользовательских исключениях.
     /// Возвращаем как задумано: первая заглавная, остальные строчные.
     private func fixCapsLockWord(word: String, item: (word: String, tail: String, deleteCount: Int)) -> Bool {
-        guard settings.typoFix else { return false }
+        guard resolvedContext.effectiveTypoFix else { return false }
         let ch = Array(word)
         // ⚠️ ОТ ПЯТИ БУКВ, А НЕ ОТ ТРЁХ (отзыв #156, 20.08.2026). Условие «первая строчная, остальные
         // заглавные» задумывалось под «пРИВЕТ», но ровно под него же попадает «iOS»: i строчная, O и
@@ -2137,7 +2227,7 @@ final class Engine: EventTapHandler {
     private func fixTypo(word: String, item: (word: String, tail: String, deleteCount: Int)) {
         if fixCapsLockWord(word: word, item: item) { return }
         TypoFix.shared.noteTyped(word)
-        guard let fixed = TypoFix.shared.suggest(word) else { return }
+        guard let fixed = TypoFix.shared.suggest(word, enabledOverride: resolvedContext.effectiveTypoFix) else { return }
         muted = true
         kbLog("опечатка: \(item.deleteCount) симв. исправлено")   // без контента (принцип №2)
         UndoLearner.shared.noteConversion(original: word, converted: fixed)   // откат научит нас навсегда
@@ -2309,8 +2399,10 @@ final class Engine: EventTapHandler {
     /// 10мс — незаметно. Аварийный откат без релиза: defaults write ru.keyboop.app enterPreConvert -bool NO.
     /// Возвращает true, если Enter проглочен (уйдёт синтетикой).
     private func convertBeforeReturn(flags: CGEventFlags) -> Bool {
+        let ctx = resolvedContext
         guard Warm.isReady else { return false }   // см. Warm
-        guard settings.enterPreConvert, settings.autoEnabled, settings.triggerEnter, !muted, !Pause.active else { return false }
+        guard settings.enterPreConvert, (ctx.effectiveAutoSwitch || ctx.effectiveTypoFix),
+              settings.triggerEnter, !muted, !Pause.active else { return false }
         // Только «голый» Enter: ⇧/⌘/⌥/⌃+Enter несут свою семантику (newline/alt-send) — не задерживаем,
         // а синтетический Return всё равно ушёл бы без модификаторов (postKey шлёт flags=[]).
         guard flags.intersection([.maskShift, .maskCommand, .maskAlternate, .maskControl]).isEmpty else { return false }
@@ -2330,9 +2422,7 @@ final class Engine: EventTapHandler {
         // за это выключила тап и нажатия были потеряны. Тут стояло ДВА обращения к NSWorkspace
         // подряд. Сама конверсия ниже остаётся синхронной осознанно (иначе Enter обгонит правку),
         // но платить за неё ещё и походами в чужой процесс незачем.
-        if settings.developerMode && frontAppIsDev { return false }
-        let appMode = frontAppMode
-        if appMode == "off" { return false }
+        if ctx.appHardExcluded || ctx.effectiveExceptionMode == "off" { return false }
 
         // ЧИСЛОВАЯ ОПЕЧАТКА ДО ENTER (отзыв #218): `1ю8` → `1.8`.
         //
@@ -2341,14 +2431,16 @@ final class Engine: EventTapHandler {
         // Поэтому этот детерминированный случай глотаем и выпускаем синтетический Return строго
         // после замены — тем же безопасным путём, что конверсия раскладки ниже. Раскладку, счётчик
         // «расколдовано» и звук не трогаем: это правка текста внутри общего typoFix.
-        if let fixed = TypoFix.shared.numericSuggestion(word) {
+        if let fixed = TypoFix.shared.numericSuggestion(word, enabledOverride: ctx.effectiveTypoFix) {
             return applyTypoBeforeReturn(word: word, fixed: fixed, kind: "числовая опечатка")
         }
-        let prop = autoConversionProposal(word: word, soft: appMode == "soft")
+        let prop = ctx.effectiveAutoSwitch
+            ? autoConversionProposal(word: word, soft: ctx.effectiveExceptionMode == "soft")
+            : nil
         // Обычный механический поиск остаётся на async-boundary. Здесь после отказа раскладки
         // разрешаем только O(1)-правку из курируемой таблицы: это закрывает Telegram-send, не
         // добавляя перебор словаря в самый горячий callback проекта.
-        if prop == nil, let fixed = TypoFix.shared.curatedSuggestion(word) {
+        if prop == nil, let fixed = TypoFix.shared.curatedSuggestion(word, enabledOverride: ctx.effectiveTypoFix) {
             return applyTypoBeforeReturn(word: word, fixed: fixed, kind: "курируемая опечатка")
         }
         guard let prop else { return false }
