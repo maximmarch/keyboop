@@ -3120,6 +3120,9 @@ final class DetailVC: NSViewController {
                              settings.voiceHistoryEnabled && settings.clipboardHistoryEnabled, #selector(toggleClipboardHistory),
                              enabled: settings.voiceHistoryEnabled, help: L10n.t("gen.clipHistoryHelp"), key: "gen.clipHistory") ]),
             group(2),
+            sectionTitle("Данные / Data"),
+            card([ buttonRow([NSButton(title: "Экспортировать историю буфера…", target: self,
+                                        action: #selector(exportClipboardHistory))]) ]),
             hint(L10n.t("gen.historyHint")),
             group(6),
             sectionTitle(L10n.t("gen.access")),
@@ -6076,6 +6079,61 @@ final class DetailVC: NSViewController {
     /// Захват буфера (задача 228). Выключение сразу останавливает новые записи; судьбу уже
     /// собранных решает человек: тумблер не удаляет ничего молча, промах пальцем не стоит
     /// истории, но и «выключил, а оно лежит» без вопроса не оставляем.
+    @objc private func exportClipboardHistory() {
+        let perform = { [weak self] in self?.presentClipboardExport() }
+        if HistoryGate.enabled { HistoryGate.promptUnlock { if $0 { perform() } } }
+        else { perform() }
+    }
+
+    private func presentClipboardExport() {
+        let save = NSSavePanel()
+        save.nameFieldStringValue = "Keyboop-clipboard.kbclip"
+        save.message = "Файл будет зашифрован. Сохраните пароль для импорта в SelectionBar."
+        guard save.runModal() == .OK, let url = save.url,
+              url.pathExtension.lowercased() == "kbclip" else { return }
+        let historyDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Keyboop").resolvingSymlinksInPath().standardizedFileURL.path
+        let destination = url.resolvingSymlinksInPath().standardizedFileURL.path
+        guard !destination.hasPrefix(historyDirectory + "/") else {
+            let warning = NSAlert()
+            warning.messageText = "Выберите папку вне каталога данных Keyboop."
+            warning.runModal()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Пароль экспорта"
+        alert.informativeText = "Введите пароль не короче 12 байт UTF-8. Буфер будет экспортирован отдельно от истории диктовок."
+        let entry = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        alert.accessoryView = entry
+        alert.window.initialFirstResponder = entry
+        alert.addButton(withTitle: "Экспортировать")
+        alert.addButton(withTitle: "Отмена")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let password = entry.stringValue
+        entry.stringValue = ""
+        let snapshot = Result { try VoiceHistory.clipboardExport() }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let message: String
+            do {
+                let payload = try snapshot.get()
+                let encrypted = try ClipboardTransfer.seal(payload, password: password)
+                try encrypted.write(to: url, options: .atomic)
+                message = "Экспортировано записей: \(payload.entries.count)."
+            } catch VoiceHistory.ExportError.missingArchive { message = "Файл истории отсутствует." }
+            catch VoiceHistory.ExportError.keyUnavailable { message = "Ключ истории недоступен. Исходный архив сохранён." }
+            catch VoiceHistory.ExportError.damagedArchive { message = "Не удалось расшифровать исходный архив." }
+            catch VoiceHistory.ExportError.invalidArchive { message = "Не удалось прочитать формат исходного архива." }
+            catch ClipboardTransfer.Failure.password { message = "Пароль должен содержать от 12 до 1024 байт UTF-8." }
+            catch { message = "Не удалось создать защищённый экспорт." }
+            DispatchQueue.main.async {
+                let result = NSAlert()
+                result.messageText = message
+                result.runModal()
+            }
+        }
+    }
+
     @objc private func toggleClipboardHistory(_ s: NSSwitch) {
         settings.clipboardHistoryEnabled = (s.state == .on)
         ClipboardWatcher.shared.apply()

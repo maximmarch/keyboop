@@ -160,3 +160,9 @@ bash install-local.sh
 ## Лицензия
 
 MIT — см. [LICENSE](LICENSE) и [THIRD_PARTY.md](THIRD_PARTY.md).
+
+### Перенос истории буфера в SelectionBar
+
+В подробных настройках, в разделе «Общие → Данные», можно создать защищённый
+паролем архив только clipboard-записей. Исходная история диктовок, аудио и
+ключи не изменяются. [Порядок переноса](docs/migrations/clipboard-transfer.md).

@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import Security
+import LocalAuthentication
 
 /// Небольшая история диктовок и, по отдельному тумблеру, скопированного текста (задача 228),
 /// зашифрованная AES-GCM (ключ — в Keychain). Никогда не покидает Mac (принцип №2). Можно выключить
@@ -192,6 +193,43 @@ final class VoiceHistory {
     /// Открытое окно истории слушает это и перестраивается мгновенно (не ждёт поллинга).
     private func notifyChanged() {
         DispatchQueue.main.async { NotificationCenter.default.post(name: .keyboopVoiceHistoryChanged, object: nil) }
+    }
+
+    enum ExportError: Error { case missingArchive, keyUnavailable, damagedArchive, invalidArchive }
+
+    /// Read-only migration path. Do not initialize the singleton, resolve a new
+    /// key, prune history, or run the orphan-audio cleanup.
+    static func clipboardExport() throws -> ClipboardTransfer.Payload {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Keyboop", isDirectory: true)
+        let data: Data
+        do { data = try Data(contentsOf: directory.appendingPathComponent("history.enc")) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { throw ExportError.missingArchive }
+        catch { throw ExportError.damagedArchive }
+        guard let box = try? AES.GCM.SealedBox(combined: data) else { throw ExportError.damagedArchive }
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        var query = keychainBase
+        query[kSecUseAuthenticationContext as String] = context
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        let keys = [cachedKey,
+                    (status == errSecSuccess ? item as? Data : nil).flatMap { $0.count == 32 ? SymmetricKey(data: $0) : nil },
+                    (try? Data(contentsOf: directory.appendingPathComponent(".histkey"))).flatMap {
+                        $0.count == 32 ? SymmetricKey(data: $0) : nil
+                    }].compactMap { $0 }
+        guard !keys.isEmpty else { throw ExportError.keyUnavailable }
+        guard let clear = keys.lazy.compactMap({ try? AES.GCM.open(box, using: $0) }).first else {
+            throw ExportError.damagedArchive
+        }
+        let entries: [ClipboardTransfer.Entry]
+        do { entries = try ClipboardTransfer.exportEntries(from: clear) }
+        catch { throw ExportError.invalidArchive }
+        return .init(schemaVersion: 1, exportedAt: Date(), sourceApplication: "Keyboop",
+                     sourceVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.4",
+                     entries: entries)
     }
 
     // MARK: - Шифрование
