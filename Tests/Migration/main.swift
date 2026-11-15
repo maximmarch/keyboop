@@ -24,3 +24,15 @@ if CommandLine.arguments.count == 2 {
     try archive.write(to: URL(fileURLWithPath: CommandLine.arguments[1]), options: .atomic)
 }
 print("Clipboard-only export and encrypted round trip passed")
+
+
+let selection = HistoryPolicy.capped(rows, maxDictation: 0, maxImported: 1)
+let future = date.addingTimeInterval(1)
+precondition(!HistoryPolicy.isExpired(rows[1], before: future))
+precondition(HistoryPolicy.isExpired(rows[0], before: future))
+precondition(!HistoryPolicy.isExpired(rows[2], before: future))
+precondition(HistoryPolicy.visibleVoiceEntries(rows) == [rows[0], rows[2], rows[3]])
+precondition(selection.dropped == [rows[0]])
+let retained = try ClipboardTransfer.exportEntries(from: JSONEncoder().encode(selection.kept))
+precondition(retained == entries)
+print("Legacy clipboard survives voice retention and caps, and is hidden from voice history")

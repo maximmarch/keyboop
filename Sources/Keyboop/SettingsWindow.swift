@@ -3110,20 +3110,10 @@ final class DetailVC: NSViewController {
             card([ switchRow(L10n.t("gen.silent"), L10n.t("gen.silentSub"),
                              !settings.silentMode, #selector(toggleSoundsEnabled), key: "gen.silent") ]),
             group(6),
-            // Захват буфера в историю (задача 228). Стоит в «Общих», а не в голосовом наборе
-            // (решение автора 04.09.2026): буфер не имеет отношения к голосу, а общая история уже не
-            // только про диктовку. Зависит от «Хранить историю»: без неё строка гаснет и подсказка
-            // говорит, где включить. Остальные настройки истории остаются в голосовом наборе.
-            sectionTitle(L10n.t("gen.history")),
-            card([ switchRow(L10n.t("gen.clipHistory"),
-                             settings.voiceHistoryEnabled ? L10n.t("gen.clipHistorySub") : L10n.t("gen.clipHistoryNeedsHistory"),
-                             settings.voiceHistoryEnabled && settings.clipboardHistoryEnabled, #selector(toggleClipboardHistory),
-                             enabled: settings.voiceHistoryEnabled, help: L10n.t("gen.clipHistoryHelp"), key: "gen.clipHistory") ]),
-            group(2),
             sectionTitle("Данные / Data"),
             card([ buttonRow([NSButton(title: "Экспортировать историю буфера…", target: self,
                                         action: #selector(exportClipboardHistory))]) ]),
-            hint(L10n.t("gen.historyHint")),
+            hint(L10n.t("gen.clipboardMigrationHint")),
             group(6),
             sectionTitle(L10n.t("gen.access")),
             card([ buttonRow([perm, mic]) ]),
@@ -6072,13 +6062,8 @@ final class DetailVC: NSViewController {
     @objc private func voiceModeChanged(_ s: NSSegmentedControl) { settings.voiceHoldMode = s.selectedSegment == 1 ? "toggle" : "hold" }
     @objc private func toggleVoiceHistory(_ s: NSSwitch) {
         settings.voiceHistoryEnabled = (s.state == .on)
-        // Без истории буфер не пишем. Зависимая строка живёт в «Общих» и перестроится при показе
-        // раздела, поэтому перерисовывать текущий раздел (и сбрасывать прокрутку) незачем.
-        ClipboardWatcher.shared.apply()
     }
-    /// Захват буфера (задача 228). Выключение сразу останавливает новые записи; судьбу уже
-    /// собранных решает человек: тумблер не удаляет ничего молча, промах пальцем не стоит
-    /// истории, но и «выключил, а оно лежит» без вопроса не оставляем.
+
     @objc private func exportClipboardHistory() {
         let perform = { [weak self] in self?.presentClipboardExport() }
         if HistoryGate.enabled { HistoryGate.promptUnlock { if $0 { perform() } } }
@@ -6134,26 +6119,6 @@ final class DetailVC: NSViewController {
         }
     }
 
-    @objc private func toggleClipboardHistory(_ s: NSSwitch) {
-        settings.clipboardHistoryEnabled = (s.state == .on)
-        ClipboardWatcher.shared.apply()
-        guard s.state == .off else { return }
-        let n = VoiceHistory.shared.clipboardCount
-        guard n > 0 else { return }
-        let a = NSAlert()
-        a.messageText = String(format: L10n.t("gen.clipOff.title"), n)
-        a.informativeText = L10n.t("gen.clipOff.msg")
-        a.addButton(withTitle: L10n.t("gen.clipOff.keep"))
-        let del = a.addButton(withTitle: L10n.t("gen.clipOff.delete"))
-        del.hasDestructiveAction = true
-        if let w = view.window {
-            a.beginSheetModal(for: w) { r in
-                if r == .alertSecondButtonReturn { VoiceHistory.shared.removeClipboardEntries() }
-            }
-        } else if a.runModal() == .alertSecondButtonReturn {
-            VoiceHistory.shared.removeClipboardEntries()
-        }
-    }
     /// Включили — модель уходит из памяти сразу, не дожидаясь следующей диктовки. Выключили —
     /// греем её обратно, иначе первая диктовка после этого заплатила бы за загрузку зря.
     @objc private func toggleUnloadAfterDictation(_ s: NSSwitch) {

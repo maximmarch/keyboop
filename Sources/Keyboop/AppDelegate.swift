@@ -256,8 +256,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.promptModelDownload() }
         }
         VoiceController.shared.preload()   // прогрев модели в фоне → первое нажатие диктовки без задержки
-        VoiceHistory.migrateKeyIfNeeded()  // ключ истории: старый .histkey → Keychain (security-аудит M1, 01.07)
-        ClipboardWatcher.shared.apply()    // история буфера (задача 228): живёт только при явном тумблере
         CallRecorder.recoverUnfinishedSessions()   // запись звонка, оборванная крэшем или выключением (230)
 
         // Dev-помощник: запуск с --settings[=snippets] сразу открывает Настройки (на нужном разделе).

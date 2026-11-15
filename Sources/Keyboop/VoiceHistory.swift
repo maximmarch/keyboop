@@ -3,14 +3,13 @@ import CryptoKit
 import Security
 import LocalAuthentication
 
-/// Небольшая история диктовок и, по отдельному тумблеру, скопированного текста (задача 228),
-/// зашифрованная AES-GCM (ключ — в Keychain). Никогда не покидает Mac (принцип №2). Можно выключить
-/// целиком (voiceHistoryEnabled); захват буфера включается отдельно (clipboardHistoryEnabled).
+/// Encrypted voice history with export-only legacy clipboard records.
 final class VoiceHistory {
     static let shared = VoiceHistory()
     private let settings = AppSettings.shared
     private let fileURL: URL
     private var cache: [Entry] = []
+    private var archiveUnavailable = false
 
     /// Запись живёт в `ClipboardHistoryCore.swift` (`HistoryEntry`): с 04.09.2026 в ленте два типа
     /// записей, и стенд проверяет чтение старых файлов без самой истории. Правило про Optional-поля
@@ -22,7 +21,8 @@ final class VoiceHistory {
             .appendingPathComponent("Keyboop", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("history.enc")
-        cache = load()
+        do { cache = try load() }
+        catch { archiveUnavailable = true; return }
         if prune() { save() }   // на старте подчистить записи старше срока хранения
         // Сироты: клипы, чьи записи исчезли путём, который про файлы не знал (перевыпуск ключа
         // обнуляет историю целиком). Один проход по каталогу на старте, это дешевле, чем накопить
@@ -45,17 +45,6 @@ final class VoiceHistory {
             return
         }
         cache.append(Entry(date: Date(), text: text, audio: audio, wave: wave, kind: .dictation))
-        _ = prune()
-        applyCaps()
-        save()
-        notifyChanged()
-    }
-
-    /// Текст из буфера обмена (задача 228). Тумблер захвата проверяет наблюдатель, но и здесь
-    /// стоит защёлка: запись, пришедшая после выключения, не должна проскочить.
-    func addClipboard(_ text: String, app: String?) {
-        guard settings.voiceHistoryEnabled, settings.clipboardHistoryEnabled else { return }
-        cache.append(Entry(date: Date(), text: text, kind: .clipboard, app: app))
         _ = prune()
         applyCaps()
         save()
@@ -86,21 +75,6 @@ final class VoiceHistory {
         cache = kept
     }
 
-    /// Сколько записей буфера лежит в истории (для вопроса при выключении захвата).
-    var clipboardCount: Int { cache.filter { $0.isClipboard }.count }
-
-    /// Последний записанный текст буфера: наблюдатель не пишет один и тот же текст дважды подряд.
-    var lastClipboardText: String? { HistoryPolicy.lastClipboardText(cache) }
-
-    /// Удалить только записи буфера (человек выключил захват и попросил стереть собранное).
-    /// Диктовки не трогаем: он выключил буфер, а не историю.
-    func removeClipboardEntries() {
-        guard cache.contains(where: { $0.isClipboard }) else { return }
-        cache.removeAll { $0.isClipboard }
-        save()
-        notifyChanged()
-    }
-
     /// Удалить записи старше voiceHistoryMinutes (0 = хранить всё). true — если что-то удалили.
     @discardableResult
     func prune() -> Bool {
@@ -109,8 +83,8 @@ final class VoiceHistory {
         let cutoff = Date().addingTimeInterval(-Double(mins) * 60)
         let before = cache.count
         // Импортированные файлы срок хранения не трогает (см. addImported).
-        cache.filter { $0.date < cutoff && !$0.isImported }.compactMap { $0.audio }.forEach(VoiceClips.delete)
-        cache.removeAll { $0.date < cutoff && !$0.isImported }
+        cache.filter { HistoryPolicy.isExpired($0, before: cutoff) }.compactMap { $0.audio }.forEach(VoiceClips.delete)
+        cache.removeAll { HistoryPolicy.isExpired($0, before: cutoff) }
         return cache.count != before
     }
 
@@ -128,7 +102,7 @@ final class VoiceHistory {
     func countOlder(thanMinutes mins: Int) -> Int {
         guard mins > 0 else { return 0 }
         let cutoff = Date().addingTimeInterval(-Double(mins) * 60)
-        return cache.filter { $0.date < cutoff && !$0.isImported }.count
+        return cache.filter { HistoryPolicy.isExpired($0, before: cutoff) }.count
     }
 
     /// Применить новый срок хранения (зовётся из настроек) — подчистить + обновить окно.
@@ -146,7 +120,7 @@ final class VoiceHistory {
     /// Это не про удобство, а про принцип №2: срок хранения это обещание, а не оформление.
     func all() -> [Entry] {
         if prune() { save() }
-        return cache
+        return HistoryPolicy.visibleVoiceEntries(cache)
     }
 
     /// Последняя диктовка, которую ПРЯМО СЕЙЧАС законно показать: история включена и запись ещё не
@@ -178,16 +152,21 @@ final class VoiceHistory {
     var hasAnyDictation: Bool { HistoryPolicy.lastDictation(cache) != nil }
 
     func remove(date: Date, text: String) {
-        cache.filter { $0.date == date && $0.text == text }.compactMap { $0.audio }.forEach(VoiceClips.delete)
-        cache.removeAll { $0.date == date && $0.text == text }
+        cache.filter { !$0.isClipboard && $0.date == date && $0.text == text }.compactMap { $0.audio }.forEach(VoiceClips.delete)
+        cache.removeAll { !$0.isClipboard && $0.date == date && $0.text == text }
         save()
         notifyChanged()
     }
-    func clear() {
-        cache.removeAll()
-        VoiceClips.deleteAll()
-        try? FileManager.default.removeItem(at: fileURL)
+    @discardableResult
+    func clear(includingLegacyClipboard: Bool = false) -> Bool {
+        guard !archiveUnavailable else { return false }
+        let kept = includingLegacyClipboard ? [] : cache.filter { $0.isClipboard }
+        let old = cache
+        cache = kept
+        guard save() else { cache = old; return false }
+        VoiceClips.keepOnly(Set(kept.compactMap { $0.audio }))
         notifyChanged()
+        return true
     }
 
     /// Открытое окно истории слушает это и перестраивается мгновенно (не ждёт поллинга).
@@ -234,40 +213,48 @@ final class VoiceHistory {
 
     // MARK: - Шифрование
 
-    private func save() {
-        guard let key = Self.key() else { return }
+    @discardableResult
+    private func save() -> Bool {
+        guard !archiveUnavailable, let key = Self.key() else { return false }
         do {
             let data = try JSONEncoder().encode(cache)
             let sealed = try AES.GCM.seal(data, using: key)
-            if let combined = sealed.combined {
-                try combined.write(to: fileURL, options: [.atomic])
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
-            }
-        } catch { kbLog("voice history save error: \(error)") }
-    }
-    private func load() -> [Entry] {
-        guard let key = Self.key(),
-              let blob = try? Data(contentsOf: fileURL),
-              let box = try? AES.GCM.SealedBox(combined: blob),
-              let data = try? AES.GCM.open(box, using: key),
-              let entries = try? JSONDecoder().decode([Entry].self, from: data)
-        else { return [] }
-        return entries
+            guard let combined = sealed.combined else { return false }
+            try combined.write(to: fileURL, options: [.atomic])
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+            return true
+        } catch {
+            kbLog("voice history save failed")
+            return false
+        }
     }
 
-    // Ключ AES-256 живёт в Keychain (kSecAttrAccessibleWhenUnlockedThisDeviceOnly). Раньше лежал в
-    // файле .histkey РЯДОМ с шифртекстом — при self-signed сборке Keychain переспрашивал пароль
-    // (нестабильный cdhash), поэтому был выбран файл. Теперь приложение подписано Developer ID →
-    // identity стабильна, ключ переехал в Keychain: локальный атакующий (тот же uid) больше НЕ читает
-    // ключ вместе с шифртекстом (security-аудит M1, 01.07). Ключ per-bundle (service = bundle id).
-    //
-    // ⚠️ Два железных правила ПОСЛЕ инцидента 23.07.2026 (диалог «введи пароль связки» в конце
-    // диктовки; он же включает secure input → guard в TextReplacer съедает распознанный текст):
-    //  1. DEV-сборки (self-signed, подпись меняется каждой пересборкой) в связку НЕ ходят вообще —
-    //     ключ в файле 0600. Иначе ACL перестаёт узнавать бинарь после КАЖДОЙ сборки.
-    //  2. Любое чтение связки — БЕЗ ПРАВА НА ДИАЛОГ. Не узнала подпись (переезд на новый Mac,
-    //     смена сертификата) — молча перевыпускаем ключ: история — журнал удобства на 50 записей,
-    //     свежая пустая лучше пароля посреди диктовки («пользователь подумает, что вирус»).
+    private func load() throws -> [Entry] {
+        let blob: Data
+        do { blob = try Data(contentsOf: fileURL) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+        let box = try AES.GCM.SealedBox(combined: blob)
+        for key in Self.existingKeys() {
+            guard let data = try? AES.GCM.open(box, using: key) else { continue }
+            let entries = try JSONDecoder().decode([Entry].self, from: data)
+            Self.cachedKey = key
+            return entries
+        }
+        throw ExportError.keyUnavailable
+    }
+
+    private static func existingKeys() -> [SymmetricKey] {
+        let file = try? Data(contentsOf: supportDir().appendingPathComponent(".histkey"))
+        let keychain = devBuild && file?.count == 32 ? nil : keychainRead()
+        let candidates = devBuild ? [file, keychain] : [keychain, file]
+        return candidates.compactMap { data in
+            guard let data, data.count == 32 else { return nil }
+            return SymmetricKey(data: data)
+        }
+    }
+
+    // Read existing keys without rotating them. New archives use Keychain in production,
+    // with the existing private file fallback. Development archives prefer the file.
     private static let keychainService = (Bundle.main.bundleIdentifier ?? "ru.keyboop.app") + ".voicehistory"
     private static let keychainAccount = "history-aes-key"
     private static var cachedKey: SymmetricKey?
@@ -275,57 +262,35 @@ final class VoiceHistory {
 
     private static func key() -> SymmetricKey? {
         if let k = cachedKey { return k }
-        let k = resolveKey(); cachedKey = k; return k
+        let archive = supportDir().appendingPathComponent("history.enc")
+        do {
+            let blob = try Data(contentsOf: archive)
+            guard let box = try? AES.GCM.SealedBox(combined: blob),
+                  let k = existingKeys().first(where: { (try? AES.GCM.open(box, using: $0)) != nil })
+            else { return nil }
+            cachedKey = k
+            return k
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            let k = resolveKey(); cachedKey = k; return k
+        } catch { return nil }
     }
 
-    /// Достаём ключ. Prod: Keychain → миграция старого файлового ключа → генерация нового (фолбэк
-    /// на файл, только если Keychain недоступен). Dev: файл → одноразовый переезд ИЗ связки → генерация.
+    /// Called only for a missing archive. Preserve any existing key, including the legacy file.
     private static func resolveKey() -> SymmetricKey? {
+        if let existing = existingKeys().first { return existing }
         let keyURL = supportDir().appendingPathComponent(".histkey")
-
-        if devBuild {
-            if let data = try? Data(contentsOf: keyURL), data.count == 32 { return SymmetricKey(data: data) }
-            if let data = keychainRead(), data.count == 32 {              // одноразовый переезд связка → файл
-                writeKeyFile(data, to: keyURL)
-                SecItemDelete(keychainBase as CFDictionary)
-                kbLog("voice history key: dev — ключ перенесён из Keychain в файл (пересборки меняют подпись)")
-                return SymmetricKey(data: data)
-            }
-            let key = SymmetricKey(size: .bits256)
-            writeKeyFile(key.withUnsafeBytes { Data(Array($0)) }, to: keyURL)
-            kbLog("voice history key: dev — новый файловый ключ")
-            return key
-        }
-
-        if let data = keychainRead(), data.count == 32 { return SymmetricKey(data: data) }
-
-        if let data = try? Data(contentsOf: keyURL), data.count == 32 {   // миграция файл → Keychain
-            if keychainWrite(data) {
-                try? FileManager.default.removeItem(at: keyURL)
-                kbLog("voice history key: перенесён .histkey → Keychain")
-            }
-            return SymmetricKey(data: data)
-        }
-
-        let key = SymmetricKey(size: .bits256)                            // новый ключ
-        let data = key.withUnsafeBytes { Data(Array($0)) }
-        if !keychainWrite(data) {                                         // Keychain недоступен → файловый фолбэк 0600
-            writeKeyFile(data, to: keyURL)
-            kbLog("voice history key: Keychain недоступен → файловый фолбэк")
-        }
+        let key = SymmetricKey(size: .bits256)
+        let data = key.withUnsafeBytes { Data($0) }
+        if !devBuild, keychainWrite(data) { return key }
+        guard !FileManager.default.fileExists(atPath: keyURL.path) else { return nil }
+        writeKeyFile(data, to: keyURL)
+        guard (try? Data(contentsOf: keyURL)) == data else { return nil }
         return key
     }
 
     private static func writeKeyFile(_ data: Data, to url: URL) {
         try? data.write(to: url, options: [.atomic])
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-    }
-
-    /// Форсировать миграцию файлового ключа в Keychain при запуске (после обновления) — БЕЗ загрузки
-    /// записей. No-op, если старого `.histkey` нет (мигрировать нечего) или ключ уже в Keychain.
-    static func migrateKeyIfNeeded() {
-        guard FileManager.default.fileExists(atPath: supportDir().appendingPathComponent(".histkey").path) else { return }
-        _ = key()   // резолвит: перенесёт .histkey → Keychain и удалит файл
     }
 
     private static func supportDir() -> URL {
@@ -343,7 +308,7 @@ final class VoiceHistory {
 
     /// Чтение строго БЕЗ диалога: SecKeychainSetUserInteractionAllowed(false) на время запроса.
     /// errSecInteractionNotAllowed = связка узнала item, но не узнала НАС → это тот самый диалог;
-    /// возвращаем nil, выше по стеку ключ молча перевыпустится (см. правило №2 в комменте у service).
+    /// возвращаем nil; недоступный существующий архив остаётся нетронутым.
     private static func keychainRead() -> Data? {
         var wasAllowed: DarwinBoolean = true
         SecKeychainGetUserInteractionAllowed(&wasAllowed)
@@ -355,7 +320,7 @@ final class VoiceHistory {
         var out: CFTypeRef?
         let st = SecItemCopyMatching(q as CFDictionary, &out)
         if st == errSecInteractionNotAllowed {
-            kbLog("voice history key: связка требует диалог (identity сменилась) — перевыпускаю ключ молча")
+            kbLog("voice history key: связка требует диалог (identity сменилась)")
             return nil
         }
         guard st == errSecSuccess, let d = out as? Data else { return nil }
@@ -364,7 +329,6 @@ final class VoiceHistory {
 
     @discardableResult
     private static func keychainWrite(_ data: Data) -> Bool {
-        SecItemDelete(keychainBase as CFDictionary)
         var add = keychainBase
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly

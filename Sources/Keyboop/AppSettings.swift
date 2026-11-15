@@ -482,7 +482,6 @@ final class AppSettings {
     var voiceHistoryEnabled: Bool { get { d.object(forKey: "voiceHistoryEnabled") == nil ? true : d.bool(forKey: "voiceHistoryEnabled") } set { d.set(newValue, forKey: "voiceHistoryEnabled") } }
     /// Записывать в общую историю текст, скопированный в буфер обмена (задача 228). По умолчанию
     /// ВЫКЛЮЧЕНО и включается только явно: включённая история диктовок его не включает.
-    var clipboardHistoryEnabled: Bool { get { d.bool(forKey: "clipboardHistoryEnabled") } set { d.set(newValue, forKey: "clipboardHistoryEnabled") } }
     /// Сколько минут хранить историю диктовок (0 = без удаления). По умолчанию 60 мин (1 час).
     /// Миграция с voiceHistoryDays: конвертим дни → минуты, cap 480 (8ч).
     var voiceHistoryMinutes: Int {

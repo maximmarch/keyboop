@@ -497,7 +497,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     }
     /// Подсказка пустого окна зависит от того, что в него вообще может попасть.
     private func emptyText() -> String {
-        AppSettings.shared.clipboardHistoryEnabled ? L10n.t("hist.emptyClip") : L10n.t("hist.empty")
+        L10n.t("hist.empty")
     }
     private func reloadIfChanged() {
         let c = VoiceHistory.shared.all().count
