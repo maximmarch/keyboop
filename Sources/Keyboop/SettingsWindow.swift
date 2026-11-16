@@ -2522,33 +2522,6 @@ final class DetailVC: NSViewController {
             pickRows.append(controlRow(L10n.t("snip.pickCombo"), pickPop, key: "snip.pickCombo"))
         }
 
-        // ВСТАВКА БЕЗ ФОРМАТИРОВАНИЯ (задача 102). Живёт рядом со сниппетами: обе про то, что
-        // попадает в текст из буфера, а не про раскладку.
-        //
-        // ⚠️ Готовые сочетания списком, БЕЗ записи своего. Конечный автомат записи уже существует в
-        // трёх экземплярах (голос, перевод, сниппеты), и рядом с ним прямым текстом написано, что
-        // четвёртый был бы худшим решением. Трёх вариантов тут хватает: осмысленны только сочетания
-        // с ⌘V, других всё равно нет.
-        let plainPop = NSPopUpButton()
-        plainPop.addItems(withTitles: Self.plainPastePresets.map { $0.0 })
-        plainPop.selectItem(at: Self.plainPastePresets.firstIndex {
-            $0.1 == settings.plainPasteKeyCode && $0.2 == settings.plainPasteModifiers
-        } ?? 0)
-        plainPop.target = self; plainPop.action = #selector(plainPasteComboChanged(_:))
-
-        // ⚠️ СВОЙ БЛОК, А НЕ СТРОКА ВНУТРИ СНИППЕТОВ (автор 10.08). Сначала я положил её в карточку
-        // вставки по сочетанию, потому что обе про буфер. Это неверно: сниппеты вставляют НАШ
-        // заготовленный текст, а эта настройка меняет способ вставки ЧУЖОГО, скопированного человеком.
-        // Соседство по механике не делает функции одной темой, и в списке настроек это читалось как
-        // «одна из настроек сниппетов».
-        var plainRows: [NSView] = [
-            switchRow(L10n.t("paste.plain"), L10n.t("paste.plainSub"), settings.plainPaste,
-                      #selector(togglePlainPaste(_:)), help: L10n.t("paste.plainHelp"), key: "paste.plain")
-        ]
-        if settings.plainPaste {
-            plainRows.append(controlRow(L10n.t("paste.plainCombo"), plainPop, key: "paste.plainCombo"))
-        }
-
         // Смена регистра выделенного (задача 122). Живёт в том же разделе, потому что это тоже
         // работа с чужим текстом по сочетанию, а не с раскладкой.
         let casePop = NSPopUpButton()
@@ -2584,13 +2557,6 @@ final class DetailVC: NSViewController {
             keys,                        // [Пробел] [Enter] [Tab]
             disabled,                    // «Автозамена отключена…» — видна, когда все галочки сняты
             hint(L10n.t("snip.hint")),   // раскладка/регистр не учитываются + пример
-            group(DS.itemGap),
-            // Между автозаменой и сниппетами: это отдельная функция, а не настройка соседей.
-            sectionTitle(L10n.t("paste.section")),
-            card(plainRows),
-            group(DS.itemGap),
-            sectionTitle(L10n.t("pq.section")),
-            card(pasteQueueRows()),
             group(DS.itemGap),
             // ПРАВКА ТЕКСТА (перенесено из «Переключения», автор 11.08). Обе настройки чинят не
             // раскладку, а сам набранный текст, и в разделе про конверсию читались как её часть —
@@ -3399,107 +3365,6 @@ final class DetailVC: NSViewController {
         }
     }
 
-    // MARK: - Очередь вставки (KB-022)
-
-    static let pasteQueuePresets: [(String, Int, UInt64)] = [
-        ("⌃⇧Q", 12, CGEventFlags([.maskControl, .maskShift]).rawValue),
-        ("⌃⌥Q", 12, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
-    ]
-
-    private func pasteQueueRows() -> [NSView] {
-        let q = PasteQueueSettingsStore.shared
-        let pop = NSPopUpButton()
-        var titles = Self.pasteQueuePresets.map { $0.0 }
-        var sel = Self.pasteQueuePresets.firstIndex {
-            $0.1 == q.hotkeyKeyCode && $0.2 == q.hotkeyModifiers
-        }
-        if sel == nil, q.hotkeyEnabled, !q.hotkeyLabel.isEmpty {
-            titles.append(q.hotkeyLabel)
-            sel = titles.count - 1
-        }
-        pop.addItems(withTitles: titles + [L10n.t("snip.pickCustom")])
-        pop.selectItem(at: sel ?? 0)
-        pop.target = self; pop.action = #selector(pasteQueueComboChanged(_:))
-
-        let compPop = NSPopUpButton()
-        compPop.addItems(withTitles: [
-            L10n.t("pq.set.keep"), L10n.t("pq.set.restart"), L10n.t("pq.set.clear")
-        ])
-        let compIndex = PasteQueueCompletionMode.allCases.firstIndex(of: q.completionMode) ?? 0
-        compPop.selectItem(at: compIndex)
-        compPop.target = self; compPop.action = #selector(pasteQueueCompletionChanged(_:))
-
-        var rows: [NSView] = [
-            switchRow(L10n.t("pq.set.hotkey"), L10n.t("pq.set.hotkeySub"), q.hotkeyEnabled,
-                      #selector(togglePasteQueueHotkey(_:)), help: L10n.t("pq.set.help"),
-                      key: "pq.set.hotkey")
-        ]
-        if q.hotkeyEnabled {
-            rows.append(controlRow(L10n.t("pq.set.assign"), pop, key: "pq.set.assign"))
-        }
-        rows.append(controlRow(L10n.t("pq.set.completion"), compPop, key: "pq.set.completion"))
-        rows.append(switchRow(L10n.t("pq.set.manual"), L10n.t("pq.set.manualSub"), q.manualPickAdvances,
-                              #selector(togglePasteQueueManualAdvances(_:)), key: "pq.set.manual"))
-        return rows
-    }
-
-    @objc private func togglePasteQueueHotkey(_ sw: NSSwitch) {
-        let q = PasteQueueSettingsStore.shared
-        if sw.state == .on {
-            let free = Self.pasteQueuePresets.first {
-                HotkeyGuard.ourBusy(mode: "key", keyCode: $0.1, mods: $0.2, excluding: .pasteQueueNext) == nil
-            }
-            guard let preset = free else {
-                startPasteQueueHotkeyRecording()
-                return
-            }
-            q.hotkeyKeyCode = preset.1
-            q.hotkeyModifiers = preset.2
-            q.hotkeyLabel = preset.0
-        } else {
-            q.hotkeyKeyCode = -1
-            q.hotkeyModifiers = 0
-            q.hotkeyLabel = ""
-        }
-        reshow()
-    }
-
-    @objc private func pasteQueueComboChanged(_ p: NSPopUpButton) {
-        let q = PasteQueueSettingsStore.shared
-        let i = p.indexOfSelectedItem
-        if i == p.numberOfItems - 1 {
-            startPasteQueueHotkeyRecording()
-            return
-        }
-        guard i >= 0, i < Self.pasteQueuePresets.count else { return }
-        let preset = Self.pasteQueuePresets[i]
-        if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: preset.1, mods: preset.2, excluding: .pasteQueueNext) {
-            HotkeyGuard.busyAlert(busy); reshow(); return
-        }
-        q.hotkeyKeyCode = preset.1
-        q.hotkeyModifiers = preset.2
-        q.hotkeyLabel = preset.0
-    }
-
-    @objc private func pasteQueueCompletionChanged(_ p: NSPopUpButton) {
-        let i = p.indexOfSelectedItem
-        guard i >= 0, i < PasteQueueCompletionMode.allCases.count else { return }
-        PasteQueueSettingsStore.shared.completionMode = PasteQueueCompletionMode.allCases[i]
-    }
-
-    @objc private func togglePasteQueueManualAdvances(_ sw: NSSwitch) {
-        PasteQueueSettingsStore.shared.manualPickAdvances = (sw.state == .on)
-    }
-
-    private func startPasteQueueHotkeyRecording() {
-        startHotkeyRecording(what: L10n.t("hkrec.what.pasteQueue"), slot: .pasteQueueNext) { code, mods, label in
-            let q = PasteQueueSettingsStore.shared
-            q.hotkeyKeyCode = code
-            q.hotkeyModifiers = mods.rawValue
-            q.hotkeyLabel = label
-        }
-    }
-
     private func startCaseHotkeyRecording() {
         startHotkeyRecording(what: L10n.t("case.title"), slot: .caseChange) { [weak self] code, mods, label in
             self?.settings.caseChangeKeyCode = code
@@ -3513,8 +3378,6 @@ final class DetailVC: NSViewController {
         reshow()
     }
 
-    /// Сочетания для вставки без форматирования. ⇧⌘V первым: в программах, которые это умеют
-    /// сами, оно означает ровно то же самое, и человеку не придётся переучиваться.
     /// Готовые сочетания для смены регистра. Выбраны те, которых нет ни в системе, ни в привычках
     /// редакторов: ⇧F3 из Word занята Mission Control, а ⌃⇧Tab, которое предлагал автор просьбы,
     /// в браузерах листает вкладки.
@@ -3525,28 +3388,6 @@ final class DetailVC: NSViewController {
         ("⌃⇧U", 32, CGEventFlags([.maskControl, .maskShift]).rawValue),
         ("⌃⌥K", 40, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
     ]
-
-    static let plainPastePresets: [(String, Int, UInt64)] = [
-        ("⇧⌘V", 9, CGEventFlags([.maskShift, .maskCommand]).rawValue),
-        ("⌥⌘V", 9, CGEventFlags([.maskAlternate, .maskCommand]).rawValue),
-        ("⌃⌘V", 9, CGEventFlags([.maskControl, .maskCommand]).rawValue),
-    ]
-
-    @objc private func togglePlainPaste(_ s: NSSwitch) {
-        settings.plainPaste = (s.state == .on)
-        reshow()
-    }
-    @objc private func plainPasteComboChanged(_ p: NSPopUpButton) {
-        let i = p.indexOfSelectedItem
-        guard i >= 0, i < Self.plainPastePresets.count else { return }
-        let preset = Self.plainPastePresets[i]
-        if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: preset.1, mods: preset.2, excluding: .plainPaste) {
-            HotkeyGuard.busyAlert(busy); reshow(); return
-        }
-        settings.plainPasteKeyCode = preset.1
-        settings.plainPasteModifiers = preset.2
-        settings.plainPasteKeyLabel = preset.0
-    }
 
     @objc private func toggleCaseChange(_ sw: NSSwitch) {
         if sw.state == .on {

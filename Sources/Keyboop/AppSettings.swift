@@ -594,26 +594,6 @@ final class AppSettings {
     /// Подробности и замеры — в `TypoFix`.
     var typoFix: Bool { get { d.bool(forKey: "typoFix") } set { d.set(newValue, forKey: "typoFix") } }
 
-    /// Вставка без форматирования (задача 102). Выключено по умолчанию: во многих программах
-    /// ⇧⌘V уже означает «вставить и согласовать стиль», и перехватывать чужое работающее
-    /// поведение без спроса нельзя. Подробности — в `PlainPaste`.
-    var plainPaste: Bool { get { d.bool(forKey: "plainPaste") } set { d.set(newValue, forKey: "plainPaste") } }
-    var plainPasteKeyCode: Int {
-        get { d.object(forKey: "plainPasteKeyCode") == nil ? 9 : d.integer(forKey: "plainPasteKeyCode") }   // 9 = «v»
-        set { d.set(newValue, forKey: "plainPasteKeyCode") }
-    }
-    var plainPasteModifiers: UInt64 {
-        get {
-            let v = d.object(forKey: "plainPasteMods") as? Int
-            return UInt64(bitPattern: Int64(v ?? Int(CGEventFlags.maskCommand.rawValue | CGEventFlags.maskShift.rawValue)))
-        }
-        set { d.set(Int(bitPattern: UInt(newValue)), forKey: "plainPasteMods") }
-    }
-    var plainPasteKeyLabel: String {
-        get { d.string(forKey: "plainPasteKeyLabel") ?? "⇧⌘V" }
-        set { d.set(newValue, forKey: "plainPasteKeyLabel") }
-    }
-
     /// ПОСЛЕДНЯЯ РАСКЛАДКА С КАЖДОЙ СТОРОНЫ, ПЕРЕЖИВАЮЩАЯ ПЕРЕЗАПУСК (отзыв #143 от 17.08:
     /// «выбирает то русскую, то русскую ПК»). Сама память в `LayoutManager` была и раньше, но
     /// жила в процессе: после каждого перезапуска первое переключение уходило в ПЕРВУЮ попавшуюся

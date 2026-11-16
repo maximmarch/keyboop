@@ -484,8 +484,6 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
             c = ("instant", s.instantSwitchEnabled, s.instantSwitchMode, s.instantSwitchKeyCode, s.instantSwitchMods, "")
         case .snippet:
             c = ("snippet", s.snippetPickEnabled, "key", s.snippetPickKeyCode, s.snippetPickModifiers, "")
-        case .plainPaste:
-            c = ("plainPaste", s.plainPaste, "key", s.plainPasteKeyCode, s.plainPasteModifiers, "")
         case .caseChange:
             c = ("caseChange", s.caseChangeEnabled, "key", s.caseChangeKeyCode, s.caseChangeModifiers, "")
         case .pasteDictation:
@@ -497,9 +495,6 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         case .typographyUndo:
             let t = TypographySettingsStore.shared
             c = ("typoUndo", t.undoHotkeyEnabled, "key", t.undoKeyCode, t.undoModifiers, "")
-        case .pasteQueueNext:
-            let q = PasteQueueSettingsStore.shared
-            c = ("pasteQueue", q.hotkeyEnabled, "key", q.hotkeyKeyCode, q.hotkeyModifiers, "")
         }
         let combo = "\(c.mode)/\(c.keyCode)/\(c.mods)"
         return "\(c.key)=" + (c.on ? combo : "выкл(\(combo))") + c.tail

@@ -31,7 +31,6 @@ protocol EventTapHandler: AnyObject {
     /// Вставить текст последней диктовки туда, где сейчас каретка (задача 242).
     func handlePasteDictationHotkey()
     /// Вставить следующий элемент очереди вставки (KB-022). ⌘V этим путём не перехватывается.
-    func handlePasteQueueNextHotkey()
     /// Исправить типографику выделенного текста (KB-021 FR-07).
     func handleTypographyFormatHotkey()
     /// Отменить последнее типографическое преобразование (KB-021 FR-09).
@@ -721,15 +720,6 @@ final class EventTap {
                     return swallowDown(keyCode)
                 }
             }
-            // Вставка без форматирования. Стоит ДО перевода и до общего хоткея: сочетание с ⌘V
-            // ни с чем из них не пересекается, а порядок делает поведение предсказуемым.
-            if s.plainPaste, keyMatches(keyCode, s.plainPasteKeyCode) {
-                let want = relevantMods(CGEventFlags(rawValue: s.plainPasteModifiers))
-                if !want.isEmpty, relevantMods(event.flags) == want {
-                    onMain { PlainPaste.paste() }
-                    return swallowDown(keyCode)
-                }
-            }
             // Смена регистра выделенного. Стоит рядом со вставкой без форматирования и переводом:
             // все трое работают с выделением/буфером и обязаны решаться ДО раскладочных веток.
             if s.caseChangeEnabled, keyMatches(keyCode, s.caseChangeKeyCode) {
@@ -754,21 +744,6 @@ final class EventTap {
                     // повторы тоже — иначе из-под зажатого сочетания посыплется сама буква.
                     if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
                         onMain { [weak self] in self?.handler?.handlePasteDictationHotkey() }
-                    }
-                    return swallowDown(keyCode)
-                }
-            }
-            // Очередь вставки (KB-022): своё сочетание, по умолчанию не назначено. Голый ⌘V сюда
-            // не попадает: сочетание без модификаторов не принимается, а запись ⌘V запрещена
-            // общим вердиктом сочетаний (системная вставка).
-            let pq = PasteQueueSettingsStore.shared
-            if pq.hotkeyEnabled, keyMatches(keyCode, pq.hotkeyKeyCode) {
-                let want = relevantMods(CGEventFlags(rawValue: pq.hotkeyModifiers))
-                let isCmdV = keyCode == 9 && want == .maskCommand
-                if !want.isEmpty, !isCmdV, relevantMods(event.flags) == want {
-                    // Автоповтор зажатого сочетания вставил бы всю очередь подряд в одно поле.
-                    if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
-                        onMain { [weak self] in self?.handler?.handlePasteQueueNextHotkey() }
                     }
                     return swallowDown(keyCode)
                 }
