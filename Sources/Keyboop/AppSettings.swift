@@ -100,9 +100,6 @@ final class AppSettings {
             Key.arrowsCancel: true,
             "voiceSoundEnabled": true,
             "voiceSoundVolume": 0.6,
-            "translateSoundEnabled": true,
-            "translateSoundName": "keyboop",   // "keyboop" = наш синтез-звук, "" = без звука, иначе системный
-            "translateSoundVolume": 0.6,
             // Жест физически новый: включать его всем молча нельзя. Звук же заранее включён внутри
             // самой функции — когда человек осознанно включит шлепок, отклик сразу будет живым.
             "slapEnabled": false,
@@ -462,27 +459,12 @@ final class AppSettings {
     /// умолчанию. Два независимых флага это и дают.
     var voiceHudIsland: Bool { get { d.bool(forKey: "voiceHudIsland") } set { d.set(newValue, forKey: "voiceHudIsland") } }
 
-    /// Перевод выделенного текста по хоткею (Apple Translation, macOS 15+). По умолчанию вкл.
-    var translateEnabled: Bool { get { d.object(forKey: "translateEnabled") == nil ? true : d.bool(forKey: "translateEnabled") } set { d.set(newValue, forKey: "translateEnabled") } }
-    /// Хоткей перевода. По умолчанию ⌃⌥T (keyCode 17 + Control+Option).
-    var translateHotkeyKeyCode: Int { get { d.object(forKey: "translateHotkeyKeyCode") == nil ? 17 : d.integer(forKey: "translateHotkeyKeyCode") } set { d.set(newValue, forKey: "translateHotkeyKeyCode") } }
-    var translateHotkeyModifiers: UInt64 { get { let v = d.object(forKey: "translateHotkeyMods") as? Int; return UInt64(bitPattern: Int64(v ?? Int(CGEventFlags.maskControl.rawValue | CGEventFlags.maskAlternate.rawValue))) } set { d.set(Int(bitPattern: UInt(newValue)), forKey: "translateHotkeyMods") } }
-    /// Подпись клавиши хоткея перевода (для отображения «своего» назначения). По умолч. «T».
-    var translateHotkeyKeyLabel: String { get { d.string(forKey: "translateHotkeyKeyLabel") ?? "T" } set { d.set(newValue, forKey: "translateHotkeyKeyLabel") } }
-    /// Звук перевода (отдельный от звука конвертации раскладки). По умолчанию вкл, наш синтез-звук.
-    var translateSoundEnabled: Bool { get { d.bool(forKey: "translateSoundEnabled") } set { d.set(newValue, forKey: "translateSoundEnabled") } }
-    /// Имя звука перевода: "keyboop" = наш синтез-трезвучие, "" = без звука, иначе системный звук по имени.
-    var translateSoundName: String { get { d.string(forKey: "translateSoundName") ?? "keyboop" } set { d.set(newValue, forKey: "translateSoundName") } }
-    var translateSoundVolume: Double { get { d.double(forKey: "translateSoundVolume") } set { d.set(newValue, forKey: "translateSoundVolume") } }
     /// Громкость звука записи (0…1).
     var voiceSoundVolume: Double { get { d.double(forKey: "voiceSoundVolume") } set { d.set(newValue, forKey: "voiceSoundVolume") } }
     /// Уровень полупрозрачности окна истории при включённом режиме (0.15…1).
     var voiceWinOpacity: Double { get { d.double(forKey: "voiceWinOpacity") } set { d.set(newValue, forKey: "voiceWinOpacity") } }
     /// Сохранять небольшую историю диктовок (зашифровано). По умолчанию включено.
     var voiceHistoryEnabled: Bool { get { d.object(forKey: "voiceHistoryEnabled") == nil ? true : d.bool(forKey: "voiceHistoryEnabled") } set { d.set(newValue, forKey: "voiceHistoryEnabled") } }
-    /// Записывать в общую историю текст, скопированный в буфер обмена (задача 228). По умолчанию
-    /// ВЫКЛЮЧЕНО и включается только явно: включённая история диктовок его не включает.
-    var clipboardHistoryEnabled: Bool { get { d.bool(forKey: "clipboardHistoryEnabled") } set { d.set(newValue, forKey: "clipboardHistoryEnabled") } }
     /// Сколько минут хранить историю диктовок (0 = без удаления). По умолчанию 60 мин (1 час).
     /// Миграция с voiceHistoryDays: конвертим дни → минуты, cap 480 (8ч).
     var voiceHistoryMinutes: Int {
@@ -595,26 +577,6 @@ final class AppSettings {
     /// Подробности и замеры — в `TypoFix`.
     var typoFix: Bool { get { d.bool(forKey: "typoFix") } set { d.set(newValue, forKey: "typoFix") } }
 
-    /// Вставка без форматирования (задача 102). Выключено по умолчанию: во многих программах
-    /// ⇧⌘V уже означает «вставить и согласовать стиль», и перехватывать чужое работающее
-    /// поведение без спроса нельзя. Подробности — в `PlainPaste`.
-    var plainPaste: Bool { get { d.bool(forKey: "plainPaste") } set { d.set(newValue, forKey: "plainPaste") } }
-    var plainPasteKeyCode: Int {
-        get { d.object(forKey: "plainPasteKeyCode") == nil ? 9 : d.integer(forKey: "plainPasteKeyCode") }   // 9 = «v»
-        set { d.set(newValue, forKey: "plainPasteKeyCode") }
-    }
-    var plainPasteModifiers: UInt64 {
-        get {
-            let v = d.object(forKey: "plainPasteMods") as? Int
-            return UInt64(bitPattern: Int64(v ?? Int(CGEventFlags.maskCommand.rawValue | CGEventFlags.maskShift.rawValue)))
-        }
-        set { d.set(Int(bitPattern: UInt(newValue)), forKey: "plainPasteMods") }
-    }
-    var plainPasteKeyLabel: String {
-        get { d.string(forKey: "plainPasteKeyLabel") ?? "⇧⌘V" }
-        set { d.set(newValue, forKey: "plainPasteKeyLabel") }
-    }
-
     /// ПОСЛЕДНЯЯ РАСКЛАДКА С КАЖДОЙ СТОРОНЫ, ПЕРЕЖИВАЮЩАЯ ПЕРЕЗАПУСК (отзыв #143 от 17.08:
     /// «выбирает то русскую, то русскую ПК»). Сама память в `LayoutManager` была и раньше, но
     /// жила в процессе: после каждого перезапуска первое переключение уходило в ПЕРВУЮ попавшуюся
@@ -622,27 +584,6 @@ final class AppSettings {
     /// Человек видит это как случайный выбор, потому что перезапуски он не считает.
     var lastLayoutCyr: String { get { d.string(forKey: "lastLayoutCyr") ?? "" } set { d.set(newValue, forKey: "lastLayoutCyr") } }
     var lastLayoutLat: String { get { d.string(forKey: "lastLayoutLat") ?? "" } set { d.set(newValue, forKey: "lastLayoutLat") } }
-
-    /// СМЕНА РЕГИСТРА ВЫДЕЛЕННОГО (задача 122, просьба пользователя 10.08 + решение автора).
-    ///
-    /// Комбинация НЕ фиксирована и по умолчанию НЕ назначена (`-1`): человек выбирает сам, а мы
-    /// не отбираем ни одного сочетания у тех, кому функция не нужна. Включение ставит первое
-    /// свободное из готовых, см. `HotkeyGuard` и настройки.
-    var caseChangeKeyCode: Int {
-        get { d.object(forKey: "caseChangeKeyCode") == nil ? -1 : d.integer(forKey: "caseChangeKeyCode") }
-        set { d.set(newValue, forKey: "caseChangeKeyCode") }
-    }
-    var caseChangeModifiers: UInt64 {
-        get { UInt64(bitPattern: Int64(d.integer(forKey: "caseChangeMods"))) }
-        set { d.set(Int(bitPattern: UInt(newValue)), forKey: "caseChangeMods") }
-    }
-    var caseChangeKeyLabel: String {
-        get { d.string(forKey: "caseChangeKeyLabel") ?? "" }
-        set { d.set(newValue, forKey: "caseChangeKeyLabel") }
-    }
-    /// Функция живёт ровно тогда, когда назначено сочетание. Отдельного тумблера-состояния нет:
-    /// два источника правды («включено» и «есть комбинация») разъезжаются, это уже проходили.
-    var caseChangeEnabled: Bool { caseChangeKeyCode >= 0 }
 
     /// ВСТАВИТЬ ПОСЛЕДНЮЮ ДИКТОВКУ ПО СОЧЕТАНИЮ (задача 242, отзыв #245 от @KlymenkoOleksandra,
     /// 05.09.2026): «надиктовал, нажал „Завершить“, а курсор оказался не в том поле».

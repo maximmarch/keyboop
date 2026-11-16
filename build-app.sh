@@ -200,7 +200,7 @@ swiftc -O Sources/Keyboop/*.swift \
   -ltranscribe -lggml -lggml-cpu -lggml-metal -lggml-base -lc++ -lm \
   -framework AppKit -framework Carbon -framework ServiceManagement -framework ApplicationServices -framework IOKit \
   -framework AVFoundation -framework CoreAudio -framework AudioToolbox -framework Metal -framework MetalKit -framework Accelerate -framework Foundation \
-  -framework SwiftUI -Xlinker -weak_framework -Xlinker Translation -Xlinker -weak_framework -Xlinker FoundationModels \
+  -framework SwiftUI -Xlinker -weak_framework -Xlinker FoundationModels \
   -F "$SPARKLE" -framework Sparkle \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks
 
@@ -230,7 +230,7 @@ if [ "${KEYBOOP_UNIVERSAL:-}" = "1" ]; then
     -ltranscribe -lggml -lggml-cpu -lggml-base -lc++ -lm \
     -framework AppKit -framework Carbon -framework ServiceManagement -framework ApplicationServices -framework IOKit \
     -framework AVFoundation -framework CoreAudio -framework AudioToolbox -framework Accelerate -framework Foundation \
-    -framework SwiftUI -Xlinker -weak_framework -Xlinker Translation -Xlinker -weak_framework -Xlinker FoundationModels \
+    -framework SwiftUI -Xlinker -weak_framework -Xlinker FoundationModels \
     -F "$SPARKLE" -framework Sparkle \
     -Xlinker -rpath -Xlinker @executable_path/../Frameworks
   lipo -create "$APP/Contents/MacOS/.Keyboop-arm64" "$APP/Contents/MacOS/.Keyboop-x86" \

@@ -318,12 +318,6 @@ final class Engine: EventTapHandler {
                 guard SnippetPicker.shared.pickLastDictation() else { return }
                 self?.handlePasteDictationHotkey()
             }
-            // Очередь вставки (KB-022): печать идёт через Engine, чтобы на время полёта синтетики
-            // был поднят `muted` — вставленное не должно обрабатываться как новый набор.
-            PasteQueueSystem.shared.executor = { [weak self] text, done in
-                self?.insertFromPasteQueue(text, done: done) ?? false
-            }
-            PasteQueueSystem.shared.install()
             // Открытие и закрытие Spotlight системой не объявляется, поэтому наблюдатель сообщает
             // об этом сам — и дальше всё идёт тем же путём, что и обычная смена программы.
             SpotlightWatch.onChange = { [weak self] in
@@ -1490,72 +1484,6 @@ final class Engine: EventTapHandler {
         }
     }
 
-    func handleTranslateHotkey() {
-        kbLog("translate: хоткей нажат")
-        DispatchQueue.main.async { [weak self] in self?.translateSelection() }
-    }
-
-    /// Перевод выделенного текста (Apple Translation, macOS 15+). Буфер НЕ трогаем (принцип №1):
-    /// читаем выделение через AX, пишем обратно через AX/печать. Направление — по содержимому.
-    private func translateSelection() {
-        guard !muted else { return }
-        if IsSecureEventInputEnabled() { Sounds.beep(); return }   // поле пароля — не читаем выделение (L1, 01.07)
-        liveFixLast = ""                               // ручной хоткей перевода рвёт слово — якорь self-heal сброшен
-        guard #available(macOS 15.0, *) else { kbLog("translate: нужна macOS 15"); Sounds.beep(); return }
-        #if canImport(Translation)
-        muted = true                                  // глушим синтетический Cmd+C от readViaClipboard
-        let sel = SelectionText.read()
-        muted = false
-        guard let (text, writeBack) = sel else { kbLog("translate: выделение не прочитано"); Sounds.beep(); return }
-        // ⚠️ Многострочное выделение в Gecko не трогаем (задача 265, разбор у `SelectionText.AXWritePath`):
-        // AX-запись у Firefox портит текст вокруг, а печать переводов строк туда не проверена.
-        if SelectionText.lastReadRefusedMultiline {
-            kbLog("translate: отказ, в выделении Gecko перевод строки или встроенный объект — не трогаю"); Sounds.beep(); return
-        }
-        let dir = TranslateDirection.of(text)
-        kbLog("translate: \(text.count) симв. \(dir.from)→\(dir.to)…")
-        Task { @MainActor in
-            // Языковой пакет не установлен → ЧЕСТНО говорим баннером (не молчим и не играем «успех»-звук
-            // зря — иначе «звук был, а перевода нет»). Именно этот кейс у большинства новых пользователей.
-            guard await TranslationEngine.shared.isInstalled(from: dir.from, to: dir.to) else {
-                kbLog("translate: языковой пакет \(dir.from)→\(dir.to) не установлен")
-                // Не молчим и не конвертируем раскладку (иначе «привет как дела»→«ghbdtn rfr ltkf»):
-                // баннер с кнопкой «Скачать» ставит пакет прямо из приложения, оба направления сразу.
-                AppBanner.shared.show(
-                    title: L10n.t("tr.needPackTitle"),
-                    body: L10n.t("tr.needPackBody"),
-                    actions: [.init(title: L10n.t("tr.download"), coral: true) {
-                        TranslationEngine.shared.presentDownload(pairs: [("ru", "en"), ("en", "ru")]) { _ in }
-                    }])
-                return
-            }
-            guard let t = await TranslationEngine.shared.translate(text, from: dir.from, to: dir.to),
-                  t != text else { kbLog("translate: пусто/без изменений"); return }
-            self.playTranslateSound()                 // звук — ТОЛЬКО когда реально перевели
-            self.muted = true
-            let viaAX = writeBack?(t) ?? false
-            if !viaAX {
-                TextReplacer.insert(t) { [weak self] in
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self?.muted = false; self?.drainPendingManual() }
-                }
-            } else {   // запись через AX (синтетику не постим) — снимаем muted по таймеру как раньше
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.muted = false; self?.drainPendingManual() }
-            }
-            // Путь записи в лог, как у смены регистра (26.09.2026, отзыв #312): без него не отличить
-            // AX-запись от печати и не увидеть двойную печать.
-            kbLog("translate: \(t.count) симв. записано \(viaAX ? "через AX" : "печатью") в \(Engine.frontmostBundleID())")
-            self.buffer.clear()
-        }
-        #endif
-    }
-
-    // MARK: - Смена регистра выделенного
-
-    func handleCaseHotkey() {
-        kbLog("регистр: хоткей нажат")
-        DispatchQueue.main.async { [weak self] in self?.changeSelectionCase() }
-    }
-
     /// ВСТАВИТЬ ПОСЛЕДНЮЮ ДИКТОВКУ (задача 242, отзыв #245 от 05.09.2026).
     ///
     /// Жалоба дословно: «надиктовал, нажал „Завершить диктовку“, текст вставился, но курсор по
@@ -1649,122 +1577,7 @@ final class Engine: EventTapHandler {
         kbLog("последняя диктовка: вставляю \(text.count) симв.")   // только длина, принцип №2
     }
 
-    /// ОЧЕРЕДЬ ВСТАВКИ (KB-022): следующий элемент по своему сочетанию. ⌘V не трогается никогда.
-    func handlePasteQueueNextHotkey() {
-        DispatchQueue.main.async { PasteQueueCoordinator.shared.pasteNext() }
-    }
-
-    /// Печать элемента очереди. false — наша синтетика ещё летит, ничего не отправлено.
-    /// Буфер набора и контекст типографики чистим: вставленный текст — не ввод человека, и
-    /// достраивать по нему конверсию, опечатки или кавычки нельзя.
-    fileprivate func insertFromPasteQueue(_ text: String,
-                                          done: @escaping (TextReplacer.QueueTypingResult) -> Void) -> Bool {
-        guard !mutedStuckCheck() else { kbLog("очередь вставки: синтетика в полёте, пропускаю"); return false }
-        buffer.clear()
-        liveFixLast = ""
-        TypographyCoordinator.shared.resetContext()
-        muted = true
-        TextReplacer.insertQueueText(text) { [weak self] result in
-            self?.endSyntheticFlight()
-            // Вклинившиеся во время печати клавиши endSyntheticFlight уже учёл; контекст после
-            // вставки всё равно чужой — начинаем следующее слово с чистого листа.
-            self?.buffer.clear()
-            TypographyCoordinator.shared.resetContext()
-            done(result)
-        }
-        return true
-    }
-
-    /// СМЕНА РЕГИСТРА ВЫДЕЛЕННОГО ТЕКСТА (задача 122).
-    ///
-    /// Просьба пользователя дословно: «телефон → ТЕЛЕФОН» по сочетанию. автор уточнил объём: именно
-    /// ВЫДЕЛЕНИЕ, именно везде, и всё выделенное целиком становится заглавным либо строчным,
-    /// независимо от того, что там было. Это работа с типографикой, титрами и заголовками, то есть
-    /// то же самое, что делает Shift+F3 в редакторах и смена регистра в графических программах.
-    ///
-    /// Направление выбирается по содержимому и потому переключается само: есть хоть одна строчная
-    /// буква — поднимаем всё в заглавные; всё уже заглавное — опускаем всё в строчные. Повторное
-    /// нажатие возвращает как было, и запоминать состояние не нужно.
-    ///
-    /// # Про буфер обмена (решение автора 11.08.2026)
-    ///
-    /// Путь тот же, что у перевода и конверсии выделения: сначала Accessibility, и только если
-    /// приложение через AX не отвечает (Electron, веб) — чтение через буфер с полным анти-Punto
-    /// чеклистом. Раньше правило «буфер не трогаем» читалось как абсолютное. Оно родилось из того,
-    /// что предшественник буфер ЛОМАЛ, а не из того, что к буферу нельзя прикасаться, и мы его уже
-    /// используем осознанно (копирование последней диктовки, вставка без форматирования). Здесь
-    /// отказ от буфера означал бы «в половине программ функция не работает», что и есть худший из
-    /// возможных результатов для функции, которую просили сделать «везде».
-    ///
-    /// ⚠️ Многострочность здесь РАЗРЕШЕНА, в отличие от конверсии раскладки, и это осознанно.
-    /// Там запрет защищает от «⌘C при пустом выделении копирует целую строку»: человек хотел
-    /// починить слово, а получил бы правку абзаца. Здесь же заголовок в несколько строк это
-    /// нормальная работа, ради которой функцию и просили. Ограничение осталось одно, на объём.
-    private func changeSelectionCase() {
-        guard !muted else { return }
-        if IsSecureEventInputEnabled() { Sounds.beep(); return }   // поле пароля не читаем никогда
-        liveFixLast = ""
-        muted = true                                  // глушим синтетический Cmd+C от readViaClipboard
-        let sel = SelectionText.read()
-        muted = false
-        guard let (text, writeBack) = sel, !text.isEmpty else {
-            kbLog("регистр: выделение не прочитано"); Sounds.beep(); return
-        }
-        // ⚠️ Единственное исключение из «многострочность разрешена» (задача 265, 26.09.2026): Gecko.
-        // AX-запись у Firefox портит текст вокруг выделения, поэтому там пишем печатью, а печать
-        // переводов строк в Firefox не проверена. Разбор — у `SelectionText.AXWritePath`.
-        if SelectionText.lastReadRefusedMultiline {
-            kbLog("регистр: отказ, в выделении Gecko перевод строки или встроенный объект — не трогаю"); Sounds.beep(); return
-        }
-        guard text.count <= Self.caseChangeMaxChars else {
-            kbLog("регистр: отклонено, \(text.count) симв. — это больше похоже на случайное ⌘A")
-            Sounds.beep(); return
-        }
-        let toUpper = text.contains { $0.isLowercase }
-        let changed = toUpper ? text.uppercased() : text.lowercased()
-        guard changed != text else {                  // в выделении нет букв — менять нечего
-            kbLog("регистр: букв в выделении нет"); Sounds.beep(); return
-        }
-        muted = true
-        let usedSynth = !(writeBack?(changed) ?? false)
-        if usedSynth {
-            // ⚠️ ЗВУК ПОСЛЕ ОТПРАВКИ, А НЕ ДО НЕЁ. Раньше он играл здесь же, на главном потоке, ещё
-            // до того, как задание попадало в очередь синтетики: то есть подтверждал не результат, а
-            // намерение. В приложениях, которые нашу Unicode-вставку принимают плохо (Chromium и
-            // родня, `chromiumFamily`), это и звучит как «звук был, текст не изменился».
-            // `completion` у `insert` зовётся всегда, поэтому звук не потеряется.
-            TextReplacer.insert(changed) { [weak self] in
-                self?.playSound()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self?.muted = false; self?.drainPendingManual() }
-            }
-        } else {
-            playSound()   // AX-путь: приложение уже подтвердило запись
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.muted = false; self?.drainPendingManual() }
-        }
-        buffer.clear()
-        TypographyCoordinator.shared.resetContext()
-        kbLog("регистр: \(text.count) симв. → \(toUpper ? "ЗАГЛАВНЫЕ" : "строчные") (\(usedSynth ? "печатью" : "через AX")) в \(Engine.frontmostBundleID())")
-    }
-
-    /// Потолок на объём. Не защита от больших заголовков, а защита от ⌘A: перевести в верхний
-    /// регистр весь документ по случайному нажатию человек нам не простит, а отменить это одним
-    /// ⌘Z в приложениях, куда мы печатаем посимвольно, может не получиться.
-    private static let caseChangeMaxChars = 5000
-
     // MARK: - Умная типографика (KB-021)
-
-    func handleTypographyFormatHotkey() {
-        TypographyCoordinator.shared.formatSelectedText(
-            activeLayoutHint: activeLayoutHintForTypography(),
-            beginSynthetic: { [weak self] in self?.muted = true },
-            endSynthetic: { [weak self] in
-                guard let self else { return }
-                DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) {
-                    self.endSyntheticFlight()
-                }
-            }
-        )
-    }
 
     func handleTypographyUndoHotkey() {
         let ok = TypographyCoordinator.shared.undoLastTypography(
@@ -1809,145 +1622,6 @@ final class Engine: EventTapHandler {
     }
 
     // MARK: - Конвертация
-
-    /// Конвертация ВЫДЕЛЕННОГО текста (нативные приложения, через AX). true — если выделение
-    /// было и сконвертировано. Направление — по содержимому. Буфер обмена НЕ трогаем (принцип №1).
-    /// Выделение существовало, но мы сознательно отказались его конвертировать (многострочное /
-    /// подозрение на авто-копию строки). Отличается от «выделения не было»: в первом случае человек
-    /// явно на что-то указал, и делать ВМЕСТО этого что-то другое нельзя.
-    private var selectionRefused = false
-
-    private func convertSelection() -> Bool {
-        // Secure Input (поле пароля): НЕ читаем выделение — ни через AX, ни синтетическим Cmd+C, иначе
-        // можно вытащить пароль. Клавиатурный путь уже гейтится в handleKeyDown; закрываем и путь
-        // выделения (security-аудит L1, 01.07).
-        selectionRefused = false
-        if IsSecureEventInputEnabled() { return false }
-        muted = true                                  // глушим синтетический Cmd+C от readViaClipboard
-        let sel = SelectionText.read()
-        guard let (text, writeBack) = sel else {
-            muted = false
-            // ⚠️ Прежняя строка утверждала «падаю на последнее слово» ВСЕГДА — в том числе когда
-            // буфер пуст и падать некуда. На неё я и купился при разборе 28.07. Пишем, что есть.
-            let hasFallback = buffer.wordForConversion(completedOnly: false) != nil
-            kbLog("convert-selection: выделение не прочитано — \(hasFallback ? "падаю на последнее слово" : "и в буфере пусто, ничего не делаю")")
-            return false
-        }
-        // Защита от «Cmd+C при пустом выделении копирует целую строку/абзац» (редакторы, терминалы,
-        // VS Code): многострочный текст — почти наверняка авто-копия, а не намеренное выделение для
-        // смены раскладки. И для clipboard-fallback (writeBack==nil, не можем проверить) — кап по длине.
-        // ⚠️ Многострочность запрещаем ТОЛЬКО в буферном пути (28.07). Запрет существует ради одного:
-        // ⌘C при ПУСТОМ выделении копирует целую строку или абзац (редакторы, терминалы, VS Code),
-        // и без проверки мы бы конвертировали то, чего человек не выделял. В AX-пути такой подмены
-        // быть не может: текст отдаёт само приложение из своего kAXSelectedTextAttribute, то есть
-        // выделение заведомо настоящее. Раньше мы отказывались и там — и человек не мог починить
-        // выделенный абзац, набранный не в той раскладке, хотя это как раз частый случай.
-        let isClipboard = (writeBack == nil)
-        // ⚠️ МНОГОСТРОЧНОЕ В GECKO — ОТКАЗ, как в буферном пути (задача 265, 26.09.2026). Выделение
-        // настоящее (прочитано через AX), но записать его нечем: AX-запись у Firefox портит текст
-        // вокруг, а печать переводов строк туда не проверена. Разбор — у `SelectionText.AXWritePath`.
-        // selectionRefused: человек указал на текст, делать вместо него что-то другое нельзя.
-        if SelectionText.lastReadRefusedMultiline {
-            muted = false
-            selectionRefused = true
-            kbLog("convert-selection: отклонено (\(text.count) симв., в Gecko перевод строки или встроенный объект) — ничего не делаю")
-            return false
-        }
-        // ВЫДЕЛЕН ОБЪЕКТ НА ХОЛСТЕ (Figma). Отдельная ветка ДО предохранителя, потому что по форме
-        // текста этот случай от «⌘C без выделения скопировал строку кода» неотличим: и там, и там
-        // одна строка с переводом в конце. Отличает только доказательство в буфере — данные объекта
-        // Figma рядом с простым текстом (см. SelectionText.lastCopyLooksLikeCanvasNode). Без этого
-        // доказательства мы ничего не меняем и падаем в тот же отказ, что и раньше.
-        //
-        // Многострочный объект пока не берём: печать переводов строки внутри холста это отдельный
-        // разговор (Enter там уже занят входом в текст), а отзыв был про однострочные заголовки.
-        if isClipboard, SelectionText.lastCopyLooksLikeCanvasNode, TextReplacer.primeFirstKey,
-           text.hasSuffix("\n"), !text.dropLast().contains("\n"), !text.contains("\r"),
-           text.count <= Self.canvasObjectMaxChars {
-            let body = String(text.dropLast())
-            let toCyr: Bool
-            if body.hasCyrillic { toCyr = false } else if body.hasLatinLetter { toCyr = true } else { muted = false; return false }
-            let out = Keymap.convert(body, toCyrillic: toCyr)
-            guard out != body else { muted = false; return false }
-            TextReplacer.replaceCanvasObjectText(out) { [weak self] in
-                guard let self else { return }
-                self.layout.selectLayout(cyrillic: toCyr)
-                self.onLayoutMaybeChanged?()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.muted = false; self.drainPendingManual() }
-            }
-            settings.rescuedCount += max(1, body.split(separator: " ").count)
-            buffer.clear()
-            playSound()
-            kbLog("convert-selection: объект холста, \(body.count) симв. → \(toCyr ? "RU" : "EN")")
-            return true
-        }
-        if (isClipboard && (text.contains("\n") || text.contains("\r") || text.count > 80)) {
-            muted = false
-            selectionRefused = true   // выделение БЫЛО — значит трогать что-то ещё нельзя (см. ниже)
-            kbLog("convert-selection: отклонено (\(text.count) симв., многострочн=\(text.contains("\n")), clipboard=\(isClipboard)) — вероятно авто-копия строки, падаю на слово")
-            return false
-        }
-        let toCyrillic: Bool
-        if text.hasCyrillic { toCyrillic = false }
-        else if text.hasLatinLetter { toCyrillic = true }
-        else if let bySymbols = Keymap.unambiguousSymbolDirection(text) {
-            // ВЫДЕЛЕНИЕ БЕЗ БУКВ, ОДНИ ЗНАКИ (задача 268, отзыв #267 от 12.09.2026). Раньше здесь
-            // стоял безусловный отказ «нет букв — нечего переключать», и человек, набравший `^`
-            // вместо запятой, выделял его, жал хоткей и не получал ничего. Направление для знаков
-            // выводится не из букв, а из однозначности самого знака, разбор — у
-            // `Keymap.unambiguousSymbolDirection`. Спорные знаки по-прежнему не трогаем.
-            toCyrillic = bySymbols
-        }
-        else {
-            muted = false
-            kbLog("convert-selection: в выделении нет букв, а знаки спорные — не трогаю")
-            return false
-        }
-        let converted = Keymap.convert(text, toCyrillic: toCyrillic)
-        guard converted != text else { muted = false; return false }
-        let usedSynth = !(writeBack?(converted) ?? false)
-        // Раскладку переключаем ПОСЛЕ печати, а не одновременно с ней.
-        //
-        // ⚠️ ЧЕСТНО: сделано по гипотезе, которая НЕ подтвердилась. Я думал, что первый кусок
-        // Unicode-вставки теряется в Figma из-за того, что `TISSelectInputSource` выполняется на
-        // главном потоке ровно тогда, когда `insert` уже печатает со своей очереди. Перенёс — и в
-        // живой Figma ничего не изменилось, «егодня» осталось «егодня». Настоящая причина другая
-        // и лечится в другом месте (см. `TextReplacer.primeFirstKey`).
-        //
-        // Оставляю всё равно: одновременная смена источника ввода и печать это гонка сама по себе,
-        // а платы за перенос нет — текст печатается Unicode-строкой и от раскладки не зависит,
-        // переключение нужно для того, что человек будет набирать ПОСЛЕ. Разница в две миллисекунды.
-        let switchLayoutAfterwards = { [weak self] in
-            guard let self else { return }
-            self.layout.selectLayout(cyrillic: toCyrillic)
-            self.onLayoutMaybeChanged?()
-        }
-        if usedSynth {
-            TextReplacer.insert(converted) { [weak self] in   // печатаем поверх выделения (Unicode)
-                switchLayoutAfterwards()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self?.muted = false; self?.drainPendingManual() }
-            }
-        } else {
-            switchLayoutAfterwards()   // AX-путь: приложение уже приняло текст, гонки нет
-        }
-        // выделение могло быть из нескольких слов — считаем по словам
-        settings.rescuedCount += max(1, text.split(separator: " ").count)
-        buffer.clear()
-        playSound()                                   // звук конвертации — подтверждение действия
-        // Путь записи в лог (26.09.2026, отзыв #312), как у смены регистра: иначе не отличить
-        // AX-запись от печати поверх выделения и не увидеть двойную печать.
-        kbLog("convert-selection: \(text.count) симв. → \(toCyrillic ? "RU" : "EN") (\(usedSynth ? "печатью" : "через AX"))")
-        if !usedSynth {   // запись через AX — снимаем muted по таймеру
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.muted = false; self?.drainPendingManual() }
-        }
-        return true
-    }
-
-    /// Потолок для замены текста объекта на холсте. Больше обычных 80 символов буферного пути:
-    /// там кап защищает от случайно скопированной строки, а здесь мы ЗНАЕМ, что человек выделил
-    /// объект намеренно. Но и не бесконечность: печатаем посимвольно, и длинный абзац это заметная
-    /// пауза, в которую человек успеет нажать что-то своё.
-    private static let canvasObjectMaxChars = 300
 
     /// Групповая конвертация нескольких слов сессии набора одним хоткеем (эксперимент, groupConvert).
     /// КЛЮЧЕВОЕ (ключевая идея H): конвертируем ПОСЛОВНО только те слова, что LayoutDetector
@@ -2020,7 +1694,7 @@ final class Engine: EventTapHandler {
             }
             return
         }
-        // Ручной хоткей (вкл. group/selection с buffer.clear()) рвёт текущее слово → якорь self-heal
+        // Ручной хоткей (вкл. group с buffer.clear()) рвёт текущее слово → якорь self-heal
         // недействителен. Авто (manual=false) НЕ трогаем — оно не должно стирать якорь набираемого
         // следующего слова (ревью 2026-06-19, закрытие residual-гэпа #2).
         if manual { liveFixLast = "" }
@@ -2032,11 +1706,6 @@ final class Engine: EventTapHandler {
         // Порядок именно такой: сначала отмена, потом всё остальное. Пока на слове висит наша
         // правка, человек почти наверняка целится в неё; когда правки нет, поведение прежнее.
         if manual, undoLastTextFix() { return }
-        // ПОРЯДОК ВАЖЕН (фикс бага #39): если буфер НЕ пуст (только что печатали) — чиним именно
-        // набранное слово, выделение НЕ трогаем. Иначе Cmd+C в редакторах/терминалах при ПУСТОМ
-        // выделении копирует ЦЕЛУЮ СТРОКУ → раньше конвертило 150 символов вместо последнего слова.
-        // Выделение пробуем только когда буфер пуст (клик/мышь чистят буфер = намеренное выделение).
-        if manual, buffer.wordForConversion() == nil, convertSelection() { return }
         // Экспериментально: групповая конвертация нескольких слов сессии (если включено и слов ≥2).
         // ТОЛЬКО при ВЫКЛЮЧЕННОМ авто-переключении: при авто sessionWords рассинхронятся с экраном
         // (авто чинит каждое слово на лету, не обновляя sessionWords) → группа испортила бы текст.
@@ -2048,34 +1717,6 @@ final class Engine: EventTapHandler {
         // молча no-op'ала, а завершённое слово сиротело («иногда не переключается» у быстрых рук).
         guard let item = buffer.wordForConversion(completedOnly: !manual) else {
             if !manual { silentLog("emptybuf", "авто молчит: на границе слова буфер пуст") }
-            // Нечего конвертировать (буфер пуст), но нажат хоткей — крутим тот же цикл раскладок,
-            // что у 🌐. Слово или допустимое выделение по-прежнему идут обычным RU↔EN-путём выше.
-            // ⚠️ Выделение было, но мы от него отказались (многострочное / вероятная авто-копия).
-            // Тогда НИЧЕГО не делаем: смена раскладки со звуком в этот момент — то самое
-            // «звук был, а текст не изменился», по которому люди и решают, что программа сломана.
-            // Человек указал на конкретный текст; сделать вместо него что-то другое хуже, чем
-            // не сделать ничего (28.07, разбор с автором).
-            if manual, selectionRefused {
-                selectionRefused = false
-                kbLog("хоткей: выделение отклонено — ничего не делаю (раскладку не трогаю, звука нет)")
-                return
-            }
-            if manual {
-                let cycled = layout.cycleLayout()
-                onLayoutMaybeChanged?()
-                // ⚠️ ЗВУКА ЗДЕСЬ БОЛЬШЕ НЕТ (отзыв @alpus, 07.09.2026: «звучок смены есть, но
-                // реакции никакой»). Раскладку мы правда переключили, но звук у нас ОДИН и тот же
-                // на конверсию и на цикл, поэтому он обещает изменившийся текст — а текста никто не
-                // трогал. Тот же цикл по 🌐 молчит с 24.07, и принцип «лучше ничего, чем звук
-                // впустую» уже записан этажом выше для отклонённого выделения. О смене раскладки
-                // человеку говорит значок в строке меню, как и на 🌐.
-                // ⚠️ Эта ветка ЗВУЧИТ и МЕНЯЕТ РАСКЛАДКУ, но до 28.07 не писала в лог ни строки.
-                // автор дважды сообщал «во время начала диктовки играет звук конверсии», а
-                // воспроизвести не удаётся — при этом единственный путь, где звук звучит без
-                // всякой конверсии, ровно этот. Пишем, кто и когда его дёрнул: если он сработает
-                // на старте диктовки, в логе это будет видно рядом с `voice:` (задача #47).
-                kbLog("хоткей при пустом буфере: конвертировать нечего, \(cycled ? "переключил раскладку циклом" : "циклить нечего")")
-            }
             return
         }
         let word = item.word
@@ -2676,20 +2317,6 @@ final class Engine: EventTapHandler {
             switchCue = Sounds.play(NSSound(data: CueSynth.switchData), volume: settings.soundVolume, as: "switch")
         } else {
             Sounds.play(NSSound(named: settings.soundName), volume: settings.soundVolume, as: "switch")
-        }
-    }
-
-    private var translateCue: NSSound?   // удерживаем синтез-звук, иначе оборвётся
-    /// Звук перевода: "keyboop" = наш синтез-трезвучие, "" = тишина, иначе системный звук по имени.
-    private func playTranslateSound() {
-        guard settings.translateSoundEnabled else { return }
-        let name = settings.translateSoundName
-        guard !name.isEmpty else { return }
-        if name == "keyboop" {
-            translateCue?.stop()
-            translateCue = Sounds.play(NSSound(data: CueSynth.translateData), volume: settings.translateSoundVolume, as: "translate")
-        } else {
-            Sounds.play(NSSound(named: name), volume: settings.translateSoundVolume, as: "translate")
         }
     }
 

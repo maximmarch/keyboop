@@ -18,9 +18,6 @@ final class TypographySettingsStore {
         static let customRules = "typography.customRules"
         static let excludedApps = "typography.excludedApps"
         static let showSelectionPreview = "typography.showSelectionPreview"
-        static let formatKeyCode = "typography.formatKeyCode"
-        static let formatModifiers = "typography.formatModifiers"
-        static let formatKeyLabel = "typography.formatKeyLabel"
         static let undoKeyCode = "typography.undoKeyCode"
         static let undoModifiers = "typography.undoModifiers"
         static let undoKeyLabel = "typography.undoKeyLabel"
@@ -76,32 +73,7 @@ final class TypographySettingsStore {
         }
     }
 
-    var showSelectionPreview: Bool {
-        get { d.object(forKey: Keys.showSelectionPreview) == nil ? true : d.bool(forKey: Keys.showSelectionPreview) }
-        set {
-            d.set(newValue, forKey: Keys.showSelectionPreview)
-            NotificationCenter.default.post(name: .keyboopTypographySettingsChanged, object: self)
-        }
-    }
-
     // MARK: - Горячие клавиши (FR-07, FR-09)
-
-    var formatHotkeyEnabled: Bool { formatKeyCode >= 0 }
-
-    var formatKeyCode: Int {
-        get { d.object(forKey: Keys.formatKeyCode) == nil ? -1 : d.integer(forKey: Keys.formatKeyCode) }
-        set { d.set(newValue, forKey: Keys.formatKeyCode) }
-    }
-
-    var formatModifiers: UInt64 {
-        get { UInt64(bitPattern: Int64(d.integer(forKey: Keys.formatModifiers))) }
-        set { d.set(Int64(bitPattern: newValue), forKey: Keys.formatModifiers) }
-    }
-
-    var formatKeyLabel: String {
-        get { d.string(forKey: Keys.formatKeyLabel) ?? "" }
-        set { d.set(newValue, forKey: Keys.formatKeyLabel) }
-    }
 
     var undoHotkeyEnabled: Bool { undoKeyCode >= 0 }
 

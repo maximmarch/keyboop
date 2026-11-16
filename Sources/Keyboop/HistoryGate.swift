@@ -120,10 +120,14 @@ enum HistoryGate {
             c.addButton(withTitle: L10n.t("hist.lock.forgot.wipe"))
             c.addButton(withTitle: L10n.t("common.cancel"))
             if c.runModal() == .alertFirstButtonReturn {
-                VoiceHistory.shared.clear()
+                guard VoiceHistory.shared.clear(includingLegacyClipboard: true) else {
+                    errorAlert(L10n.t("hist.lock.resetUnavailable"))
+                    completion(false)
+                    return
+                }
                 removePassword()
                 kbLog("hist gate: «забыл пароль» — история стёрта, пароль снят")
-                completion(true)      // истории больше нет — открываем пустое окно без пароля
+                completion(true)      // обе истории очищены и пароль снят
             } else {
                 askOnce(errorLine: nil, completion: completion)
             }
