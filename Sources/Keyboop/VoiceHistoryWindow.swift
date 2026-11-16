@@ -395,7 +395,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     }
     /// Подсказка пустого окна зависит от того, что в него вообще может попасть.
     private func emptyText() -> String {
-        L10n.t("hist.empty")
+        L10n.t(VoiceHistory.shared.archiveUnavailable ? "hist.archiveUnavailable" : "hist.empty")
     }
     private func reloadIfChanged() {
         let c = VoiceHistory.shared.all().count
@@ -741,7 +741,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         let e = all[s.tag]
         // Ленту пересобирает `historyChanged` по уведомлению от `remove`. Свой `reload()` здесь
         // собирал бы все нарисованные карточки второй раз подряд, а их теперь может быть сотни.
-        VoiceHistory.shared.remove(date: e.date, text: e.text)
+        VoiceHistory.reportFailure(VoiceHistory.shared.remove(date: e.date, text: e.text))
     }
     // MARK: импорт аудиофайла (задача 229)
 
@@ -798,6 +798,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         case .empty:        key = "hist.importEmpty"
         case .unreadable:   key = "hist.importFailed"
         case .engineFailed: key = "hist.importEngineFailed"
+        case .historyNotSaved(let result): key = result.messageKey
         }
         VoiceIndicator.shared.showToast(L10n.t(key))
         if changed { reload(); scrollToTop() }
@@ -918,8 +919,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     private func reallyClearAll() {
-        VoiceHistory.shared.clear()
-        reload()
+        VoiceHistory.reportFailure(VoiceHistory.shared.clear())
     }
 
     /// Dev: снимок окна истории (cacheDisplay по непрозрачному фону в DUMP-режиме).

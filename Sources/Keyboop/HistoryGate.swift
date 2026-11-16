@@ -120,7 +120,7 @@ enum HistoryGate {
             c.addButton(withTitle: L10n.t("hist.lock.forgot.wipe"))
             c.addButton(withTitle: L10n.t("common.cancel"))
             if c.runModal() == .alertFirstButtonReturn {
-                guard VoiceHistory.shared.clear(includingLegacyClipboard: true) else {
+                guard VoiceHistory.shared.clear(includingLegacyClipboard: true) == .saved else {
                     errorAlert(L10n.t("hist.lock.resetUnavailable"))
                     completion(false)
                     return
