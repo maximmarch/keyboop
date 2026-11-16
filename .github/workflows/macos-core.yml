@@ -17,6 +17,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Swift source syntax
         run: xcrun swiftc -frontend -parse Sources/Keyboop/*.swift
+      - name: Build destination safety
+        run: ./script/test-build-destination.sh
       - name: Voice history transaction
         run: ./script/test-voice-history.sh
       - name: Clipboard export and tracked input
