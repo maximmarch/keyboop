@@ -36,3 +36,18 @@ precondition(selection.dropped == [rows[0]])
 let retained = try ClipboardTransfer.exportEntries(from: JSONEncoder().encode(selection.kept))
 precondition(retained == entries)
 print("Legacy clipboard survives voice retention and caps, and is hidden from voice history")
+
+
+func kbLog(_ message: String) {}
+
+let typing = KeystrokeBuffer()
+precondition(typing.wordForConversion() == nil)
+typing.append("ghbdtn")
+precondition(typing.wordForConversion()?.word == "ghbdtn")
+typing.boundary(" ")
+typing.append("vbh")
+precondition(typing.wordForConversion(completedOnly: true)?.tail == " vbh")
+precondition(typing.groupForConversion()?.words.map(\.word) == ["ghbdtn", "vbh"])
+typing.clear()
+precondition(typing.wordForConversion() == nil && typing.groupForConversion() == nil)
+print("Tracked input still provides current, last, and grouped words and clears on focus reset")

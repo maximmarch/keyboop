@@ -478,20 +478,13 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         case .voicePostProcess:
             c = ("voiceAI", s.voiceEnabled && s.voicePostProcessHotkeyEnabled, "key",
                  s.voicePostProcessHotkeyKeyCode, s.voicePostProcessHotkeyModifiers, "")
-        case .translate:
-            c = ("translate", s.translateEnabled, "key", s.translateHotkeyKeyCode, s.translateHotkeyModifiers, "")
         case .instant:
             c = ("instant", s.instantSwitchEnabled, s.instantSwitchMode, s.instantSwitchKeyCode, s.instantSwitchMods, "")
         case .snippet:
             c = ("snippet", s.snippetPickEnabled, "key", s.snippetPickKeyCode, s.snippetPickModifiers, "")
-        case .caseChange:
-            c = ("caseChange", s.caseChangeEnabled, "key", s.caseChangeKeyCode, s.caseChangeModifiers, "")
         case .pasteDictation:
             c = ("pasteDictation", s.pasteDictationEnabled, "key", s.pasteDictationKeyCode,
                  s.pasteDictationModifiers, "")
-        case .typographyFormat:
-            let t = TypographySettingsStore.shared
-            c = ("typoFormat", t.formatHotkeyEnabled, "key", t.formatKeyCode, t.formatModifiers, "")
         case .typographyUndo:
             let t = TypographySettingsStore.shared
             c = ("typoUndo", t.undoHotkeyEnabled, "key", t.undoKeyCode, t.undoModifiers, "")

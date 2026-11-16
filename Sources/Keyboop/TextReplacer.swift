@@ -544,41 +544,6 @@ enum TextReplacer {
 
     /// ЗАМЕНИТЬ ТЕКСТ ВЫДЕЛЕННОГО ОБЪЕКТА НА ХОЛСТЕ (Figma, задача 249, 11.09.2026).
     ///
-    /// Зачем отдельный путь. Когда выделен текстовый ОБЪЕКТ, а не текст внутри него, каретки нет,
-    /// и печатать некуда: символы уходят в никуда. Именно это человек и описывает как «звучок есть,
-    /// реакции никакой». Значит сначала надо войти внутрь текста, и только потом печатать.
-    ///
-    /// Как. Enter на выделенном текстовом объекте вводит Figma в режим правки и выделяет ВЕСЬ текст
-    /// (замерено 11.09: сразу после Enter чтение выделения отдало все 18 символов). Печать поверх
-    /// полного выделения заменяет его целиком, Escape возвращает обычное выделение объекта. Три
-    /// события вместо одного, зато человек получает то, что просил.
-    ///
-    /// ⚠️ ВЫЗЫВАТЬ ТОЛЬКО ПРИ ПОЛОЖИТЕЛЬНОМ ПРИЗНАКЕ ХОЛСТА (`SelectionText.lastCopyLooksLikeCanvasNode`).
-    /// Enter в приложении, где мы ошиблись состоянием, это не «ничего»: в мессенджере он отправит
-    /// сообщение, в редакторе кода вставит перевод строки. Поэтому ветка включается не по имени
-    /// приложения и не по форме текста, а по тому, что в буфере лежат данные объекта Figma.
-    ///
-    /// Всё задание идёт одним куском на synth-очереди: между Enter, печатью и Escape не может
-    /// вклиниться ни реальное нажатие, ни чужая синтетика — тот же принцип, что у `thenReturn`.
-    static func replaceCanvasObjectText(_ text: String, completion: (() -> Void)? = nil) {
-        synthQueue.async {
-            guard SecureInputPolicy.canWrite("замена текста объекта, \(text.count) симв.") else {
-                kbLog("synth: писать нельзя — замена текста объекта пропущена")
-                if let completion { DispatchQueue.main.async(execute: completion) }
-                return
-            }
-            let src = CGEventSource(stateID: .privateState)
-            postKey(returnKey, source: src)     // войти в текст: выделяется всё содержимое
-            usleep(60_000)                      // Figma перерисовывает поле; без паузы печать уходит мимо
-            typeUnicode(text, source: src)
-            usleep(20_000)
-            postKey(escapeKey, source: src)     // выйти обратно на объект
-            if let completion { DispatchQueue.main.async(execute: completion) }
-        }
-    }
-
-    private static let escapeKey: CGKeyCode = 53
-
     /// Печать строки как Unicode. Лимит ~20 UTF-16 единиц на событие → бьём по 12.
     private static func typeUnicode(_ string: String, source: CGEventSource?) {
         if frontAppNeedsPhysicalTyping, typePhysical(string, source: source) {

@@ -127,7 +127,7 @@ enum HistoryGate {
                 }
                 removePassword()
                 kbLog("hist gate: «забыл пароль» — история стёрта, пароль снят")
-                completion(true)      // истории больше нет — открываем пустое окно без пароля
+                completion(true)      // обе истории очищены и пароль снят
             } else {
                 askOnce(errorLine: nil, completion: completion)
             }

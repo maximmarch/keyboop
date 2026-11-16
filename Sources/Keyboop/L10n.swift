@@ -109,7 +109,6 @@ enum L10n {
         "amb.hint":    [.ru: "Выбор сильнее всех встроенных правил — он попадает в исключения. Слово, которого тут нет, всегда можно добавить вручную на странице «Исключения».",
                        .en: "Your choice outranks every built-in rule — it goes into exceptions. A pair that isn't listed can always be added by hand on the Exceptions page."],
 
-        "sec.translate":  [.ru: "Перевод",      .en: "Translate"],
         "sec.privacy":    [.ru: "Приватность",  .en: "Privacy"],
         "sec.general":    [.ru: "Общие",        .en: "General"],
         "sec.updates":    [.ru: "Обновления",   .en: "Updates"],
@@ -191,26 +190,8 @@ enum L10n {
         // Тогда первые две читаются как родственники, а разница видна в хвосте. Держаться правила.
         "switch.auto":    [.ru: "Автоматическое исправление раскладки", .en: "Automatic layout correction"],
         "switch.autoSub": [.ru: "Двусторонне, RU ↔ EN. Слово исправляется, когда вы его дописали", .en: "Two-way, RU ↔ EN. The word is fixed once you finish it"],
-        "switch.translate":[.ru: "Перевод выделенного · ⌃⌥T", .en: "Translate selection · ⌃⌥T"],
         "switch.translateSub":[.ru: "Выдели СВОЙ текст в поле ввода и нажми ⌃⌥T — он заменится переводом RU↔EN. Там, где печатаешь (письмо, чат, заметка), а не на чужой веб-странице. Локально, macOS 15+.",
                               .en: "Select YOUR text in an input field and press ⌃⌥T — it's replaced with the RU↔EN translation. Where you type (mail, chat, notes), not on a read-only web page. Local, macOS 15+."],
-        "tr.title":       [.ru: "Перевод набранного", .en: "Translate what you typed"],
-        "tr.sub":         [.ru: "Выдели свой текст в поле ввода — он ЗАМЕНИТСЯ переводом RU↔EN. Работает там, где можно печатать, а не с текстом на веб-странице «только для чтения». Прямо на твоём Mac.",
-                           .en: "Select your text in an input field — it's REPLACED with the RU↔EN translation. Works where you can type, not with read-only web-page text. Right on your Mac."],
-        "tr.enabled":     [.ru: "Включить перевод по хоткею", .en: "Enable translate hotkey"],
-        "tr.enabledSub":  [.ru: "Направление определяется само по тексту (RU→EN или EN→RU). Нужна macOS 15+.",
-                           .en: "Direction is auto-detected from the text (RU→EN or EN→RU). Needs macOS 15+."],
-        "tr.hotkey":      [.ru: "Горячая клавиша", .en: "Hotkey"],
-        "tr.how":         [.ru: "Перевод офлайн, через системный движок Apple. Если пакет не установлен — нажми «Скачать» выше: пакет RU↔EN загрузится прямо здесь (система разок спросит подтверждение). Звук перевода подтверждает, что всё сработало.",
-                           .en: "Translation is offline, via Apple's system engine. If the pack isn't installed — tap “Download” above: the RU↔EN pack loads right here (the system asks for confirmation once). The translation sound confirms it fired."],
-        "tr.packTitle":   [.ru: "Языковой пакет", .en: "Language pack"],
-        "tr.packName":    [.ru: "Русский ↔ английский", .en: "Russian ↔ English"],
-        "tr.checking":    [.ru: "Проверяю…", .en: "Checking…"],
-        // Уровень входа микрофона (задача 93). ⚠️ Формулировки честно говорят, что настройка СИСТЕМНАЯ:
-        // мы меняем общий ползунок, который видят все программы, и не возвращаем его обратно.
-        // «Уровень», а не «громкость» (автор, 09.08): громкость у нас означает то, что СЛЫШНО, а это
-        // настройка чувствительности входа. Слово разводит две вещи ещё до того, как человек полез
-        // в подсказку.
         "voice.micGain":      [.ru: "Поднимать уровень микрофона",
                                .en: "Raise the microphone input level"],
         "voice.micGainSub":   [.ru: "Перед диктовкой выставляю системный уровень входа и оставляю его",
@@ -269,27 +250,6 @@ enum L10n {
                                  .en: "Voice entries and their audio will be deleted. Old clipboard entries remain available for export."],
         "hist.clearConfirmYes": [.ru: "Удалить", .en: "Delete"],
         "hist.clearConfirmNo":  [.ru: "Отмена", .en: "Cancel"],
-        "tr.installed":   [.ru: "Установлен ✓", .en: "Installed ✓"],
-        "tr.notInstalled":[.ru: "Не установлен — нужен для перевода", .en: "Not installed — required for translation"],
-        // ⚠️ ОТДЕЛЬНАЯ СТРОКА НА НЕУДАЧУ (отзывы #102 и #108, 08.08.2026). Раньше после неудачной
-        // докачки метка возвращалась к обычному «не установлен», то есть выглядела так, будто
-        // человек и не нажимал ничего. Отсюда «после каждого обновления ставлю заново»: пакет,
-        // вероятно, не ставился ни разу, а мы это скрывали. Теперь говорим прямо и показываем
-        // единственный путь, где виден настоящий прогресс, — системный менеджер языков.
-        "tr.dlFailed":    [.ru: "Не установился. Загрузку видно в «Системные настройки» → «Язык и регион»",
-                           .en: "Did not install. You can watch the download in System Settings → Language & Region"],
-        "tr.unsupported": [.ru: "Система не умеет эту пару языков",
-                           .en: "The system does not support this language pair"],
-        "tr.download":    [.ru: "Скачать", .en: "Download"],
-        "tr.openSys":     [.ru: "Системные настройки", .en: "System Settings"],
-        "tr.dlTitle":     [.ru: "Загрузка языкового пакета", .en: "Downloading language pack"],
-        "tr.dlBody":      [.ru: "Готовлю перевод RU↔EN. Если система спросит — подтверди загрузку. Окно закроется само.",
-                            .en: "Preparing RU↔EN translation. If the system asks, confirm the download. This window closes itself."],
-        "tr.needPackTitle":[.ru: "Нужен языковой пакет", .en: "Language pack needed"],
-        "tr.needPackBody": [.ru: "Перевод RU↔EN включается один раз — скачаю прямо сейчас, если нажмёшь.",
-                            .en: "RU↔EN translation turns on once — I'll download it right now if you tap."],
-        "tr.sound":       [.ru: "Звук перевода", .en: "Translation sound"],
-        "tr.soundVol":    [.ru: "Громкость звука", .en: "Sound volume"],
         "sound.keyboopTr": [.ru: "Keyboop", .en: "Keyboop"],   // звук ПЕРЕВОДА
         "switch.live":    [.ru: "Исправлять на лету", .en: "Fix as you type"],
         // Подпись переписана вместе со сменой дефолта на ВКЛ (21.07): пометка «(агрессивно)» пугала
@@ -452,15 +412,8 @@ enum L10n {
         "hkrec.warn.ours": [.ru: "Это сочетание у нас уже занято: %@. Две функции на одну комбинацию не уживутся.",
                             .en: "We already use this one for %@. Two actions on one shortcut never ends well."],
         "hkrec.cancel":   [.ru: "Отмена", .en: "Cancel"],
-        "case.title":  [.ru: "Менять регистр выделенного", .en: "Change case of the selection"],
-        "case.sub":    [.ru: "«телефон» становится «ТЕЛЕФОН», второе нажатие возвращает обратно",
-                        .en: "«phone» becomes «PHONE», pressing again brings it back"],
-        "case.help":   [.ru: "Выделите текст и нажмите сочетание: всё выделенное станет заглавным, независимо от того, что там было. Если оно уже заглавное целиком, следующее нажатие опустит его в строчные, так что одна комбинация работает в обе стороны и помнить ничего не нужно. Задумано для заголовков, титров и типографики, поэтому работает и с несколькими строками сразу. Ограничение одно: до 5000 символов за раз, чтобы случайное «Выделить всё» не подняло в верхний регистр весь документ. В программах, которые не отдают выделение системе (Electron, веб), текст читается через буфер обмена и возвращается в него ровно таким, каким был. По умолчанию сочетание не назначено.",
-                        .en: "Select some text and press the shortcut: everything selected becomes upper case, whatever it was before. If it is already all upper case, the next press takes it down to lower case, so one shortcut works both ways and there is nothing to remember. It is meant for headings, titles and typography, so it works across several lines at once. There is one limit: 5000 characters at a time, so that an accidental «Select All» cannot shout a whole document. In apps that do not hand their selection to the system (Electron, web) the text is read through the clipboard and the clipboard is put back exactly as it was. No shortcut is assigned by default."],
-        "case.assign": [.ru: "Сочетание", .en: "Shortcut"],
         "hkrec.what.switch": [.ru: "исправление раскладки по хоткею", .en: "fix layout by hotkey"],
         "hkrec.what.voice":  [.ru: "голосовой набор", .en: "dictation"],
-        "hkrec.what.translate": [.ru: "перевод выделенного", .en: "translate selection"],
         "hkrec.what.pasteLast": [.ru: "вставка последней диктовки", .en: "insert the last dictation"],
         "hkrec.what.instant":[.ru: "мгновенная смена языка", .en: "instant language switch"],
 
@@ -721,10 +674,8 @@ enum L10n {
         "is.busy.convert":[.ru: "исправление слова (ручной хоткей)", .en: "fixing a word (manual hotkey)"],
         "is.busy.voice":  [.ru: "голосовой набор", .en: "voice typing"],
         "is.busy.voiceAI":[.ru: "диктовка с AI", .en: "AI dictation"],
-        "is.busy.translate":[.ru: "перевод выделенного", .en: "translating the selection"],
         "is.busy.instant":[.ru: "мгновенная смена языка", .en: "instant language switch"],
         "is.busy.snippet":[.ru: "список сниппетов", .en: "the snippet picker"],
-        "is.busy.case":   [.ru: "смена регистра", .en: "changing the case"],
         "is.busy.pasteLast":[.ru: "вставка последней диктовки", .en: "inserting the last dictation"],
         "is.busy.snippetNoFree":[.ru: "все готовые сочетания уже заняты другими функциями. Назначьте своё через «Назначить свою…».",
                                  .en: "every ready-made shortcut is already taken by another function. Set your own via «Set your own…»."],
@@ -864,18 +815,6 @@ enum L10n {
                             .en: "Type right here. Enter ghbdtn and a space — watch the trick live."],
         "wel.practiceVoice":[.ru: "Голос тоже можно попробовать не выходя отсюда: поставь курсор в поле выше, нажми %@ и продиктуй пару фраз — текст появится сам.",
                             .en: "You can try your voice without leaving this window: click the field above, press %@ and dictate a couple of sentences — the text types itself."],
-        "wel.practiceTr":  [.ru: "И перевод тут же: выдели введённый текст и нажми %@ — поменяю на месте.",
-                            .en: "And translation too: select the text you typed and press %@ — I’ll swap it in place."],
-        "wel.trTitle":     [.ru: "Перевод", .en: "Translate"],
-        "wel.trBody":      [.ru: "Выдели текст в любом поле, нажми хоткей — переведётся прямо на месте. Русский ↔ английский, направление ловлю сам по тексту. Офлайн, на твоём Mac, без отправки наружу.",
-                            .en: "Select text in any field, press the hotkey — it gets translated in place. Russian ↔ English, I pick the direction myself. Offline, on your Mac, nothing leaves it."],
-        "wel.trKeyShort":  [.ru: "Перевести выделенное", .en: "Translate selection"],
-        "wel.trPackNote":  [.ru: "Один раз нужно поставить языковой пакет — его качает сама система, кнопкой ниже. Без него переводить нечем.",
-                            .en: "You’ll need the language pack once — the system downloads it, button below. Without it there’s nothing to translate with."],
-        "wel.trSandbox":   [.ru: "Можно сразу попробовать в песочнице ниже: выдели введённый текст и нажми %@.",
-                            .en: "Try it right in the sandbox below: select the text you typed and press %@."],
-        "wel.trNeedOS":    [.ru: "Перевод работает на macOS 15 и новее. У тебя постарше — эта часть пока пропускается, остальное в силе.",
-                            .en: "Translation needs macOS 15 or newer. Yours is older — this part sits out for now, the rest still works."],
         "wel.voiceTitle": [.ru: "Голос", .en: "Voice"],
         "wel.voiceBody":  [.ru: "Для диктовки нужна модель распознавания. Рекомендуем GigaAM v3 (274 МБ): одна из самых точных моделей для русского языка, работает на GPU через Metal и целиком офлайн. Для смешанной речи RU+EN в настройках также есть Parakeet v3 и Whisper Large v3 Turbo.",
                            .en: "Dictation needs a recognition model. We recommend GigaAM v3 (274 MB): fast, offline, GPU-accelerated via Metal, and tuned for Russian. For mixed Russian and English dictation, Parakeet v3 and Whisper Large v3 Turbo are also available in Settings."],
@@ -950,15 +889,6 @@ enum L10n {
         // «Сочетание» однозначна и без глагола.
         "root.manual":   [.ru: "Исправить раскладку", .en: "Fix the layout"],
         "root.voiceKey": [.ru: "Начать диктовку", .en: "Start dictation"],
-        "root.tr":       [.ru: "Перевести выделенное", .en: "Translate the selection"],
-        // ⚠️ НАЗВАНИЯ РЕЖИМОВ ОПИСЫВАЮТ ОКНО, А НЕ ЧЕЛОВЕКА. «Простой» и «Продвинутый» сообщают
-        // человеку, кто он такой, и первый вариант звучит снисходительно. «Кратко» и «Подробно»
-        // говорят про то, сколько всего показано, и это правда, а не оценка. автор просил подобрать
-        // варианты, этот стоит первым.
-        // Ссылка называет, КУДА уйдём. «Кнопка, показывающая текущий режим» заставляет думать,
-        // а ссылка с названием места читается за раз.
-        // Подпись у тумблера режима. Ровно то, что включает тумблер, и ровно то, что влезает рядом
-        // с ним в колонку сайдбара (замер 16.08: 81 пункт из 122 доступных).
         "mode.simple":   [.ru: "Основное",  .en: "Basics"],
         "mode.pro":      [.ru: "Всё",       .en: "Everything"],
         "root.back":     [.ru: "‹ Основное", .en: "‹ Essentials"],
@@ -975,11 +905,6 @@ enum L10n {
                           .en: "Hold and talk, release to finish"],
         "root.voiceKeyHelp":[.ru: "Нажмите выбранную клавишу и говорите. Речь распознаётся прямо на этом маке: звук никуда не отправляется, интернет не нужен. Готовый текст печатается туда, где стоит курсор, в любой программе, даже там, где системной диктовки нет.\n\nЗапись заканчивается отпусканием клавиши или вторым нажатием — это выбирается в подробных настройках, в разделе «Голосовой набор». Там же живут язык, модель распознавания и то, что делать с текстом после: убирать ли точку в конце, нажимать ли Enter, добавлять ли пробел.\n\nПока идёт запись, у курсора висит плашка «Слушаю»: по ней видно, что микрофон открыт. Escape обрывает запись, и ничего не вставляется.\n\nПервая диктовка после запуска чуть медленнее остальных: модель загружается в память. Дальше текст появляется почти сразу.",
                           .en: "Press the key you picked and talk. Speech is recognised on this Mac: the audio goes nowhere and no internet is needed. The finished text is typed wherever the caret is, in any app, including the ones the system dictation ignores.\n\nRecording ends either when you release the key or on a second press — that is a choice in the full settings, under «Voice input». The language, the recognition model and what happens to the text afterwards (strip the final period, press Enter, add a space) live there too.\n\nWhile it records, a «Listening» plaque sits by the caret so you can see the microphone is open. Escape aborts the recording and inserts nothing.\n\nThe first dictation after launch is a little slower: the model is loading into memory. After that the text shows up almost at once."],
-        "root.trHelp":   [.ru: "Выделите текст в поле ввода и нажмите сочетание: перевод встанет ровно на место оригинала. Направление определяется само по тексту, русский становится английским и наоборот.\n\nПереводит сама macOS своим встроенным движком, поэтому текст не уходит в интернет и всё работает без сети. Нужен языковой пакет «русский ↔ английский»: если он не скачан, поставьте его в подробных настройках, в разделе «Перевод». Система разок спросит подтверждение.\n\nРаботает там, где можно печатать. Текст «только для чтения» на веб-странице заменить нечем, поэтому там сочетание промолчит. Нужна macOS 15 или новее.",
-                          .en: "Select text in an editable field and press the shortcut: the translation lands exactly where the original was. The direction is picked from the text itself, Russian becomes English and the other way round.\n\nmacOS translates it with its own built-in engine, so nothing leaves the machine and it works offline. The «Russian ↔ English» language pack is required: if it is not there yet, install it in the full settings, under «Translate». The system will ask for confirmation once.\n\nIt works wherever you can type. Read-only text on a web page has nothing to replace, so there the shortcut stays silent. Requires macOS 15 or newer."],
-        "root.trSub":    [.ru: "Выделите текст и нажмите сочетание: перевод встанет на место оригинала",
-                          .en: "Select some text and press the combo: the translation replaces the original"],
-        // Порядок подстановок: расколдовано, надиктовано.
         "root.counters": [.ru: "Расколдовано %@ · надиктовано %@", .en: "Unjinxed %@ · dictated %@"],
         "voice.hudNotchCompat":[.ru: "macOS сейчас закрыла вырез, плашка будет у курсора",
                             .en: "macOS is hiding the notch right now, so the plaque stays at the cursor"],
@@ -1283,7 +1208,7 @@ enum L10n {
         "voice.histClear":[.ru: "Очистить историю", .en: "Clear history"],
         "voice.showHistory":[.ru: "Показать историю…", .en: "Show history…"],
         // «История диктовки и буфера»: с 04.09.2026 в ленте и буфер (задача 228), имя выбрал автор.
-        "hist.title":     [.ru: "История диктовки и буфера", .en: "Dictation and clipboard history"],
+        "hist.title":     [.ru: "История диктовок", .en: "Dictation history"],
         "hist.kind.dictation":    [.ru: "Диктовка", .en: "Dictation"],
         "hist.kind.clipboard":    [.ru: "Буфер", .en: "Clipboard"],
         "hist.kind.clipboardFrom":[.ru: "Буфер · %@", .en: "Clipboard · %@"],
@@ -1672,13 +1597,11 @@ enum L10n {
         "sec.typography":             [.ru: "Типографика", .en: "Typography"],
         "sites.col.typography":       [.ru: "Типографика", .en: "Typography"],
         "sites.ed.typography":        [.ru: "Умная типографика", .en: "Smart Typography"],
-        "is.busy.typoFormat":         [.ru: "типографика выделения", .en: "format selection typography"],
         "is.busy.typoUndo":           [.ru: "отмена типографики", .en: "undo typography"],
-        "hkrec.what.typoFormat":      [.ru: "Исправить типографику выделения", .en: "Format selection typography"],
         "hkrec.what.typoUndo":        [.ru: "Отменить последнюю типографику", .en: "Undo last typography change"],
 
         "typo.title":                 [.ru: "Умная типографика", .en: "Smart Typography"],
-        "typo.sub":                   [.ru: "Консервативное преобразование кавычек, тире, неразрывных пробелов и спецсимволов при наборе и в выделенном тексте.", .en: "Conservative formatting of quotes, dashes, non-breaking spaces, and symbols while typing or in selected text."],
+        "typo.sub":                   [.ru: "Консервативное преобразование кавычек, тире, неразрывных пробелов и спецсимволов при наборе.", .en: "Conservative formatting of quotes, dashes, non-breaking spaces, and symbols while typing."],
         "typo.enabled":               [.ru: "Включить умную типографику", .en: "Enable Smart Typography"],
         "typo.enabledSub":            [.ru: "Работает полностью офлайн и автоматически пропускает код, ссылки, пути и терминалы.", .en: "Works completely offline and skips code, URLs, file paths, and terminals."],
         "typo.mode":                  [.ru: "Режим правил", .en: "Rule preset"],
@@ -1690,13 +1613,7 @@ enum L10n {
         "typo.lang.auto":             [.ru: "Авто (по тексту и раскладке)", .en: "Auto (from text & layout)"],
         "typo.lang.ru":               [.ru: "Всегда русский («ёлочки»)", .en: "Always Russian («guillemets»)"],
         "typo.lang.en":               [.ru: "Всегда английский (“curly”)", .en: "Always English (“curly”)"],
-        "typo.preview":               [.ru: "Предпросмотр для длинных выделений", .en: "Preview panel for long selections"],
-        "typo.previewSub":            [.ru: "Показывать «Было / Стало» перед заменой нескольких строк или правок.", .en: "Show Before / After comparison for multiline or multi-change edits."],
-
         "typo.sec.hotkeys":           [.ru: "Горячие клавиши", .en: "Shortcuts"],
-        "typo.hotkey.format":         [.ru: "Исправить типографику выделенного текста", .en: "Format selected text typography"],
-        "typo.hotkey.formatSub":      [.ru: "Читает только через Accessibility, никогда не трогает буфер обмена.", .en: "Reads strictly via Accessibility without touching the clipboard."],
-        "typo.hotkey.combo":          [.ru: "Сочетание клавиш", .en: "Shortcut"],
         "typo.hotkey.undo":           [.ru: "Отменить последнее автоформатирование", .en: "Undo last automatic formatting"],
         "typo.hotkey.undoSub":        [.ru: "Возвращает исходные символы, включая обычный или неразрывный пробел.", .en: "Restores exact original characters including space codepoints."],
         "typo.hotkey.undoCombo":      [.ru: "Сочетание отмены", .en: "Undo shortcut"],
@@ -1722,9 +1639,6 @@ enum L10n {
         "typo.rule.nbspUnits.hint":   [.ru: "Предотвращает отрыв единиц измерения, валют и сокращений при переносе строки.", .en: "Prevents awkward line wraps between numbers and units or currencies."],
         "typo.rule.narrowNbsp":       [.ru: "Узкий неразрывный пробел (U+202F) вместо U+00A0", .en: "Narrow no-break space (U+202F) instead of U+00A0"],
         "typo.rule.narrowNbsp.hint":  [.ru: "Опционально для % и валют; часть шрифтов и редакторов отображает U+202F шире или иначе.", .en: "Optional for % and currencies; note some fonts render U+202F differently."],
-        "typo.rule.collapseSpacesSelection": [.ru: "Схлопывать двойные пробелы (только в выделении)", .en: "Collapse multiple spaces (selection only)"],
-        "typo.rule.trimSpaceBeforePunctSelection": [.ru: "Убирать пробел перед , . ! ? ; : (только в выделении)", .en: "Remove space before , . ! ? ; : (selection only)"],
-        "typo.rule.selectionOnly.hint": [.ru: "Отключено при живом наборе и применяется только командой форматирования выделения.", .en: "Disabled during live typing; applies only to manual selection formatting."],
         "typo.rule.ellipsis":         [.ru: "Многоточие ... → …", .en: "Ellipsis ... → …"],
         "typo.rule.ellipsis.hint":    [.ru: "Ждёт следующий символ, чтобы не сломать .... или пути ./", .en: "Waits past the 3rd dot so .... or ./ paths stay untouched."],
         "typo.rule.copyright":        [.ru: "(c) → ©", .en: "(c) → ©"],
@@ -1752,19 +1666,6 @@ enum L10n {
         "typo.sandbox.sampleLoaded":  [.ru: "Пример загружен — нажмите «Исправить всё» или допечатайте текст.", .en: "Sample loaded — click Format all or continue typing."],
         "typo.sandbox.applied":       [.ru: "Сработало: %@ (неразрывных пробелов: %d)", .en: "Applied: %@ (NBSP count: %d)"],
 
-        "typo.sel.title":             [.ru: "Умная типографика", .en: "Smart Typography"],
-        "typo.sel.secure":            [.ru: "Поле защищено (Secure Input) — изменение невозможно.", .en: "Protected input (Secure Input) — cannot edit."],
-        "typo.sel.geckoMultiline":    [.ru: "Выделение недоступно в многострочном поле через Accessibility (буфер обмена не используется).", .en: "Selection unavailable via Accessibility here (clipboard untouched)."],
-        "typo.sel.noSelection":       [.ru: "Выделенный текст не прочитан через Accessibility.", .en: "Could not read selected text via Accessibility."],
-        "typo.sel.noChanges":         [.ru: "Выделенный текст уже в порядке или защищён правилами безопасности.", .en: "Selected text already clean or protected by safety rules."],
-
-        "typo.preview.title":         [.ru: "Предпросмотр типографики", .en: "Typography Preview"],
-        "typo.preview.summary":       [.ru: "Изменений: %d • %@", .en: "Changes: %d • %@"],
-        "typo.preview.before":        [.ru: "Было", .en: "Before"],
-        "typo.preview.after":         [.ru: "Стало", .en: "After"],
-        "typo.preview.apply":         [.ru: "Применить", .en: "Apply"],
-
-        // KB-022 · Очередь вставки
         "menu.pq":              [.ru: "Очередь вставки", .en: "Paste queue"],
     ]
 }

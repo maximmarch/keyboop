@@ -39,8 +39,6 @@ final class TypographyRuleCheckListView: NSView {
             ("typo.grp.spaces", [
                 (.nbspUnits, "typo.rule.nbspUnits", "typo.rule.nbspUnits.hint"),
                 (.narrowNbsp, "typo.rule.narrowNbsp", "typo.rule.narrowNbsp.hint"),
-                (.collapseSpacesSelection, "typo.rule.collapseSpacesSelection", "typo.rule.selectionOnly.hint"),
-                (.trimSpaceBeforePunctSelection, "typo.rule.trimSpaceBeforePunctSelection", "typo.rule.selectionOnly.hint"),
             ]),
             ("typo.grp.symbols", [
                 (.ellipsis, "typo.rule.ellipsis", "typo.rule.ellipsis.hint"),
