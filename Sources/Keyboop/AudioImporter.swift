@@ -39,6 +39,7 @@ final class AudioImporter {
         case cancelled             // отменили до первого куска
         case empty                 // речи не нашлось
         case unreadable            // файл не открылся или в нём нет звуковой дорожки
+        case historyNotSaved(VoiceHistorySaveResult)
         case engineFailed          // движок отказал или завис
     }
 
@@ -190,12 +191,15 @@ final class AudioImporter {
         if let u = tmp, let raw = try? Data(contentsOf: u) {
             clip = VoiceClips.saveEncoded(raw, wave: envelope.finish())
         }
-        DispatchQueue.main.sync {
-            VoiceHistory.shared.addImported(text, fileName: name, audio: clip?.id, wave: clip?.wave)
+        VoiceHistory.shared.addImported(text, fileName: name, audio: clip?.id, wave: clip?.wave) { result in
+            let outcome: Outcome
+            if result == .saved {
+                outcome = cancelled || engineFailed ? .partial(chars: text.count) : .done(chars: text.count)
+            } else {
+                outcome = .historyNotSaved(result)
+            }
+            self.finish(outcome, tmp: tmp)
         }
-        let elapsed = Int(Date().timeIntervalSince(t0))
-        kbLog("импорт: \(cancelled ? "отменён, сохранена часть" : "готово"), \(text.count) симв., \(pieces.count) кусков, \(ImportProgressFormat.clock(processed)) из \(ImportProgressFormat.clock(totalSeconds)) за \(elapsed)с\(engineFailed ? ", движок отказал на последнем куске" : "")")
-        finish(cancelled || engineFailed ? .partial(chars: text.count) : .done(chars: text.count), tmp: tmp)
     }
 
     /// Расшифровка куска через общий движок, синхронно для конвейера. nil — отказ или таймаут.

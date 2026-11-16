@@ -8,165 +8,147 @@ final class VoiceHistory {
     static let shared = VoiceHistory()
     private let settings = AppSettings.shared
     private let fileURL: URL
-    private var cache: [Entry] = []
-    private var archiveUnavailable = false
+    private let queue = DispatchQueue(label: "ru.keyboop.voice-history", qos: .utility)
+    private var archive = VoiceHistoryArchive()
+    private lazy var didLoad: Void = {
+        if let key = archive.load(from: fileURL, keys: Self.existingKeys) {
+            Self.keyLock.withLock { Self.cachedKey = key }
+        }
+    }()
 
-    /// Запись живёт в `ClipboardHistoryCore.swift` (`HistoryEntry`): с 04.09.2026 в ленте два типа
-    /// записей, и стенд проверяет чтение старых файлов без самой истории. Правило про Optional-поля
-    /// (`audio` с 08.08, `wave` с 10.08, `kind`/`app` с 04.09) записано там же и остаётся несущим.
     typealias Entry = HistoryEntry
 
     private init() {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Keyboop", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        fileURL = dir.appendingPathComponent("history.enc")
-        do { cache = try load() }
-        catch { archiveUnavailable = true; return }
-        if prune() { save() }   // на старте подчистить записи старше срока хранения
-        // Сироты: клипы, чьи записи исчезли путём, который про файлы не знал (перевыпуск ключа
-        // обнуляет историю целиком). Один проход по каталогу на старте, это дешевле, чем накопить
-        // гигабайт нечитаемых файлов.
-        VoiceClips.keepOnly(Set(cache.compactMap { $0.audio }))
+        fileURL = Self.supportDir().appendingPathComponent("history.enc")
     }
 
-    /// Ключ шифрования истории. Им же шифруются аудиоклипы (`VoiceClips`): держать голос открытым
-    /// рядом с зашифрованным текстом было бы самообманом, речь восстанавливает содержание не хуже.
     static var storageKey: SymmetricKey? { key() }
 
-    /// `audio` — идентификатор клипа из `VoiceClips` (nil, если сохранение аудио выключено).
-    ///
-    /// ⚠️ Клип живёт ровно столько же, сколько запись, поэтому КАЖДЫЙ путь, которым запись отсюда
-    /// исчезает, обязан унести и файл: срок хранения (`prune`), потолки по типам (`applyCaps`),
-    /// удаление одной (`remove`), «очистить всё» (`clear`).
-    func add(_ text: String, audio: String? = nil, wave: [UInt8]? = nil) {
-        guard settings.voiceHistoryEnabled else {
-            if let a = audio { VoiceClips.delete(a) }   // история выключена — клипу тем более не место
-            return
+    var archiveUnavailable: Bool {
+        queue.sync { _ = didLoad; return archive.unavailable }
+    }
+
+    /// All mutations are serialized. A result is delivered on the main queue.
+    func add(_ text: String, audio: String? = nil, wave: [UInt8]? = nil,
+             completion: ((VoiceHistorySaveResult) -> Void)? = nil) {
+        enqueue(Entry(date: Date(), text: text, audio: audio, wave: wave, kind: .dictation)) { result in
+            if let completion { completion(result) }
+            else if result != .disabled { Self.reportFailure(result) }
         }
-        cache.append(Entry(date: Date(), text: text, audio: audio, wave: wave, kind: .dictation))
-        _ = prune()
-        applyCaps()
-        save()
-        notifyChanged()
     }
 
-    /// Расшифровка импортированного аудиофайла (задача 229). Не подчиняется сроку хранения: человек
-    /// принёс файл сам и ждал расшифровки минуты, стирать её через час было бы издевательством.
-    /// Уходит только вручную, «очистить историю» или по своему потолку в `HistoryPolicy`.
-    func addImported(_ text: String, fileName: String, audio: String?, wave: [UInt8]?, kind: HistoryKind = .imported) {
-        guard settings.voiceHistoryEnabled else {
-            if let a = audio { VoiceClips.delete(a) }
-            return
+    func addImported(_ text: String, fileName: String, audio: String?, wave: [UInt8]?,
+                     kind: HistoryKind = .imported, completion: @escaping (VoiceHistorySaveResult) -> Void) {
+        enqueue(Entry(date: Date(), text: text, audio: audio, wave: wave, kind: kind, app: fileName),
+                completion: completion)
+    }
+
+    private func enqueue(_ entry: Entry, completion: @escaping (VoiceHistorySaveResult) -> Void) {
+        queue.async { [self] in
+            _ = didLoad
+            let result: VoiceHistorySaveResult
+            if settings.voiceHistoryEnabled {
+                var proposed = archive.entries
+                var entry = entry
+                if !settings.voiceSaveAudio { entry.audio = nil; entry.wave = nil }
+                proposed.append(entry)
+                result = commit(HistoryPolicy.capped(retained(proposed)).kept)
+            } else {
+                result = .disabled
+            }
+
+            // The producer owns a newly staged clip. Never delete it if the archive is unknown
+            // or if any committed entry still references it.
+            if let clip = entry.audio, !archive.unavailable,
+               !archive.entries.contains(where: { $0.audio == clip }) {
+                VoiceClips.delete(clip)
+            }
+            DispatchQueue.main.async { completion(result) }
         }
-        cache.append(Entry(date: Date(), text: text, audio: audio, wave: wave, kind: kind, app: fileName))
-        _ = prune()
-        applyCaps()
-        save()
-        notifyChanged()
     }
 
-    /// Потолки считаются отдельно для диктовок и буфера (`HistoryPolicy`), чтобы сотня
-    /// скопированных строк не вытеснила диктовки. У выброшенных диктовок уносим клипы.
-    private func applyCaps() {
-        let (kept, dropped) = HistoryPolicy.capped(cache)
-        guard !dropped.isEmpty else { return }
-        dropped.compactMap { $0.audio }.forEach(VoiceClips.delete)
-        cache = kept
+    private func retained(_ entries: [Entry], minutes: Int? = nil) -> [Entry] {
+        let minutes = minutes ?? settings.voiceHistoryMinutes
+        guard minutes > 0 else { return entries }
+        let cutoff = Date().addingTimeInterval(-Double(minutes) * 60)
+        return entries.filter { !HistoryPolicy.isExpired($0, before: cutoff) }
     }
 
-    /// Удалить записи старше voiceHistoryMinutes (0 = хранить всё). true — если что-то удалили.
-    @discardableResult
-    func prune() -> Bool {
-        let mins = settings.voiceHistoryMinutes
-        guard mins > 0 else { return false }
-        let cutoff = Date().addingTimeInterval(-Double(mins) * 60)
-        let before = cache.count
-        // Импортированные файлы срок хранения не трогает (см. addImported).
-        cache.filter { HistoryPolicy.isExpired($0, before: cutoff) }.compactMap { $0.audio }.forEach(VoiceClips.delete)
-        cache.removeAll { HistoryPolicy.isExpired($0, before: cutoff) }
-        return cache.count != before
+    private func commit(_ proposed: [Entry]) -> VoiceHistorySaveResult {
+        let changed = proposed != archive.entries
+        let result = archive.commit(proposed, to: fileURL, key: Self.key, write: { data, url in
+            try data.write(to: url, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }, deleteClip: VoiceClips.removeUnreferenced)
+        if changed && result == .saved { notifyChanged() }
+        return result
     }
 
-    /// Снять ссылки на аудио со ВСЕХ записей (человек выключил сохранение записи голоса).
-    /// Сами тексты остаются: он выключил звук, а не историю.
-    func forgetAudio() {
-        guard cache.contains(where: { $0.audio != nil }) else { return }
-        cache = cache.map { var e = $0; e.audio = nil; e.wave = nil; return e }
-        save()
-        notifyChanged()
+    func forgetAudio() -> VoiceHistorySaveResult {
+        queue.sync {
+            _ = didLoad
+            return commit(archive.entries.map {
+                guard !$0.isClipboard else { return $0 }
+                var entry = $0
+                entry.audio = nil
+                entry.wave = nil
+                return entry
+            })
+        }
     }
 
-    /// Сколько записей удалил бы срок хранения в `mins` минут, если применить его сейчас. Ничего не
-    /// меняет: по этому числу настройки спрашивают человека перед сокращением срока.
     func countOlder(thanMinutes mins: Int) -> Int {
-        guard mins > 0 else { return 0 }
-        let cutoff = Date().addingTimeInterval(-Double(mins) * 60)
-        return cache.filter { HistoryPolicy.isExpired($0, before: cutoff) }.count
+        queue.sync {
+            _ = didLoad
+            return archive.entries.count - retained(archive.entries, minutes: mins).count
+        }
     }
 
-    /// Применить новый срок хранения (зовётся из настроек) — подчистить + обновить окно.
-    func applyRetention() {
-        if prune() { save(); notifyChanged() }
+    func applyRetention(minutes: Int) -> VoiceHistorySaveResult {
+        queue.sync {
+            _ = didLoad
+            return commit(retained(archive.entries, minutes: minutes))
+        }
     }
-    /// Все записи, УЖЕ подчищенные по сроку хранения.
-    ///
-    /// ⚠️ ЧИСТИМ ПРЯМО ЗДЕСЬ (аудит умолчаний, 05.08.2026). Раньше `prune()` звался только на старте,
-    /// при добавлении записи и при смене срока в настройках. То есть человек, продиктовавший один раз
-    /// и больше не диктовавший, открывал окно истории через два часа и видел запись, срок которой
-    /// вышел час назад: она лежала и в памяти, и в файле. Обходной путь для меню уже был
-    /// (`lastVisible()` ниже), а окно и файл оставались честными только случайно.
-    ///
-    /// Это не про удобство, а про принцип №2: срок хранения это обещание, а не оформление.
+
     func all() -> [Entry] {
-        if prune() { save() }
-        return HistoryPolicy.visibleVoiceEntries(cache)
+        queue.sync {
+            _ = didLoad
+            let visible = retained(archive.entries)
+            if visible != archive.entries { _ = commit(visible) }
+            return archive.unavailable ? [] : HistoryPolicy.visibleVoiceEntries(visible)
+        }
     }
 
-    /// Последняя диктовка, которую ПРЯМО СЕЙЧАС законно показать: история включена и запись ещё не
-    /// просрочена по сроку хранения. Ничего не меняет и не пишет на диск — зовётся из сборки меню.
-    ///
-    /// Отдельно от `all().last`, потому что `cache` вычищается только в `prune()` (на добавлении и при
-    /// смене срока в настройках), а между этими моментами в нём спокойно лежит запись, срок которой
-    /// уже вышел. Пункт «Скопировать последнюю диктовку» опирается именно на этот метод, иначе он
-    /// предлагал бы скопировать то, что человек велел удалить полчаса назад.
-    ///
-    /// Только диктовки: с появлением буфера в ленте (задача 228) последняя ЗАПИСЬ и последняя
-    /// ДИКТОВКА разошлись, а пункт обещает именно диктовку.
     func lastVisible() -> Entry? {
-        guard settings.voiceHistoryEnabled, let e = HistoryPolicy.lastDictation(cache) else { return nil }
-        let mins = settings.voiceHistoryMinutes
-        guard mins > 0 else { return e }                       // 0 = хранить всё
-        return e.date >= Date().addingTimeInterval(-Double(mins) * 60) ? e : nil
+        queue.sync {
+            _ = didLoad
+            guard settings.voiceHistoryEnabled, !archive.unavailable else { return nil }
+            return HistoryPolicy.lastDictation(retained(archive.entries))
+        }
     }
-    /// Есть ли в кэше хоть одна диктовка, без учёта срока хранения.
-    ///
-    /// Нужно затем, чтобы отличить «диктовок ещё не было» от «диктовка была, но её срок вышел»:
-    /// для человека это разные новости (задача 242). `all()` для такой проверки не годится — он
-    /// чистит просроченное и пишет на диск, то есть сам стирает признак, который мы пришли измерить.
-    ///
-    /// ⚠️ ЧЕСТНАЯ ГРАНИЦА: `prune()` зовётся не только из `all()`, но и из `init`, `add` и смены
-    /// срока хранения, поэтому просроченная запись доживает до этой проверки не всегда. Значит
-    /// «была, но просрочена» мы говорим, только когда МОЖЕМ это доказать, а в остальных случаях
-    /// сообщение обязано быть верным при обоих раскладах — см. `voice.pasteLastNever`.
-    var hasAnyDictation: Bool { HistoryPolicy.lastDictation(cache) != nil }
 
-    func remove(date: Date, text: String) {
-        cache.filter { !$0.isClipboard && $0.date == date && $0.text == text }.compactMap { $0.audio }.forEach(VoiceClips.delete)
-        cache.removeAll { !$0.isClipboard && $0.date == date && $0.text == text }
-        save()
-        notifyChanged()
+    var hasAnyDictation: Bool {
+        queue.sync { _ = didLoad; return HistoryPolicy.lastDictation(archive.entries) != nil }
     }
-    @discardableResult
-    func clear(includingLegacyClipboard: Bool = false) -> Bool {
-        guard !archiveUnavailable else { return false }
-        let kept = includingLegacyClipboard ? [] : cache.filter { $0.isClipboard }
-        let old = cache
-        cache = kept
-        guard save() else { cache = old; return false }
-        VoiceClips.keepOnly(Set(kept.compactMap { $0.audio }))
-        notifyChanged()
-        return true
+
+    func remove(date: Date, text: String) -> VoiceHistorySaveResult {
+        queue.sync {
+            _ = didLoad
+            return commit(archive.entries.filter { $0.isClipboard || $0.date != date || $0.text != text })
+        }
+    }
+
+    func clear(includingLegacyClipboard: Bool = false) -> VoiceHistorySaveResult {
+        queue.sync {
+            _ = didLoad
+            return commit(includingLegacyClipboard ? [] : archive.entries.filter(\.isClipboard))
+        }
+    }
+
+    static func reportFailure(_ result: VoiceHistorySaveResult) {
+        guard result != .saved else { return }
+        VoiceIndicator.shared.showToast(L10n.t(result.messageKey))
     }
 
     /// Открытое окно истории слушает это и перестраивается мгновенно (не ждёт поллинга).
@@ -194,7 +176,7 @@ final class VoiceHistory {
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        let keys = [cachedKey,
+        let keys = [keyLock.withLock { cachedKey },
                     (status == errSecSuccess ? item as? Data : nil).flatMap { $0.count == 32 ? SymmetricKey(data: $0) : nil },
                     (try? Data(contentsOf: directory.appendingPathComponent(".histkey"))).flatMap {
                         $0.count == 32 ? SymmetricKey(data: $0) : nil
@@ -213,36 +195,6 @@ final class VoiceHistory {
 
     // MARK: - Шифрование
 
-    @discardableResult
-    private func save() -> Bool {
-        guard !archiveUnavailable, let key = Self.key() else { return false }
-        do {
-            let data = try JSONEncoder().encode(cache)
-            let sealed = try AES.GCM.seal(data, using: key)
-            guard let combined = sealed.combined else { return false }
-            try combined.write(to: fileURL, options: [.atomic])
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
-            return true
-        } catch {
-            kbLog("voice history save failed")
-            return false
-        }
-    }
-
-    private func load() throws -> [Entry] {
-        let blob: Data
-        do { blob = try Data(contentsOf: fileURL) }
-        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
-        let box = try AES.GCM.SealedBox(combined: blob)
-        for key in Self.existingKeys() {
-            guard let data = try? AES.GCM.open(box, using: key) else { continue }
-            let entries = try JSONDecoder().decode([Entry].self, from: data)
-            Self.cachedKey = key
-            return entries
-        }
-        throw ExportError.keyUnavailable
-    }
-
     private static func existingKeys() -> [SymmetricKey] {
         let file = try? Data(contentsOf: supportDir().appendingPathComponent(".histkey"))
         let keychain = devBuild && file?.count == 32 ? nil : keychainRead()
@@ -257,10 +209,15 @@ final class VoiceHistory {
     // with the existing private file fallback. Development archives prefer the file.
     private static let keychainService = (Bundle.main.bundleIdentifier ?? "ru.keyboop.app") + ".voicehistory"
     private static let keychainAccount = "history-aes-key"
+    private static let keyLock = NSLock()
     private static var cachedKey: SymmetricKey?
     private static let devBuild = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
 
     private static func key() -> SymmetricKey? {
+        keyLock.withLock { resolveStorageKey() }
+    }
+
+    private static func resolveStorageKey() -> SymmetricKey? {
         if let k = cachedKey { return k }
         let archive = supportDir().appendingPathComponent("history.enc")
         do {

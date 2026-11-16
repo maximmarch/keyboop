@@ -5647,11 +5647,14 @@ final class DetailVC: NSViewController {
     @objc private func toggleSaveAudio(_ s: NSSwitch) {
         settings.voiceSaveAudio = (s.state == .on)
         guard s.state == .off else { return }
-        let freed = VoiceClips.totalBytes()
-        VoiceClipPlayerView.stopAll()
-        VoiceClips.deleteAll()
-        VoiceHistory.shared.forgetAudio()
-        if freed > 0 { kbLog("аудио диктовки: выключено, удалено \(VoiceClips.humanSize(freed))") }
+        let result = VoiceHistory.shared.forgetAudio()
+        if result == .saved {
+            VoiceClipPlayerView.stopAll()
+        } else {
+            settings.voiceSaveAudio = true
+            s.state = .on
+            VoiceHistory.reportFailure(result)
+        }
     }
     /// Пароль на историю: включение — задать пароль, выключение — подтвердить текущим.
     /// Тумблер откатывается, если пользователь передумал в диалоге.
@@ -5690,8 +5693,9 @@ final class DetailVC: NSViewController {
         let old = settings.voiceHistoryMinutes
         let apply = { [weak self] in
             guard let self else { return }
-            self.settings.voiceHistoryMinutes = mins
-            VoiceHistory.shared.applyRetention()
+            let result = VoiceHistory.shared.applyRetention(minutes: mins)
+            if result == .saved { self.settings.voiceHistoryMinutes = mins }
+            else { VoiceHistory.reportFailure(result) }
             self.fillRetention(s)   // старый пункт «2 часа» исчезает, как только выбран другой
         }
         let shorter = mins > 0 && (old == 0 || mins < old)
@@ -5719,7 +5723,7 @@ final class DetailVC: NSViewController {
     @objc private func warmDurationChanged(_ s: NSPopUpButton) {
         settings.voiceWarmSeconds = warmSecondsOptions[s.indexOfSelectedItem]
     }
-    @objc private func clearVoiceHistory() { VoiceHistory.shared.clear() }
+    @objc private func clearVoiceHistory() { VoiceHistory.reportFailure(VoiceHistory.shared.clear()) }
     @objc private func showVoiceHistory() {
         if historyWC == nil { historyWC = VoiceHistoryWindowController() }
         historyWC?.show()

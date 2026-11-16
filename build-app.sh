@@ -31,6 +31,16 @@ fi
 # своей копии по обычному пути, пересборка туда же означала бы гасить приложение у него под руками,
 # а перенос копии в другое место ломает выданные доступы (TCC привязан к пути и подписи).
 APP="${KEYBOOP_BUILD_APP:-Keyboop.app}"
+FRESH_BUILD="${KEYBOOP_BUILD_FRESH:-0}"
+if [ "$FRESH_BUILD" = 1 ]; then
+  if [ -n "${KEYBOOP_BUILD_APP:-}" ] || [ "${KEYBOOP_RELEASE:-}" = 1 ]; then
+    echo "Fresh mode allocates its own path and supports development builds only." >&2
+    exit 2
+  fi
+  FRESH_ROOT="$(mktemp -d /tmp/keyboop-build.XXXXXXXX)"
+  APP="$FRESH_ROOT/Keyboop.app"
+  echo "Fresh development bundle: $APP"
+fi
 
 # Local admin tools share the exact process classifier. Source releases may omit Tools/, so keep a
 # minimal equivalent fallback here: v3 wins over the legacy flag it also carries.
@@ -120,32 +130,35 @@ EXECUTABLE="$APP_ABSOLUTE/Contents/MacOS/Keyboop"
 # Узкий legacy crash-scanner без `--resource-guard-v3` можно отличить по argv и не учитывать. Новый
 # persistent helper принципиально другой: он может жить после GUI, удерживая global lock/receipt и
 # повторяя OFF/restore. Перезаписывать его executable bundle до завершения cleanup нельзя.
-main_pids="$(keyboop_process_pids "$EXECUTABLE" application)"
-if [ -n "$main_pids" ]; then
-  echo "✗ Keyboop сейчас запущен из $APP_ABSOLUTE — собирать под ним нельзя."
-  # ⚠️ ГАСИМ ПО ПУТИ, А НЕ ПО ИМЕНИ. Здесь стояло `pkill -x Keyboop`, и эта подсказка обошлась
-  # дорого: она гасит ЛЮБОЙ процесс с именем Keyboop, то есть заодно и боевую копию из
-  # /Applications, которой человек в этот момент пользуется. У сборочной и у боевой копии общее
-  # имя процесса и разные пути — значит и различать их надо путём.
-  # И `-f`, а не `-9`: SIGKILL перехватить нельзя, а на выходе мы возвращаем системе роль клавиши
-  # 🌐, иначе она остаётся сломанной до перезапуска (задача 96).
-  echo "  Сначала:  pkill -f \"$EXECUTABLE\"        затем собери и:  open \"$APP\""
-  exit 1
-fi
-persistent_pids="$(keyboop_process_pids "$EXECUTABLE" persistent)"
-if [ -n "$persistent_pids" ]; then
-  echo "⏳ persistent resource helper завершает cleanup: $persistent_pids"
-  for _ in $(seq 1 40); do
-    persistent_pids="$(keyboop_process_pids "$EXECUTABLE" persistent)"
-    [ -z "$persistent_pids" ] && break
-    sleep 0.25
-  done
-  if [ -n "$persistent_pids" ]; then
-    echo "✗ resource helper всё ещё держит незавершённую сессию: $persistent_pids"
-    echo "  Bundle не перезаписываю; helper не посылаю сигналов. Проверь cleanup log/receipt."
+if [ "$FRESH_BUILD" != 1 ]; then
+  main_pids="$(keyboop_process_pids "$EXECUTABLE" application)"
+  if [ -n "$main_pids" ]; then
+    echo "✗ Keyboop сейчас запущен из $APP_ABSOLUTE — собирать под ним нельзя."
+    # ⚠️ ГАСИМ ПО ПУТИ, А НЕ ПО ИМЕНИ. Здесь стояло `pkill -x Keyboop`, и эта подсказка обошлась
+    # дорого: она гасит ЛЮБОЙ процесс с именем Keyboop, то есть заодно и боевую копию из
+    # /Applications, которой человек в этот момент пользуется. У сборочной и у боевой копии общее
+    # имя процесса и разные пути — значит и различать их надо путём.
+    # И `-f`, а не `-9`: SIGKILL перехватить нельзя, а на выходе мы возвращаем системе роль клавиши
+    # 🌐, иначе она остаётся сломанной до перезапуска (задача 96).
+    echo "  Сначала:  pkill -f \"$EXECUTABLE\"        затем собери и:  open \"$APP\""
     exit 1
   fi
+  persistent_pids="$(keyboop_process_pids "$EXECUTABLE" persistent)"
+  if [ -n "$persistent_pids" ]; then
+    echo "⏳ persistent resource helper завершает cleanup: $persistent_pids"
+    for _ in $(seq 1 40); do
+      persistent_pids="$(keyboop_process_pids "$EXECUTABLE" persistent)"
+      [ -z "$persistent_pids" ] && break
+      sleep 0.25
+    done
+    if [ -n "$persistent_pids" ]; then
+      echo "✗ resource helper всё ещё держит незавершённую сессию: $persistent_pids"
+      echo "  Bundle не перезаписываю; helper не посылаю сигналов. Проверь cleanup log/receipt."
+      exit 1
+    fi
+  fi
 fi
+
 # ПРОВЕРКА ДУБЛЕЙ В L10n (25.07): Swift-словарь-литерал с повторяющимся ключом компилируется молча,
 # но падает SIGTRAP при ПЕРВОМ обращении — то есть приложение не запускается вообще (Dictionary.init →
 # one-time initialization function for strings). Ловим на сборке, а не по краш-репорту.
@@ -165,13 +178,19 @@ fi
 echo "▸ swiftc compile…"
 # Close the bounded-wait race: a GUI may have launched while the old helper was finishing. Perform
 # one final exact-path check immediately before replacing any bundle contents.
-blocking_pids="$(keyboop_process_pids "$EXECUTABLE" blocking)"
-if [ -n "$blocking_pids" ]; then
-  echo "✗ перед записью bundle снова появился GUI/persistent helper: $blocking_pids"
-  echo "  Bundle оставляю без изменений."
-  exit 1
+if [ "$FRESH_BUILD" = 1 ]; then
+  # No executable has ever existed at this private, newly allocated path.
+  # mkdir must fail if anything has already appeared at the destination.
+  mkdir "$APP"
+else
+  blocking_pids="$(keyboop_process_pids "$EXECUTABLE" blocking)"
+  if [ -n "$blocking_pids" ]; then
+    echo "✗ перед записью bundle снова появился GUI/persistent helper: $blocking_pids"
+    echo "  Bundle оставляю без изменений."
+    exit 1
+  fi
+  rm -rf "$APP"
 fi
-rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 # ⚠️ КРИТИЧНО: arm64-сборка transcribe.cpp ДОЛЖНА быть с CMAKE_OSX_DEPLOYMENT_TARGET=14.0.
@@ -457,6 +476,7 @@ if codesign --verify --deep --strict "$APP" 2>/dev/null; then
 else
   echo "  ⚠️  ОШИБКА: codesign --deep --strict НЕ прошёл — бандл битый, TCC будет слетать:"
   codesign --verify --deep --strict "$APP" 2>&1 | sed 's/^/      /'
+  exit 1
 fi
 
 echo "✓ Готово: $APP"

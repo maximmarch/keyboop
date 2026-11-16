@@ -719,10 +719,11 @@ final class VoiceController {
                 audio.map(VoiceClips.delete)   // текста нет — клипу не к чему прикрепляться
                 kbLog("voice: отменённая диктовка пустая — в историю нечего класть"); return
             }
-            VoiceHistory.shared.add(clean, audio: audio, wave: wave)
+            VoiceHistory.shared.add(clean, audio: audio, wave: wave) { result in
+                if result == .saved { VoiceIndicator.shared.showToast(L10n.t("voice.escSaved")) }
+                else { VoiceHistory.reportFailure(result) }
+            }
             noteVoiceStats(clean)
-            kbLog("voice: отменённая диктовка сохранена в историю, \(clean.count) симв.")
-            VoiceIndicator.shared.showToast(L10n.t("voice.escSaved"))
             return
         }
         guard !clean.isEmpty else {
@@ -734,10 +735,11 @@ final class VoiceController {
         // Поле пароля/системный диалог украли фокус (инцидент 23.07.2026): печатать нельзя,
         // но распознанное НЕ теряем — история + честный тост вместо молчаливой пропажи.
         if !SecureInputPolicy.canWrite("диктовка \(clean.count) симв.") {
-            kbLog("voice: писать нельзя — не печатаю \(clean.count) симв., текст в истории")
-            VoiceHistory.shared.add(clean, audio: audio, wave: wave)
+            VoiceHistory.shared.add(clean, audio: audio, wave: wave) { result in
+                if result == .saved { VoiceIndicator.shared.showToast(L10n.t("voice.securePwd")) }
+                else { VoiceHistory.reportFailure(result) }
+            }
             noteVoiceStats(clean)
-            VoiceIndicator.shared.showToast(L10n.t("voice.securePwd"))
             return
         }
         // Диагностика «пропадает пунктуация» (10.07): считаем ЗНАКИ ПРЕПИНАНИЯ в выводе (только счётчик,
