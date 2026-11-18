@@ -681,8 +681,12 @@ enum TextReplacer {
     }
 
     /// Пара keyDown/keyUp с Unicode-строкой; false — событие не создалось (ничего из пары не ушло).
+    static func postSuggestion(_ text: String, to pid: pid_t) -> Bool {
+        return postUnicodeChunkChecked(Array(text.utf16), flags: [], source: nil, pid: pid)
+    }
+
     private static func postUnicodeChunkChecked(_ chunk: [UniChar], flags: CGEventFlags,
-                                                source: CGEventSource?) -> Bool {
+                                                source: CGEventSource?, pid: pid_t? = nil) -> Bool {
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return false }
         for e in [down, up] {
@@ -692,8 +696,13 @@ enum TextReplacer {
                 e.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
             }
         }
-        down.post(tap: synthPostTap)
-        up.post(tap: synthPostTap)
+        if let pid {
+            down.postToPid(pid)
+            up.postToPid(pid)
+        } else {
+            down.post(tap: synthPostTap)
+            up.post(tap: synthPostTap)
+        }
         return true
     }
 

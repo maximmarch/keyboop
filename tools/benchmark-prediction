@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if [[ "${1:-}" == "--help" ]]; then
+  cat Tests/PredictionEval/README.md
+  exit 0
+fi
+
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/keyboop-prediction-eval.XXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+sources=(Sources/Keyboop/{WordCompletionIndex,NextWordIndex,LayoutData,ExtraWords,PredictiveLocalModel,WordCompletionRequest,PredictionComparison}.swift)
+swiftc -O -swift-version 5 -module-cache-path "$scratch/modules" \
+  "${sources[@]}" Tests/PredictionEval/main.swift -o "$scratch/bench"
+KEYBOOP_DATA_DIR="$PWD/Sources/Keyboop/Resources" "$scratch/bench" "$@"
