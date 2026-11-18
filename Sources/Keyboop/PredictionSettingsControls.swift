@@ -173,7 +173,7 @@ final class PredictionModelControls: NSStackView {
     }
 
     private func runComparison(_ run: PredictionComparison, connection: PredictionConnection) {
-        run.start(baseURL: connection.baseURL, apiKey: connection.apiKey) { [weak self, weak run] completed, total in
+        run.start(baseURL: connection.baseURL, apiKey: connection.apiKey, confidence: .forModel(connection.modelID)) { [weak self, weak run] completed, total in
             guard let self, let run, self.comparison === run else { return }
             // Each completed case is real use, even on a Mac where the full run takes a few minutes.
             _ = self.runtime.connection()

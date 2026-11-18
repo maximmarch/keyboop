@@ -122,6 +122,43 @@ CC BY 4.0) и предложениях участников Tatoeba (CC BY 2.0 F
 `python3 tools/import-prediction-dictionaries.py КАТАЛОГ Sources/Keyboop/Resources`.
 Импорт проверяет SHA-256 каждого исходного файла.
 
+### Русский словарь дописывания и варианты для сравнения
+
+`completion_dictionary_ru.json` дополняет русский словарь подсказок словоформами из
+морфологического словаря русского языка OpenCorpora и частотами wordfreq Small.
+Keyboop фильтрует русские словоформы wordfreq по морфологическому словарю
+и преобразует веса в целые числа на миллиард слов. Для записей вне wordfreq используются пересчитанные частоты
+FrequencyWords из базового ресурса. Производный JSON распространяется под
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+
+- [OpenCorpora, морфологический словарь русского языка](https://opencorpora.org/?page=downloads)
+  и проект АОТ. Используется ревизия 417150 из
+  [pymorphy3-dicts-ru 2.4.417150.4580142](https://pypi.org/project/pymorphy3-dicts-ru/2.4.417150.4580142/).
+  Исходные данные под [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/).
+- wordfreq © 2022 Robyn Speer. Таблицы `small_ru.msgpack.gz` и
+  `small_en.msgpack.gz` из [снимка 912caf6](https://github.com/rspeer/wordfreq/tree/912caf64b657478d1dff1138efdc078947d54bb1/wordfreq/data).
+  Уведомление о данных и исходные условия приведены в
+  [wordfreq NOTICE](https://github.com/rspeer/wordfreq/blob/912caf64b657478d1dff1138efdc078947d54bb1/NOTICE.md).
+  Среди источников Google Books Ngram Viewer, Leeds Internet Corpus (Centre for
+  Translation Studies, University of Leeds), Wikipedia, ParaCrawl, OpenSubtitles
+  через OPUS и свободно доступные списки частот SUBTLEX, Marc Brysbaert и соавторы.
+
+Экспериментальные источники ниже загружаются отдельно для стенда сравнения.
+
+| Исходный файл | Источник и снимок | SHA-256 |
+|---|---|---|
+| `ru-100k.txt` | [SymSpell, 91fe939](https://github.com/wolfgarbe/SymSpell/blob/91fe939e9c1259813ee817e95239629c5badf8ec/SymSpell.FrequencyDictionary/ru-100k.txt) | `2028262759546fdc346386369a59541d0464f48634c3103ff3f36d01518efcc6` |
+| `frequency_dictionary_en_82_765.txt` | [SymSpell, 91fe939](https://github.com/wolfgarbe/SymSpell/blob/91fe939e9c1259813ee817e95239629c5badf8ec/SymSpell/frequency_dictionary_en_82_765.txt) | `c604e1121e398ae7c7fbf777f11e0a0f2fa66eda932cb9fba1321466cf3acd7b` |
+| `50000-russian-words-cyrillic-only.txt` | [Leeds Internet Corpus, обработка hingston, b144235](https://github.com/hingston/russian/blob/b144235f90fc720ef310f304e31acc3825d62a1b/50000-russian-words-cyrillic-only.txt) | `57fe4356417987c1d0221f32e20b5afeaf45fb7b6c318a9f8f55fb119b81c05f` |
+
+Русский список SymSpell основан на Google Books Ngram и Hunspell согласно
+[документации Wolf Garbe](https://github.com/wolfgarbe/SymSpell/blob/91fe939e9c1259813ee817e95239629c5badf8ec/SymSpell.FrequencyDictionary/README.md).
+Для английского использованы Google Books Ngram ([CC BY 3.0](https://creativecommons.org/licenses/by/3.0/))
+и [SCOWL](https://wordlist.aspell.net/scowl-readme/). Условия списка Leeds
+указаны в [hingston/russian LICENSE](https://github.com/hingston/russian/blob/b144235f90fc720ef310f304e31acc3825d62a1b/LICENSE.md)
+([CC BY 2.5](https://creativecommons.org/licenses/by/2.5/)). В эксперименте Leeds
+используется в исходном порядке. Способ проверки ранга вдохновлён Znak.
+
 ## llama.cpp — локальный сервер предиктивного ввода
 
 Keyboop запускает [llama.cpp](https://github.com/ggml-org/llama.cpp) отдельным процессом.

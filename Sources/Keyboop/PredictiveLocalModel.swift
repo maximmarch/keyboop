@@ -8,6 +8,27 @@ final class PredictiveLocalModel {
         case failed(String)
     }
 
+    struct Confidence {
+        let completion: Double
+        let nextWord: Double
+
+        static let baseline = Self(completion: 0.08, nextWord: 0.15)
+        static let qwen3 = Self(completion: 0.16, nextWord: 0.15)
+        static func forModel(_ modelID: String?) -> Self {
+            modelID == "qwen3-0.6b-base" ? .qwen3 : .baseline
+        }
+        static let experiments = [
+            ("low", Self(completion: 0.04, nextWord: 0.075)),
+            ("baseline", baseline),
+            ("high", Self(completion: 0.16, nextWord: 0.30))
+        ]
+
+        func accepts(_ meanLogProbability: Double, completing: Bool, firstWord: Bool) -> Bool {
+            let minimum = firstWord ? (completing ? completion : nextWord) : 0.22
+            return meanLogProbability >= log(minimum)
+        }
+    }
+
     private let delegate = StreamDelegate()
     private let session: URLSession
 
@@ -25,7 +46,8 @@ final class PredictiveLocalModel {
     deinit { session.invalidateAndCancel() }
 
     func predict(before: String, contextWord: String, completing: Bool, endpoint: URL, apiKey: String?, cacheScope: UUID? = nil,
-                 request: WordCompletionRequest, deadline: DispatchTime, receive: @escaping (Event) -> Void) {
+                 request: WordCompletionRequest, deadline: DispatchTime, confidence: Confidence = .baseline,
+                 receive: @escaping (Event) -> Void) {
         guard !request.isCancelled else { receive(.finished(nil)); return }
         guard DispatchTime.now() < deadline else { receive(.failed("prediction.timeout")); return }
         guard endpoint.scheme == "http", ["127.0.0.1", "::1", "[::1]"].contains(endpoint.host ?? ""),
@@ -52,7 +74,8 @@ final class PredictiveLocalModel {
         if key != nil { body["id_slot"] = 0 }
         outgoing.httpBody = try? JSONSerialization.data(withJSONObject: body)
         let task = session.dataTask(with: outgoing)
-        let stream = Stream(input: input, request: request, deadline: deadline, cache: cache, receive: receive)
+        let stream = Stream(input: input, request: request, deadline: deadline, cache: cache,
+                            confidence: confidence, receive: receive)
         delegate.register(stream, for: task)
         request.startInference(task)
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: deadline) { [weak task] in task?.cancel() }
@@ -137,6 +160,7 @@ final class PredictiveLocalModel {
         let request: WordCompletionRequest
         let deadline: DispatchTime
         let cache: CacheAccess
+        let confidence: Confidence
         let receive: (Event) -> Void
         var pending = Data()
         var generated = ""
@@ -145,11 +169,13 @@ final class PredictiveLocalModel {
         var terminal = false
         var confirmedPrompt = false
 
-        init(input: Input, request: WordCompletionRequest, deadline: DispatchTime, cache: CacheAccess, receive: @escaping (Event) -> Void) {
+        init(input: Input, request: WordCompletionRequest, deadline: DispatchTime, cache: CacheAccess,
+             confidence: Confidence, receive: @escaping (Event) -> Void) {
             self.input = input
             self.request = request
             self.deadline = deadline
             self.cache = cache
+            self.confidence = confidence
             self.receive = receive
         }
 
@@ -194,10 +220,9 @@ final class PredictiveLocalModel {
                 let span = offset..<(offset + word.utf8.count)
                 let relevant = scores.filter { $0.bytes.overlaps(span) }
                 // Length-normalized across subword tokens so Cyrillic tokenization is not penalized.
-                // Initial thresholds, to be tuned with the RU/EN replay benchmark.
-                let threshold = parts.isEmpty ? (input.completing ? 0.08 : 0.15) : 0.22
-                guard !relevant.isEmpty,
-                      relevant.map(\.logprob).reduce(0, +) / Double(relevant.count) >= log(threshold) else { break }
+                guard !relevant.isEmpty else { break }
+                let meanLogProbability = relevant.reduce(0) { $0 + $1.logprob } / Double(relevant.count)
+                guard confidence.accepts(meanLogProbability, completing: input.completing, firstWord: parts.isEmpty) else { break }
                 let uppercaseSuffix = parts.isEmpty && input.completing && input.contextWord == input.contextWord.uppercased()
                 parts.append(uppercaseSuffix ? key.uppercased() : String(word))
                 offset = span.upperBound + 1

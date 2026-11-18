@@ -29,6 +29,10 @@ private struct Trace: Decodable {
     var pipelineCompleting: Bool { prompt.last != " " && prompt.last != "\u{00A0}" }
     var trigger: PredictionDecision.Trigger { pipelineCompleting ? .completion(useContext: true) : .nextWord }
     var triggerGroup: String { pipelineCompleting ? "trigger:completion" : "trigger:next-word" }
+    var languageGroup: String? {
+        guard let language = group.split(separator: "-").first, language == "ru" || language == "en" else { return nil }
+        return "language:\(language)"
+    }
 }
 
 private struct Sample {
@@ -80,31 +84,15 @@ private func elapsedMS(_ start: UInt64) -> Double {
 }
 
 private struct DictionaryPredictor {
-    private struct CompletionData: Decodable {
-        let words: Set<String>
-        let frequencies: [String: Int]
-    }
-
     let index: WordCompletionIndex
     let next: NextWordIndex
 
-    init(resources: URL, completionData: URL? = nil) throws {
-        let decoder = JSONDecoder()
-        let completion: CompletionData
-        if let completionData {
-            completion = try decoder.decode(CompletionData.self, from: Data(contentsOf: completionData))
-            guard completion.frequencies.values.allSatisfy({ (1...1_000_000_000).contains($0) }) else {
-                throw EvalError("Completion frequencies must be positive counts per billion")
-            }
-        } else {
-            let path = resources.appendingPathComponent("word_frequencies.json")
-            let frequencies = try decoder.decode([String: Int].self, from: Data(contentsOf: path))
-            completion = CompletionData(words: [], frequencies: frequencies)
-        }
+    init(resources: URL, completionData: URL? = nil, useBundledCandidates: Bool = true) throws {
         let data = LayoutData.shared
         guard data.isLoaded else { throw EvalError("Missing layout dictionaries") }
-        index = WordCompletionIndex(words: data.wordsRu.union(data.wordsEn).union(completion.words),
-                                    frequencies: completion.frequencies)
+        index = try CompletionVocabulary.index(words: data.wordsRu.union(data.wordsEn), resources: resources,
+                                               candidate: completionData, useBundledCandidates: useBundledCandidates)
+        let decoder = JSONDecoder()
         next = try decoder.decode(NextWordIndex.self, from: Data(contentsOf: resources.appendingPathComponent("next_words.json")))
     }
 
@@ -130,6 +118,7 @@ private struct DictionaryPredictor {
             result.first = suffix
             result.latest = suffix
             result.firstWordMS = duration
+            result.source = .dictionary
         }
         return result
     }
@@ -297,7 +286,7 @@ private final class ModelComparison {
 
     func sample(_ trace: Trace, constrained: Bool,
                 input: (before: String, contextWord: String, completing: Bool)? = nil,
-                lookup: Double? = nil) -> Sample {
+                lookup: Double? = nil, confidence: PredictiveLocalModel.Confidence = .baseline) -> Sample {
         let untilNextKey = (trace.nextKeyMS ?? .infinity) - appDebounceMS - (lookup ?? 0)
         let remaining = min(modelBudgetMS, untilNextKey)
         guard remaining > 0 else { return Sample(trace: trace, lookupMS: lookup, interrupted: true) }
@@ -308,7 +297,7 @@ private final class ModelComparison {
         if constrained {
             let context = input ?? (trace.prompt, trace.word, trace.completing)
             model.predict(before: context.before, contextWord: context.contextWord, completing: context.completing,
-                          endpoint: endpoint, apiKey: apiKey, request: request, deadline: deadline) { event in
+                          endpoint: endpoint, apiKey: apiKey, request: request, deadline: deadline, confidence: confidence) { event in
                 switch event {
                 case let .partial(text): result.update(text, final: false)
                 case let .finished(text): result.update(text, final: true)
@@ -400,13 +389,14 @@ final class PredictionComparison {
         if lock.withLock({ cancelled }) { throw CocoaError(.userCancelled) }
     }
 
-    func start(baseURL: URL, apiKey: String?, progress: @escaping (Int, Int) -> Void,
+    func start(baseURL: URL, apiKey: String?, confidence: PredictiveLocalModel.Confidence,
+               progress: @escaping (Int, Int) -> Void,
                completion: @escaping (Result<[Summary], Error>) -> Void) {
         DispatchQueue.global(qos: .utility).async {
             let result = Result<[Summary], Error> {
                 guard let resources = Bundle.main.resourceURL else { throw CocoaError(.fileNoSuchFile) }
                 return try self.compare(resources: resources, baseURL: baseURL, apiKey: apiKey,
-                                        progress: { finished, total in
+                                        confidence: confidence, progress: { finished, total in
                     DispatchQueue.main.async { progress(finished, total) }
                 }, report: { _ in })
             }
@@ -416,18 +406,21 @@ final class PredictionComparison {
 
     /// Synchronous entry for the CLI and background worker. Publishes per-group results for the CLI.
     func compare(resources: URL, baseURL: URL?, apiKey: String?, tracesURL: URL? = nil,
-                 completionCandidates: [URL] = [], progress: (Int, Int) -> Void = { _, _ in },
+                 completionCandidates: [URL] = [], confidence: PredictiveLocalModel.Confidence = .baseline,
+                 progress: (Int, Int) -> Void = { _, _ in },
                  report: ([Summary]) -> Void) throws -> [Summary] {
         try checkCancelled()
         let url = tracesURL ?? resources.appendingPathComponent("prediction_benchmark.json")
         let traces = try Self.loadTraces(url)
         func measureDictionary(mode: String, completion: URL? = nil) throws -> Summary {
-            let dictionary = try DictionaryPredictor(resources: resources, completionData: completion)
+            let dictionary = try DictionaryPredictor(resources: resources, completionData: completion,
+                                                       useBundledCandidates: completionCandidates.isEmpty)
             try checkCancelled()
             if !completionCandidates.isEmpty {
                 for trace in traces { _ = dictionary.sample(trace) }
             }
-            let summaries = Self.summaries(mode: mode, samples: traces.map(dictionary.sample))
+            let summaries = Self.summaries(mode: mode, samples: traces.map(dictionary.sample),
+                                           byLanguage: !completionCandidates.isEmpty)
             report(summaries)
             return summaries[0]
         }
@@ -452,7 +445,7 @@ final class PredictionComparison {
             try checkCancelled()
             if index.isMultiple(of: 2) { direct.append(comparison.sample(trace, constrained: false)) }
             try checkCancelled()
-            constrained.append(comparison.sample(trace, constrained: true))
+            constrained.append(comparison.sample(trace, constrained: true, confidence: confidence))
             if !index.isMultiple(of: 2) {
                 try checkCancelled()
                 direct.append(comparison.sample(trace, constrained: false))
@@ -467,12 +460,12 @@ final class PredictionComparison {
         return [basic, directStats[0], constrainedStats[0]]
     }
 
-    func comparePipeline(resources: URL, edgesURL: URL, baseURL: URL?, apiKey: String?,
-                         report: ([Summary]) -> Void) throws {
+    func comparePipeline(resources: URL, edgesURL: URL, baseURL: URL?, apiKey: String?, completionData: URL? = nil,
+                         confidence: PredictiveLocalModel.Confidence = .qwen3, report: ([Summary]) -> Void) throws {
         let original = try Self.loadTraces(resources.appendingPathComponent("prediction_benchmark.json"))
         let edges = try Self.loadTraces(edgesURL)
         let history = EvaluationHistory(traces: edges)
-        let dictionary = try DictionaryPredictor(resources: resources)
+        let dictionary = try DictionaryPredictor(resources: resources, completionData: completionData)
         let comparison = try baseURL.map { try ModelComparison(endpoint: $0, apiKey: apiKey) }
         try comparison?.requireReady()
 
@@ -498,7 +491,8 @@ final class PredictionComparison {
                               lookupMS: duration, source: .history)
             case let .model(before, prefix, word):
                 guard let comparison else { return Sample(trace: trace, lookupMS: duration) }
-                return comparison.sample(trace, constrained: true, input: (before, word, !prefix.isEmpty), lookup: duration)
+                return comparison.sample(trace, constrained: true, input: (before, word, !prefix.isEmpty),
+                                         lookup: duration, confidence: confidence)
             }
         }
 
@@ -519,6 +513,47 @@ final class PredictionComparison {
         report(Self.summaries(mode: "pipeline-history", samples: withHistory, byTrigger: true))
     }
 
+    func compareConfidence(resources: URL, edgesURL: URL, holdoutURL: URL, baseURL: URL, apiKey: String?,
+                           completionData: URL? = nil, report: ([Summary]) -> Void) throws {
+        let original = try Self.loadTraces(resources.appendingPathComponent("prediction_benchmark.json"))
+        let edges = try Self.loadTraces(edgesURL)
+        let holdout = try Self.loadTraces(holdoutURL)
+        func identity(_ trace: Trace) -> String {
+            WordCompletionIndex.key(trace.prompt + trace.reference)
+                .split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ")
+        }
+        guard Set((original + edges).map(identity)).isDisjoint(with: holdout.map(identity)),
+              holdout.allSatisfy({ $0.historyOnly != true }) else {
+            throw EvalError("Confidence holdout overlaps development data or includes history rows")
+        }
+
+        let dictionary = try DictionaryPredictor(resources: resources, completionData: completionData)
+        let model = try ModelComparison(endpoint: baseURL, apiKey: apiKey)
+        try model.requireReady()
+        let profiles = PredictiveLocalModel.Confidence.experiments
+        let development = original + edges.filter { $0.historyOnly != true }
+        for (split, traces) in [("development", development), ("holdout", holdout)] {
+            var samples = Array(repeating: [Sample](), count: profiles.count)
+            for (i, trace) in traces.enumerated() {
+                try checkCancelled()
+                let start = DispatchTime.now().uptimeNanoseconds
+                guard case let .model(before, prefix, word) = dictionary.liveChoice(trace) else { continue }
+                let lookup = elapsedMS(start)
+                // Vary request order across traces to avoid favouring one profile with warm hardware.
+                for step in profiles.indices {
+                    let index = (i + step) % profiles.count
+                    let result = model.sample(trace, constrained: true, input: (before, word, !prefix.isEmpty),
+                                              lookup: lookup, confidence: profiles[index].1)
+                    samples[index].append(result)
+                }
+            }
+            for (i, profile) in profiles.enumerated() {
+                report(Self.summaries(mode: "confidence-\(split)-\(profile.0)", samples: samples[i],
+                                      byTrigger: true, byLanguage: true))
+            }
+        }
+    }
+
     private static func loadTraces(_ url: URL) throws -> [Trace] {
         let traces = try JSONDecoder().decode([Trace].self, from: Data(contentsOf: url))
         guard !traces.isEmpty, Set(traces.map(\.id)).count == traces.count,
@@ -531,11 +566,15 @@ final class PredictionComparison {
         return traces
     }
 
-    private static func summaries(mode: String, samples: [Sample], byTrigger: Bool = false) -> [Summary] {
+    private static func summaries(mode: String, samples: [Sample], byTrigger: Bool = false,
+                                  byLanguage: Bool = false) -> [Summary] {
         var groups = ["all"] + Set(samples.map(\.trace.group)).sorted()
         if byTrigger { groups += Set(samples.map(\.trace.triggerGroup)).sorted() }
+        if byLanguage { groups += Set(samples.compactMap(\.trace.languageGroup)).sorted() }
         return groups.map { group in
-            let rows = samples.filter { group == "all" || $0.trace.group == group || $0.trace.triggerGroup == group }
+            let rows = samples.filter {
+                group == "all" || $0.trace.group == group || $0.trace.triggerGroup == group || $0.trace.languageGroup == group
+            }
             func percentile(_ fraction: Double, in latencies: [Double]) -> Double? {
                 guard !latencies.isEmpty else { return nil }
                 return latencies[Int(ceil(Double(latencies.count) * fraction)) - 1]

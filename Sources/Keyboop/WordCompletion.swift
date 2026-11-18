@@ -48,11 +48,11 @@ final class WordCompletion {
     // Worker-only identity for the field receiving consecutive model requests.
     private var inferenceContext: (pid: pid_t, element: AXUIElement, source: String, id: UUID)?
     private lazy var index: WordCompletionIndex = {
-        let counts = Bundle.main.url(forResource: "word_frequencies", withExtension: "json")
-            .flatMap { try? Data(contentsOf: $0) }
-            .flatMap { try? JSONDecoder().decode([String: Int].self, from: $0) } ?? [:]
-        return WordCompletionIndex(words: LayoutData.shared.wordsRu.union(LayoutData.shared.wordsEn),
-                                   frequencies: counts)
+        let words = LayoutData.shared.wordsRu.union(LayoutData.shared.wordsEn)
+        if let resources = Bundle.main.resourceURL, let index = try? CompletionVocabulary.index(words: words, resources: resources) {
+            return index
+        }
+        return WordCompletionIndex(words: words)
     }()
     private lazy var nextWordIndex: NextWordIndex? = {
         guard let url = Bundle.main.url(forResource: "next_words", withExtension: "json"),
@@ -450,7 +450,7 @@ final class WordCompletion {
         let deadline = DispatchTime.now() + .milliseconds(PredictionDecision.modelBudgetMS)
         localModel.predict(before: context, contextWord: contextWord, completing: !prefix.isEmpty,
                            endpoint: connection.baseURL, apiKey: connection.apiKey, cacheScope: scope,
-                           request: request, deadline: deadline) { [weak self] event in
+                           request: request, deadline: deadline, confidence: .forModel(connection.modelID)) { [weak self] event in
             self?.worker.async {
                 guard !request.isCancelled else { return }
                 switch event {

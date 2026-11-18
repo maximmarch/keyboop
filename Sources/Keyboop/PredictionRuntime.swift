@@ -20,6 +20,7 @@ struct PredictionModel {
 struct PredictionConnection: Equatable {
     let baseURL: URL
     let apiKey: String?
+    let modelID: String?
 }
 
 extension Notification.Name {
@@ -158,7 +159,7 @@ final class PredictionRuntime {
         queue.sync {
             guard enabled else { return nil }
             if external {
-                return PredictionConnection(baseURL: URL(string: "http://127.0.0.1:18181")!, apiKey: nil)
+                return PredictionConnection(baseURL: URL(string: "http://127.0.0.1:18181")!, apiKey: nil, modelID: nil)
             }
             if let ready, process?.isRunning == true {
                 armIdleTimer()
@@ -314,7 +315,7 @@ final class PredictionRuntime {
         let alias = UUID().uuidString
         do {
             let port = try Self.availablePort()
-            let endpoint = PredictionConnection(baseURL: URL(string: "http://127.0.0.1:\(port)")!, apiKey: key)
+            let endpoint = PredictionConnection(baseURL: URL(string: "http://127.0.0.1:\(port)")!, apiKey: key, modelID: selected.id)
             let pipe = Pipe()
             child.executableURL = host
             child.arguments = ["--prediction-server-supervisor", selected.id, String(port), alias]

@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import subprocess
+from tempfile import TemporaryDirectory
 import sys
 from threading import Thread
 import time
@@ -22,11 +23,11 @@ def run(*args):
 
 
 baseline = run("--dictionary")["dictionary", "all"]
-assert (baseline["cases"], baseline["shown"], baseline["wrong_shows"]) == ("38", "26", "14"), baseline
+assert (baseline["cases"], baseline["shown"], baseline["wrong_shows"]) == ("38", "25", "13"), baseline
 results = run("--pipeline")
 original = results["pipeline", "all"]
-assert (original["cases"], original["shown"], original["wrong_shows"], original["misses"]) == ("38", "26", "14", "11"), original
-assert original["dictionary_shows"] == "26" and original["model_shows"] == "0", original
+assert (original["cases"], original["shown"], original["wrong_shows"], original["misses"]) == ("38", "25", "13", "12"), original
+assert original["dictionary_shows"] == "25" and original["model_shows"] == "0", original
 assert results["pipeline", "trigger:completion"]["cases"] == "18"
 assert results["pipeline", "trigger:next-word"]["cases"] == "20"
 right = results["pipeline-edges", "right-text"]
@@ -67,10 +68,15 @@ class ModelServer(BaseHTTPRequestHandler):
         self.prompts.append(prompt)
         assert body["stream"] and body["grammar"], body
         text = " Zoom" if prompt == "Сегодня встреча в" else ""
+        score = -0.1
+        if prompt == "Echo style":
+            text, score = " qqrabit", -2.12
+        if prompt == "Echo on xyzabc":
+            text, score = " yes", -2.12
         if prompt == "Проверю в письме":
             time.sleep(0.25)
         event = {"stop": True, "stop_type": "eos", "content": text,
-                 "completion_probabilities": [{"logprob": -0.1}]}
+                 "completion_probabilities": [{"logprob": score}]}
         self.reply("text/event-stream", ("data: " + json.dumps(event) + "\n\n").encode())
 
     def log_message(self, *args):
@@ -82,16 +88,27 @@ with ThreadingHTTPServer(("127.0.0.1", 0), ModelServer) as server:
     thread.start()
     try:
         live = run("--pipeline", "--port", str(server.server_port))
+        with TemporaryDirectory() as scratch:
+            holdout = Path(scratch) / "holdout.json"
+            holdout.write_text(json.dumps([
+                {"id": "c", "group": "en-completion", "text": "Echo style qqr|abit."},
+                {"id": "n", "group": "en-next", "text": "Echo on xyzabc |yes."},
+            ]))
+            thresholds = run("--tune-confidence", str(holdout), "--port", str(server.server_port))
     finally:
         server.shutdown()
         thread.join()
 
 original = live["pipeline", "all"]
-assert original["dictionary_shows"] == "26" and original["model_shows"] == "1", original
+assert original["dictionary_shows"] == "25" and original["model_shows"] == "1", original
 assert original["hit_%"] == "34.2", original
 cancelled = live["pipeline-edges", "cancelled"]
 assert (cancelled["interrupted"], cancelled["shown"], cancelled["errors"]) == ("2", "0", "0"), cancelled
 assert "Проверю в письме" in ModelServer.prompts, ModelServer.prompts
 assert "Сегодня встреча в" in ModelServer.prompts and "До сих" not in ModelServer.prompts, ModelServer.prompts
 assert "Следом проверю" not in ModelServer.prompts, ModelServer.prompts
+assert thresholds["confidence-holdout-baseline", "trigger:completion"]["hit_%"] == "100.0"
+assert thresholds["confidence-holdout-high", "trigger:completion"]["shown"] == "0"
+assert thresholds["confidence-holdout-low", "trigger:next-word"]["hit_%"] == "100.0"
+assert thresholds["confidence-holdout-baseline", "trigger:next-word"]["shown"] == "0"
 print("Prediction pipeline CLI, model fallback, cancellation and personal holdout checks passed")

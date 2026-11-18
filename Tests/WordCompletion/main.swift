@@ -169,6 +169,53 @@ precondition(PredictionDecision.resolve(before: "ZetaEng", after: "", startsAtFi
                                         references: PredictionReferenceIndex(glossary: "ZetaEngineering"),
                                         personal: personal) == .reference(prefix: "ZetaEng", suffix: "ineering", source: .glossary))
 
+// A single-language resource changes completion only for that language.
+let dictionaryFixture = FileManager.default.temporaryDirectory.appendingPathComponent("keyboop-vocabulary-\(UUID())")
+try FileManager.default.createDirectory(at: dictionaryFixture, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: dictionaryFixture) }
+func writeVocabulary(_ json: String, named filename: String) throws {
+    try Data(json.utf8).write(to: dictionaryFixture.appendingPathComponent(filename))
+}
+let vocabularyFixture: Set<String> = ["образ", "образец", "sample", "sampler", "sampling"]
+try writeVocabulary(#"{"образ":800,"образец":100,"sampler":90,"sampling":150}"#, named: "word_frequencies.json")
+try writeVocabulary(#"{"language":"ru","words":["образование"],"frequencies":{"образ":40,"образование":1000}}"#,
+                    named: "completion_dictionary_ru.json")
+try writeVocabulary(#"{"language":"ru","words":["сквозняк"]}"#, named: "completion_dictionary_en.json")
+let expanded = try CompletionVocabulary.index(words: vocabularyFixture, resources: dictionaryFixture)
+let legacy = try CompletionVocabulary.index(words: vocabularyFixture, resources: dictionaryFixture, useBundledCandidates: false)
+precondition(expanded.suffix(for: "образ") == "ование" && legacy.suffix(for: "образ") == nil)
+precondition(expanded.suffix(for: "sampl") == legacy.suffix(for: "sampl"))
+precondition(expanded.contains("образование") && !legacy.contains("образование") && !expanded.contains("сквозняк"))
+try writeVocabulary(#"{"language":"ru","words":["образование"],"ranks":{"образование":10,"образец":20}}"#,
+                    named: "ranks.json")
+let rankCandidate = try CompletionVocabulary.index(words: vocabularyFixture, resources: dictionaryFixture,
+                                                    candidate: dictionaryFixture.appendingPathComponent("ranks.json"))
+precondition(rankCandidate.suffix(for: "обра") == "зование")
+precondition(rankCandidate.suffix(for: "образ") == nil) // An unranked complete word is protected.
+precondition(rankCandidate.suffix(for: "sampl") == legacy.suffix(for: "sampl"))
+
+let baselineConfidence = PredictiveLocalModel.Confidence.forModel(nil)
+let qwen3Confidence = PredictiveLocalModel.Confidence.forModel("qwen3-0.6b-base")
+precondition(baselineConfidence.accepts(log(0.12), completing: true, firstWord: true))
+precondition(!qwen3Confidence.accepts(log(0.12), completing: true, firstWord: true))
+precondition(qwen3Confidence.accepts(log(0.16), completing: false, firstWord: true))
+precondition(!qwen3Confidence.accepts(log(0.20), completing: false, firstWord: false))
+precondition(PredictiveLocalModel.Confidence.forModel("qwen3.5-0.8b-base").completion == baselineConfidence.completion)
+
+let competingIndex = WordCompletionIndex(words: ["zetaengine"], frequencies: ["zetaengine": 100])
+func chooseCompletion(before: String, references: String, history: PersonalPredictionHistory?) -> PredictionDecision.Choice {
+    PredictionDecision.resolve(before: before, after: "", startsAtFieldStart: true,
+                               trigger: .completion(useContext: false), index: competingIndex, next: nil,
+                               references: PredictionReferenceIndex(glossary: references), useFieldReferences: true,
+                               personal: history)
+}
+precondition(chooseCompletion(before: "ZetaEngineering. ZetaEng", references: "", history: personal) ==
+             .reference(prefix: "ZetaEng", suffix: "ineering", source: .field))
+precondition(chooseCompletion(before: "ZetaEng", references: "", history: personal) ==
+             .personal(prefix: "ZetaEng", suffix: "ineCore"))
+precondition(chooseCompletion(before: "zetaeng", references: "", history: nil) ==
+             .dictionary(prefix: "zetaeng", suffix: "ine"))
+
 let stale = WordCompletionRequest()
 precondition(stale.insert(readTarget: { stale.cancel(); return 1 }, write: { _ in
     preconditionFailure("A request cancelled during AX validation must never write")
@@ -319,4 +366,4 @@ checkStream("куда ", "куда", false, expected: [.failed("prediction.unava
 checkStream("куда ", "куда", false, expected: [.failed("prediction.timeout")], stall: true)
 checkStream("куда ", "куда", false, expected: [.finished(nil)], stall: true, cancelAfter: .milliseconds(30))
 checkStream("куда ", "куда", false, expected: [.failed("prediction.unavailable")], endpoint: URL(string: "https://example.com")!)
-print("Word suggestions: \(suffixCases.count + prefixCases.count + nextCases.count + rankedCases.count + corpusCases.count + modelChecks + fieldCases.count + 42) checks passed")
+print("Word suggestions: \(suffixCases.count + prefixCases.count + nextCases.count + rankedCases.count + corpusCases.count + modelChecks + fieldCases.count + 56) checks passed")

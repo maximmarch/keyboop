@@ -9,27 +9,59 @@ func milliseconds(_ n: Double?) -> String {
 }
 
 do {
-    let pipeline = CommandLine.arguments.dropFirst().first == "--pipeline"
-    let args = Array(CommandLine.arguments.dropFirst(pipeline ? 2 : 1))
+    enum Mode: String { case pipeline = "--pipeline", compare = "--compare-completion", confidence = "--tune-confidence" }
+    var args = Array(CommandLine.arguments.dropFirst())
+    let mode = args.first.flatMap(Mode.init(rawValue:))
+    if mode != nil { args.removeFirst() }
     var baseURL: URL?
     var tracesURL: URL?
     var completionCandidates: [URL] = []
-    if args.isEmpty || (!pipeline && args == ["--dictionary"]) {
-        baseURL = nil
-    } else if args.count == 2, args[0] == "--port", let port = Int(args[1]), (1...65535).contains(port) {
-        baseURL = URL(string: "http://127.0.0.1:\(port)")
-    } else if !pipeline, args.count >= 3, args[0] == "--compare-completion" {
-        tracesURL = URL(fileURLWithPath: args[1])
-        completionCandidates = args.dropFirst(2).map { URL(fileURLWithPath: $0) }
+    var pipelineCandidate: URL?
+    var holdout: URL?
+    var confidence: PredictiveLocalModel.Confidence = .qwen3
+    let usage = "Expected --dictionary, --port <number>, --pipeline [--port <number>] [--completion-data <candidate.json>], "
+        + "--compare-completion <traces.json> <candidate.json>..., or --tune-confidence <holdout.json> --port <number> [--completion-data <candidate.json>]. Model runs accept --confidence <qwen3|baseline>."
+    func invalidArguments() -> NSError {
+        NSError(domain: "KeyboopEvaluation", code: 1, userInfo: [NSLocalizedDescriptionKey: usage])
+    }
+    if mode == .compare {
+        guard args.count >= 2 else { throw invalidArguments() }
+        tracesURL = URL(fileURLWithPath: args[0])
+        completionCandidates = args.dropFirst().map { URL(fileURLWithPath: $0) }
     } else {
-        throw NSError(domain: "KeyboopEvaluation", code: 1, userInfo: [
-            NSLocalizedDescriptionKey: "Expected --dictionary, --port <number>, --pipeline [--port <number>], or --compare-completion <traces.json> <candidate.json>..."
-        ])
+        if mode == .confidence {
+            guard let path = args.first, !path.hasPrefix("--") else { throw invalidArguments() }
+            holdout = URL(fileURLWithPath: path)
+            args.removeFirst()
+        } else if mode == nil, args == ["--dictionary"] {
+            args = []
+        }
+        var options = Set<String>()
+        var remaining = args[...]
+        while let option = remaining.popFirst() {
+            guard options.insert(option).inserted, let value = remaining.popFirst(), !value.hasPrefix("--") else {
+                throw invalidArguments()
+            }
+            switch option {
+            case "--port":
+                guard let port = Int(value), (1...65535).contains(port) else { throw invalidArguments() }
+                baseURL = URL(string: "http://127.0.0.1:\(port)")
+            case "--completion-data" where mode == .pipeline || mode == .confidence:
+                pipelineCandidate = URL(fileURLWithPath: value)
+            case "--confidence" where mode != .confidence && (value == "qwen3" || value == "baseline"):
+                confidence = value == "qwen3" ? .qwen3 : .baseline
+            default:
+                throw invalidArguments()
+            }
+        }
+        if mode == .confidence && baseURL == nil { throw invalidArguments() }
     }
     let header = "mode\tgroup\tcases\tshown\thit_%\tprecision_%\twrong_shows\tpotential_saved_keys\tfirst_p50_ms\tfirst_p95_ms\tmodeled_key_p95_ms\tinterrupted\terrors\tlookup_p95_ms"
-    let pipelineHeader = "\tnegative_cases\tnegative_shows\tmisses\tdictionary_shows\tmodel_shows\thistory_shows\tmodel_p95_ms"
-    print(pipeline ? header + pipelineHeader : header)
+    let sourceHeader = "\tnegative_cases\tnegative_shows\tmisses\tdictionary_shows\tmodel_shows\thistory_shows\tmodel_p95_ms"
+    let includeSourceMetrics = mode != nil
+    print(includeSourceMetrics ? header + sourceHeader : header)
     let resources = URL(fileURLWithPath: "Sources/Keyboop/Resources")
+    let edges = URL(fileURLWithPath: "Tests/PredictionEval/pipeline_traces.json")
     let apiKey = ProcessInfo.processInfo.environment["KEYBOOP_EVAL_API_KEY"]
     func report(_ summaries: [PredictionComparison.Summary]) {
         for s in summaries {
@@ -39,7 +71,7 @@ do {
                           String(s.shown - s.correct), String(s.savedKeys), milliseconds(s.firstP50MS),
                           milliseconds(s.firstP95MS), milliseconds(s.modeledKeyP95MS), String(s.interrupted),
                           String(s.errors), milliseconds(s.lookupP95MS)]
-            if pipeline {
+            if includeSourceMetrics {
                 values += [String(s.negativeCases), String(s.negativeShows), String(s.misses),
                            String(s.dictionaryShows), String(s.modelShows), String(s.historyShows), milliseconds(s.modelP95MS)]
             }
@@ -47,12 +79,16 @@ do {
         }
     }
     let comparison = PredictionComparison()
-    if pipeline {
-        let edges = URL(fileURLWithPath: "Tests/PredictionEval/pipeline_traces.json")
-        try comparison.comparePipeline(resources: resources, edgesURL: edges, baseURL: baseURL, apiKey: apiKey, report: report)
+    if let holdout, let baseURL {
+        try comparison.compareConfidence(resources: resources, edgesURL: edges, holdoutURL: holdout, baseURL: baseURL,
+                                         apiKey: apiKey, completionData: pipelineCandidate, report: report)
+    } else if mode == .pipeline {
+        try comparison.comparePipeline(resources: resources, edgesURL: edges, baseURL: baseURL, apiKey: apiKey,
+                                       completionData: pipelineCandidate, confidence: confidence, report: report)
     } else {
         _ = try comparison.compare(resources: resources, baseURL: baseURL, apiKey: apiKey,
-                                   tracesURL: tracesURL, completionCandidates: completionCandidates, report: report)
+                                   tracesURL: tracesURL, completionCandidates: completionCandidates,
+                                   confidence: confidence, report: report)
     }
 } catch {
     FileHandle.standardError.write(Data("\(error)\n".utf8))
