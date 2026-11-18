@@ -493,7 +493,7 @@ final class PredictionComparison {
             switch choice {
             case .skip:
                 return Sample(trace: trace, lookupMS: duration)
-            case let .dictionary(_, suffix):
+            case let .dictionary(_, suffix), let .reference(_, suffix, _):
                 return Sample(trace: trace, first: suffix, latest: suffix, firstWordMS: duration,
                               lookupMS: duration, source: .dictionary)
             case let .model(before, prefix, word):

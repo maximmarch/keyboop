@@ -82,6 +82,8 @@ final class AppSettings {
             // Кто выключал руками — у того останется выключено (register явные значения не трогает).
             "liveFixEnabled": true,
             "wordCompletionEnabled": false,
+            "predictionFieldWordsEnabled": false,
+            "predictionGlossary": "",
             "nextWordEnabled": false,
             "predictiveLocalModelEnabled": false,
             "wordCompletionKeyCode": 48,
@@ -159,9 +161,20 @@ final class AppSettings {
         set { d.set(newValue, forKey: "predictiveLocalModelEnabled") }
     }
     var wordSuggestionsEnabled: Bool { wordCompletionEnabled || nextWordEnabled }
-    var wordSuggestionPreferences: (Bool, Bool, Bool, Int, UInt64) {
+    var predictionFieldWordsEnabled: Bool {
+        get { d.bool(forKey: "predictionFieldWordsEnabled") }
+        set { d.set(newValue, forKey: "predictionFieldWordsEnabled") }
+    }
+    var predictionGlossary: String {
+        get { d.string(forKey: "predictionGlossary") ?? "" }
+        set { d.set(newValue, forKey: "predictionGlossary") }
+    }
+    var predictionReferencePreferences: PredictionReferenceIndex.Preferences {
+        .init(useField: predictionFieldWordsEnabled, glossary: predictionGlossary)
+    }
+    var wordSuggestionPreferences: (Bool, Bool, Bool, Int, UInt64, PredictionReferenceIndex.Preferences) {
         (wordCompletionEnabled, nextWordEnabled, predictiveLocalModelEnabled,
-         wordCompletionKeyCode, wordCompletionModifiers)
+         wordCompletionKeyCode, wordCompletionModifiers, predictionReferencePreferences)
     }
     var wordCompletionKeyCode: Int {
         get { d.integer(forKey: "wordCompletionKeyCode") }

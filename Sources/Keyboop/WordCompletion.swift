@@ -12,12 +12,14 @@ final class WordCompletion {
         let before: String
         let after: String
         let startsAtFieldStart: Bool
+        let endsAtFieldEnd: Bool
         let geometry: CaretLocator.Geometry
         var bounds: CGRect { geometry.rect }
         let viewport: CGRect?
 
         func matches(_ other: Field) -> Bool {
             pid == other.pid && position == other.position
+                && startsAtFieldStart == other.startsAtFieldStart && endsAtFieldEnd == other.endsAtFieldEnd
                 && before.utf16.elementsEqual(other.before.utf16) && after.utf16.elementsEqual(other.after.utf16)
                 && CFEqual(element, other.element)
         }
@@ -42,6 +44,7 @@ final class WordCompletion {
 
     private let worker = DispatchQueue(label: "ru.keyboop.word-completion", qos: .userInitiated)
     private lazy var localModel = PredictiveLocalModel()
+    private var glossaryIndex = (text: "", index: PredictionReferenceIndex(glossary: ""))
     // Worker-only identity for the field receiving consecutive model requests.
     private var inferenceContext: (pid: pid_t, element: AXUIElement, source: String, id: UUID)?
     private lazy var index: WordCompletionIndex = {
@@ -173,10 +176,11 @@ final class WordCompletion {
                 return
             }
             let pid = app.processIdentifier
+            let references = AppSettings.shared.predictionReferencePreferences
             self.worker.async { [weak self] in
                 guard let self, !request.isCancelled else { return }
                 self.makeSuggestion(pid: pid, trigger: trigger, source: source, request: request,
-                                    useLocalModel: useLocalModel) { [weak self] candidate, reason in
+                                    useLocalModel: useLocalModel, references: references) { [weak self] candidate, reason in
                     DispatchQueue.main.async { [weak self] in
                         guard let self, self.request === request else { return }
                         guard let candidate else {
@@ -241,7 +245,8 @@ final class WordCompletion {
     }
 
     private func makeSuggestion(pid: pid_t, trigger: Trigger, source: String, request: WordCompletionRequest,
-                                useLocalModel: Bool, finished: @escaping (Suggestion?, String) -> Void) {
+                                useLocalModel: Bool, references: PredictionReferenceIndex.Preferences,
+                                finished: @escaping (Suggestion?, String) -> Void) {
         var fieldReason = "prediction.field"
         guard let field = Self.readField(pid: pid, report: { fieldReason = $0 }) else {
             finished(nil, fieldReason)
@@ -249,8 +254,11 @@ final class WordCompletion {
         }
         guard !request.isCancelled else { return }
         let choice = PredictionDecision.resolve(before: field.before, after: field.after,
-                                                startsAtFieldStart: field.startsAtFieldStart, trigger: trigger,
-                                                index: index, next: nextWordIndex)
+                                                startsAtFieldStart: field.startsAtFieldStart,
+                                                endsAtFieldEnd: field.endsAtFieldEnd, trigger: trigger,
+                                                index: index, next: nextWordIndex,
+                                                references: referenceIndex(for: references),
+                                                useFieldReferences: references.useField)
         func publish(_ suffix: String, prefix: String, reason: String) {
             guard !request.isCancelled else { return }
             guard let current = Self.readField(pid: pid), field.matches(current) else {
@@ -266,6 +274,9 @@ final class WordCompletion {
             return
         case let .dictionary(prefix, suffix):
             publish(suffix, prefix: prefix, reason: "prediction.dictionary")
+            return
+        case let .reference(prefix, suffix, origin):
+            publish(suffix, prefix: prefix, reason: origin.rawValue)
             return
         case let .model(text, stem, word):
             guard useLocalModel else { finished(nil, "prediction.noMatch"); return }
@@ -296,6 +307,14 @@ final class WordCompletion {
                 }
             }
         }
+    }
+
+    // Runs on the prediction worker, after the request passes the same context guards as other sources.
+    private func referenceIndex(for preferences: PredictionReferenceIndex.Preferences) -> PredictionReferenceIndex? {
+        if glossaryIndex.text != preferences.glossary {
+            glossaryIndex = (preferences.glossary, PredictionReferenceIndex(glossary: preferences.glossary))
+        }
+        return preferences.useField || !glossaryIndex.index.isEmpty ? glossaryIndex.index : nil
     }
 
     private static func readAdvanced(_ candidate: Suggestion, inserted: String, remainder: String,
@@ -416,28 +435,30 @@ final class WordCompletion {
         }
         guard range.length == 0, range.location > 0 else { return nil }
         let left = max(0, range.location - 128)
-        let nearby: (String, String)?
+        let nearby: (before: String, after: String, length: Int)?
         if let length = attribute(element, kAXNumberOfCharactersAttribute) as? Int, length >= range.location,
            let before = text(element, from: left, length: range.location - left),
            let after = text(element, from: range.location, length: min(12, length - range.location)) {
-            nearby = (before, after)
+            nearby = (before, after, length)
         } else if let value = attribute(element, kAXValueAttribute) as? NSString,
                   value.length >= range.location {
             nearby = (value.substring(with: NSRange(location: left, length: range.location - left)),
-                      value.substring(with: NSRange(location: range.location, length: min(12, value.length - range.location))))
+                      value.substring(with: NSRange(location: range.location, length: min(12, value.length - range.location))),
+                      value.length)
         } else {
             if let field = markerSnapshot(element: element, pid: pid) { return field }
             report("prediction.field")
             return nil
         }
-        guard let (before, after) = nearby,
+        guard let (before, after, length) = nearby,
               let geometry = CaretLocator.inlineGeometry(in: element, at: range.location, before: before, after: after, viewport: frame(of: element)) else {
             if let field = markerSnapshot(element: element, pid: pid) { return field }
             report("prediction.caret")
             return nil
         }
         return Field(element: element, pid: pid, position: range.location, before: before, after: after,
-                     startsAtFieldStart: left == 0, geometry: geometry, viewport: frame(of: element))
+                     startsAtFieldStart: left == 0, endsAtFieldEnd: length - range.location <= 12,
+                     geometry: geometry, viewport: frame(of: element))
     }
 
     // Web editors can expose selection and bounds as text markers instead of UTF-16 ranges.
@@ -471,6 +492,7 @@ final class WordCompletion {
         return Field(element: element, pid: pid, position: before.length,
                      before: leftText,
                      after: rightText, startsAtFieldStart: before.length <= 128,
+                     endsAtFieldEnd: after.length <= 12,
                      geometry: geometry, viewport: frame(of: element))
     }
 

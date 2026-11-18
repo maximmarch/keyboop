@@ -9,7 +9,7 @@ fi
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/keyboop-prediction-eval.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
-sources=(Sources/Keyboop/{WordCompletionIndex,NextWordIndex,LayoutData,ExtraWords,PredictiveLocalModel,WordCompletionRequest,PredictionDecision,PredictionComparison}.swift)
+sources=(Sources/Keyboop/{WordCompletionIndex,NextWordIndex,LayoutData,ExtraWords,PredictiveLocalModel,WordCompletionRequest,PredictionReferenceIndex,PredictionDecision,PredictionComparison}.swift)
 swiftc -O -swift-version 5 -module-cache-path "$scratch/modules" \
   "${sources[@]}" Tests/PredictionEval/main.swift -o "$scratch/bench"
 KEYBOOP_DATA_DIR="$PWD/Sources/Keyboop/Resources" "$scratch/bench" "$@"

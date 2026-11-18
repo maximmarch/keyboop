@@ -18,12 +18,16 @@ enum PredictionDecision {
     enum Choice: Equatable {
         case skip(Suppression)
         case dictionary(prefix: String, suffix: String)
+        case reference(prefix: String, suffix: String, source: PredictionReferenceIndex.Source)
         case model(before: String, prefix: String, contextWord: String)
     }
 
-    static func resolve(before rawBefore: String, after: String, startsAtFieldStart: Bool, trigger: Trigger,
+    static func resolve(before rawBefore: String, after: String, startsAtFieldStart: Bool,
+                        endsAtFieldEnd: Bool = true, trigger: Trigger,
                         index: @autoclosure () -> WordCompletionIndex,
-                        next: @autoclosure () -> NextWordIndex?) -> Choice {
+                        next: @autoclosure () -> NextWordIndex?,
+                        references: @autoclosure () -> PredictionReferenceIndex? = nil,
+                        useFieldReferences: Bool = false) -> Choice {
         guard after.isEmpty || after.first?.isNewline == true else { return .skip(.rightText) }
         let before = rawBefore.replacingOccurrences(of: "\u{00A0}", with: " ")
         switch trigger {
@@ -31,6 +35,19 @@ enum PredictionDecision {
             guard let prefix = WordCompletionIndex.prefix(before: before, after: after,
                                                            startsAtFieldStart: startsAtFieldStart),
                   prefix.count >= 3 else { return .skip(.noMatch) }
+            if let references = references(), useFieldReferences || !references.isEmpty {
+                if PredictionReferenceIndex.isInsideCode(before) { return .skip(.noMatch) }
+                switch references.lookup(prefix: prefix, before: before, after: after, startsAtFieldStart: startsAtFieldStart,
+                                         endsAtFieldEnd: endsAtFieldEnd, useField: useFieldReferences) {
+                case .finishedWord:
+                    return .skip(.noMatch)
+                case let .suggestion(suffix, source):
+                    guard !index().contains(prefix) else { return .skip(.noMatch) }
+                    return .reference(prefix: prefix, suffix: suffix, source: source)
+                case .noMatch:
+                    break
+                }
+            }
             let preferred = useContext ? next()?.predict(before: String(before.dropLast(prefix.count)),
                                                          startsAtFieldStart: startsAtFieldStart) : nil
             if let suffix = index().suffix(for: prefix, preferredWord: preferred) {

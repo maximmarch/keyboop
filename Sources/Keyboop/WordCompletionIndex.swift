@@ -1,6 +1,9 @@
 import Foundation
 
 struct WordCompletionIndex {
+    static let openingPunctuation = "(«“„[\"‘'"
+    static let closingPunctuation = ",.!?;:)]»”\"’"
+
     private let words: [String]
     private let frequencies: [String: Int]
 
@@ -16,13 +19,7 @@ struct WordCompletionIndex {
         let uppercase = normalized == normalized.uppercased()
         guard uppercase || normalized == key || normalized.dropFirst() == key.dropFirst() else { return nil }
 
-        var lower = 0
-        var upper = words.count
-        while lower < upper {
-            let middle = lower + (upper - lower) / 2
-            if words[middle] < key { lower = middle + 1 } else { upper = middle }
-        }
-
+        let lower = Self.lowerBound(of: key, in: words)
         let exact = lower < words.count && words[lower] == key
         if !exact, let preferredWord, Self.isWord(preferredWord), preferredWord.hasPrefix(key) {
             let suffix = preferredWord.dropFirst(key.count)
@@ -63,19 +60,33 @@ struct WordCompletionIndex {
 
     static func prefix(before: String, after: String, startsAtFieldStart: Bool) -> String? {
         // Keep dots, slashes, digits and sigils in the token so paths, addresses and code fail isWord.
-        let opening = "(«“„[\"‘'"
-        let closing = ",.!?;:)]»”\"’"
         let separator = before.lastIndex(where: \.isWhitespace)
         guard separator != nil || startsAtFieldStart else { return nil }
         let start = separator.map { before.index(after: $0) } ?? before.startIndex
-        let prefix = before[start...].drop(while: { opening.contains($0) })
+        let prefix = before[start...].drop(while: { openingPunctuation.contains($0) })
         let end = after.prefix(while: { !$0.isWhitespace })
-        guard end.allSatisfy({ closing.contains($0) }), isWord(key(String(prefix))) else { return nil }
+        guard end.allSatisfy({ closingPunctuation.contains($0) }), isWord(key(String(prefix))) else { return nil }
         return String(prefix)
     }
 
     static func key(_ word: String) -> String {
         word.lowercased().precomposedStringWithCanonicalMapping
+    }
+
+    func contains(_ word: String) -> Bool {
+        let key = Self.key(word)
+        let position = Self.lowerBound(of: key, in: words)
+        return position < words.count && words[position] == key
+    }
+
+    static func lowerBound(of key: String, in words: [String]) -> Int {
+        var lower = 0
+        var upper = words.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if words[middle] < key { lower = middle + 1 } else { upper = middle }
+        }
+        return lower
     }
 
     static func isWord(_ word: String) -> Bool {

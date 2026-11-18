@@ -95,6 +95,62 @@ precondition(route("Сегодня встреча в ", trigger: .nextWord) ==
              .model(before: "Сегодня встреча в ", prefix: "", contextWord: "в"))
 precondition(route("До сих\u{00A0}", trigger: .nextWord) == .dictionary(prefix: "", suffix: "пор"))
 
+func referenceRoute(_ before: String, after: String = "", glossary: String = "", useField: Bool = true,
+                    startsAtFieldStart: Bool = true, endsAtFieldEnd: Bool = true) -> PredictionDecision.Choice {
+    PredictionDecision.resolve(before: before, after: after, startsAtFieldStart: startsAtFieldStart,
+                               endsAtFieldEnd: endsAtFieldEnd, trigger: .completion(useContext: false),
+                               index: ranked, next: next, references: PredictionReferenceIndex(glossary: glossary),
+                               useFieldReferences: useField)
+}
+let fieldCases: [(before: String, result: PredictionDecision.Choice)] = [
+    ("Макет для Северстали готов. Севе", .reference(prefix: "Севе", suffix: "рстали", source: .field)),
+    ("«Северстали», Северстали. Севе", .reference(prefix: "Севе", suffix: "рстали", source: .field)),
+    ("Северстали Северодвинск Севе", route("Северстали Северодвинск Севе", trigger: .completion(useContext: false))),
+    ("Кварцолит и кварц. кварц", .skip(.noMatch)),
+    ("Кварцолит есть. кварц", .skip(.noMatch)),
+    ("Северстали. СЕВЕ", .reference(prefix: "СЕВЕ", suffix: "РСТАЛИ", source: .field)),
+    ("Жёлтокрылый и желтоклювый. жёлток", .reference(prefix: "жёлток", suffix: "рылый", source: .field)),
+    ("Северстали. example.org/Севе", .skip(.noMatch)),
+    ("Северстали. foo_Севе", .skip(.noMatch)),
+    ("Северстали и `let Севе", .skip(.noMatch)),
+    ("https://example.org/Северстали Севе", route("https://example.org/Северстали Севе", trigger: .completion(useContext: false))),
+    ("`let Северстали = 1` Севе", route("`let Северстали = 1` Севе", trigger: .completion(useContext: false))),
+    ("Севе", route("Севе", trigger: .completion(useContext: false)))
+]
+for (before, result) in fieldCases {
+    precondition(referenceRoute(before) == result, "Unexpected field completion for \(before)")
+}
+precondition(referenceRoute("Северстали. Севе", useField: false) == route("Северстали. Севе", trigger: .completion(useContext: false)))
+precondition(referenceRoute("Северстали. Севе", startsAtFieldStart: false) ==
+             route("Северстали. Севе", startsAtFieldStart: false, trigger: .completion(useContext: false)))
+precondition(referenceRoute(" Северстали. Севе", startsAtFieldStart: false) ==
+             .reference(prefix: "Севе", suffix: "рстали", source: .field))
+precondition(referenceRoute("Севе", after: "\nСеверстали", endsAtFieldEnd: true) ==
+             .reference(prefix: "Севе", suffix: "рстали", source: .field))
+precondition(referenceRoute("Севе", after: "\nСеверстали", endsAtFieldEnd: false) ==
+             route("Севе", after: "\nСеверстали", trigger: .completion(useContext: false)))
+precondition(referenceRoute("Севе", after: " текст", glossary: "Северстали") == .skip(.rightText))
+precondition(referenceRoute("Северстали. Севе", glossary: "Северодвинск\nСеверодвинск\n") ==
+             .reference(prefix: "Севе", suffix: "родвинск", source: .glossary))
+precondition(referenceRoute("Севе", glossary: "Северодвинск\nСеверстали") ==
+             route("Севе", trigger: .completion(useContext: false)))
+precondition(referenceRoute("Северстали. Севе", glossary: "Северодвинск\nСеверстали") ==
+             .reference(prefix: "Севе", suffix: "рстали", source: .field))
+precondition(referenceRoute("ZetaEng", glossary: " ZetaEngineCore \nalpha beta\n", useField: false) ==
+             .reference(prefix: "ZetaEng", suffix: "ineCore", source: .glossary))
+precondition(referenceRoute("ZETAENG", glossary: "ZetaEngineCore") ==
+             .reference(prefix: "ZETAENG", suffix: "INECORE", source: .glossary))
+precondition(referenceRoute("ZetAeng", glossary: "ZetaEngineCore") ==
+             route("ZetAeng", trigger: .completion(useContext: false)))
+precondition(referenceRoute("альфабе", glossary: "альфабета\nальфабетика") ==
+             route("альфабе", trigger: .completion(useContext: false)))
+precondition(referenceRoute("ZetaEng", glossary: "ZetaEngineCore Extra\nZetaEngine_v2\n", useField: false) ==
+             route("ZetaEng", trigger: .completion(useContext: false)))
+precondition(PredictionDecision.resolve(before: "До сих ", after: "", startsAtFieldStart: true,
+                                        trigger: .nextWord, index: ranked, next: next,
+                                        references: PredictionReferenceIndex(glossary: "документ"),
+                                        useFieldReferences: true) == .dictionary(prefix: "", suffix: "пор"))
+
 let stale = WordCompletionRequest()
 precondition(stale.insert(readTarget: { stale.cancel(); return 1 }, write: { _ in
     preconditionFailure("A request cancelled during AX validation must never write")
@@ -245,4 +301,4 @@ checkStream("куда ", "куда", false, expected: [.failed("prediction.unava
 checkStream("куда ", "куда", false, expected: [.failed("prediction.timeout")], stall: true)
 checkStream("куда ", "куда", false, expected: [.finished(nil)], stall: true, cancelAfter: .milliseconds(30))
 checkStream("куда ", "куда", false, expected: [.failed("prediction.unavailable")], endpoint: URL(string: "https://example.com")!)
-print("Word suggestions: \(suffixCases.count + prefixCases.count + nextCases.count + rankedCases.count + corpusCases.count + modelChecks + 23) checks passed")
+print("Word suggestions: \(suffixCases.count + prefixCases.count + nextCases.count + rankedCases.count + corpusCases.count + modelChecks + fieldCases.count + 38) checks passed")

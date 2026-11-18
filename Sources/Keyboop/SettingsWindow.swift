@@ -1867,6 +1867,16 @@ final class DetailVC: NSViewController {
             ]),
             group(6),
             card([
+                switchRow(L10n.t("completion.fieldWords"), L10n.t("completion.fieldWordsDetail"),
+                          settings.predictionFieldWordsEnabled, #selector(togglePredictionFieldWords),
+                          key: "completion.fieldWords", wraps: true),
+                controlRow(L10n.t("completion.glossary"),
+                           NSButton(title: L10n.t("completion.glossary.edit"), target: self,
+                                    action: #selector(editPredictionGlossary)),
+                           key: "completion.glossary")
+            ]),
+            group(6),
+            card([
                 switchRow(L10n.t("completion.localModel"), L10n.t("completion.localModelDetail"),
                           settings.predictiveLocalModelEnabled, #selector(togglePredictiveLocalModel),
                           key: "completion.localModel", wraps: true),
@@ -1876,6 +1886,14 @@ final class DetailVC: NSViewController {
             sectionTitle(L10n.t("prediction.preview")),
             card([PredictionPreviewView()])
         ])
+    }
+
+    @objc private func togglePredictionFieldWords(_ sender: NSSwitch) {
+        settings.predictionFieldWordsEnabled = sender.state == .on
+    }
+
+    @objc private func editPredictionGlossary() {
+        PredictionGlossaryEditor.edit(settings: settings)
     }
 
     private func wordCompletionShortcut() -> NSButton {

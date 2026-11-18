@@ -283,6 +283,43 @@ final class PredictionModelControls: NSStackView {
     }
 }
 
+enum PredictionGlossaryEditor {
+    static func edit(settings: AppSettings) {
+        let frame = NSRect(x: 0, y: 0, width: 360, height: 144)
+        let text = NSTextView(frame: frame)
+        text.font = .systemFont(ofSize: NSFont.systemFontSize)
+        text.isRichText = false
+        text.isAutomaticQuoteSubstitutionEnabled = false
+        text.isAutomaticDashSubstitutionEnabled = false
+        text.isAutomaticTextReplacementEnabled = false
+        text.isAutomaticSpellingCorrectionEnabled = false
+        text.isVerticallyResizable = true
+        text.isHorizontallyResizable = false
+        text.autoresizingMask = [.width]
+        text.textContainer?.widthTracksTextView = true
+        text.textContainerInset = NSSize(width: 6, height: 5)
+        text.string = settings.predictionGlossary
+        text.setAccessibilityLabel(L10n.t("completion.glossary"))
+        text.setAccessibilityIdentifier("keyboop-prediction-glossary")
+
+        let scroll = NSScrollView(frame: frame)
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.documentView = text
+
+        let alert = NSAlert()
+        alert.messageText = L10n.t("completion.glossary")
+        alert.informativeText = L10n.t("completion.glossary.help")
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: L10n.t("completion.glossary.save"))
+        alert.addButton(withTitle: L10n.t("common.cancel"))
+        alert.window.initialFirstResponder = text
+        if alert.runModal() == .alertFirstButtonReturn {
+            settings.predictionGlossary = text.string
+        }
+    }
+}
+
 /// A regular editable text field exercises the global event tap, AX caret reader and real accept shortcut.
 final class PredictionPreviewView: NSStackView {
     private let diagnostic = NSTextField(wrappingLabelWithString: "")
