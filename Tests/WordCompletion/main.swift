@@ -79,6 +79,22 @@ for (context, word) in corpusCases {
     precondition(next.predict(before: context, startsAtFieldStart: true, expectedLastWord: last) == word)
 }
 precondition(custom.predict(before: "за\nобратную ", startsAtFieldStart: true) == "реакцию")
+
+func route(_ before: String, after: String = "", startsAtFieldStart: Bool = true,
+           trigger: PredictionDecision.Trigger) -> PredictionDecision.Choice {
+    PredictionDecision.resolve(before: before, after: after, startsAtFieldStart: startsAtFieldStart,
+                               trigger: trigger, index: ranked, next: next)
+}
+precondition(route("до сих ", trigger: .nextWord) == .dictionary(prefix: "", suffix: "пор"))
+precondition(route("Прикрепляю изобра", trigger: .completion(useContext: false)) ==
+             .dictionary(prefix: "изобра", suffix: "жение"))
+precondition(route("Я согласова", after: " документ", trigger: .completion(useContext: true)) == .skip(.rightText))
+precondition(route("example.test/sched", trigger: .completion(useContext: true)) == .skip(.noMatch))
+precondition(route("abc", startsAtFieldStart: false, trigger: .completion(useContext: true)) == .skip(.noMatch))
+precondition(route("Сегодня встреча в ", trigger: .nextWord) ==
+             .model(before: "Сегодня встреча в ", prefix: "", contextWord: "в"))
+precondition(route("До сих\u{00A0}", trigger: .nextWord) == .dictionary(prefix: "", suffix: "пор"))
+
 let stale = WordCompletionRequest()
 precondition(stale.insert(readTarget: { stale.cancel(); return 1 }, write: { _ in
     preconditionFailure("A request cancelled during AX validation must never write")
@@ -229,4 +245,4 @@ checkStream("куда ", "куда", false, expected: [.failed("prediction.unava
 checkStream("куда ", "куда", false, expected: [.failed("prediction.timeout")], stall: true)
 checkStream("куда ", "куда", false, expected: [.finished(nil)], stall: true, cancelAfter: .milliseconds(30))
 checkStream("куда ", "куда", false, expected: [.failed("prediction.unavailable")], endpoint: URL(string: "https://example.com")!)
-print("Word suggestions: \(suffixCases.count + prefixCases.count + nextCases.count + rankedCases.count + corpusCases.count + modelChecks + 16) checks passed")
+print("Word suggestions: \(suffixCases.count + prefixCases.count + nextCases.count + rankedCases.count + corpusCases.count + modelChecks + 23) checks passed")

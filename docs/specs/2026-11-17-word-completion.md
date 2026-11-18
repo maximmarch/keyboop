@@ -68,11 +68,7 @@
 Проверка механизмов поиска и отмены запроса из корня репозитория.
 
 ```sh
-test_dir=$(mktemp -d /tmp/keyboop-word-tests.XXXXXX)
-swiftc -O -module-cache-path "$test_dir/cache" \
-  Sources/Keyboop/{WordCompletionIndex,WordCompletionRequest,PredictiveLocalModel,NextWordIndex,LayoutData,ExtraWords}.swift \
-  Tests/WordCompletion/main.swift -o "$test_dir/tests"
-KEYBOOP_DATA_DIR="$PWD/Sources/Keyboop/Resources" "$test_dir/tests"
+Tests/WordCompletion/run.sh
 ```
 
 ## Исходники и источники

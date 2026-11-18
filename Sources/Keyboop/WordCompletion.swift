@@ -3,10 +3,7 @@ import ApplicationServices
 import Carbon
 
 final class WordCompletion {
-    enum Trigger {
-        case completion(useContext: Bool)
-        case nextWord
-    }
+    typealias Trigger = PredictionDecision.Trigger
 
     private struct Field {
         let element: AXUIElement
@@ -201,7 +198,7 @@ final class WordCompletion {
             }
         }
         debounce = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120), execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(PredictionDecision.debounceMS), execute: work)
     }
 
     // Freeze the displayed phrase before touching the field. Late streaming updates and watchers
@@ -251,30 +248,10 @@ final class WordCompletion {
             return
         }
         guard !request.isCancelled else { return }
-        guard field.after.isEmpty || field.after.first?.isNewline == true else {
-            finished(nil, "prediction.rightText")
-            return
-        }
-        let before = field.before.replacingOccurrences(of: "\u{00A0}", with: " ")
-        let prefix: String
-        let dictionarySuffix: String?
-        switch trigger {
-        case let .completion(useContext):
-            guard let actual = WordCompletionIndex.prefix(before: before, after: field.after,
-                                                          startsAtFieldStart: field.startsAtFieldStart) else {
-                finished(nil, "prediction.noMatch")
-                return
-            }
-            prefix = actual
-            let preferred = useContext ? nextWordIndex?.predict(before: String(before.dropLast(prefix.count)),
-                                                                 startsAtFieldStart: field.startsAtFieldStart) : nil
-            dictionarySuffix = index.suffix(for: prefix, preferredWord: preferred)
-        case .nextWord:
-            prefix = ""
-            dictionarySuffix = nextWordIndex?.predict(before: before, startsAtFieldStart: field.startsAtFieldStart)
-        }
-
-        func publish(_ suffix: String, reason: String) {
+        let choice = PredictionDecision.resolve(before: field.before, after: field.after,
+                                                startsAtFieldStart: field.startsAtFieldStart, trigger: trigger,
+                                                index: index, next: nextWordIndex)
+        func publish(_ suffix: String, prefix: String, reason: String) {
             guard !request.isCancelled else { return }
             guard let current = Self.readField(pid: pid), field.matches(current) else {
                 finished(nil, "prediction.changed")
@@ -282,20 +259,17 @@ final class WordCompletion {
             }
             finished(Suggestion(field: current, trigger: trigger, prefix: prefix, suffix: suffix, inputSource: source), reason)
         }
-        if let suffix = dictionarySuffix { publish(suffix, reason: "prediction.dictionary"); return }
-        guard useLocalModel else { finished(nil, "prediction.noMatch"); return }
-        let contextWord: String
-        if prefix.isEmpty {
-            guard before.last == " ",
-                  let word = WordCompletionIndex.prefix(before: String(before.dropLast()), after: "",
-                                                        startsAtFieldStart: field.startsAtFieldStart) else {
-                finished(nil, "prediction.noMatch")
-                return
-            }
-            contextWord = word
-        } else {
-            guard prefix.count >= 3 else { finished(nil, "prediction.noMatch"); return }
-            contextWord = prefix
+        let before, prefix, contextWord: String
+        switch choice {
+        case let .skip(reason):
+            finished(nil, reason.rawValue)
+            return
+        case let .dictionary(prefix, suffix):
+            publish(suffix, prefix: prefix, reason: "prediction.dictionary")
+            return
+        case let .model(text, stem, word):
+            guard useLocalModel else { finished(nil, "prediction.noMatch"); return }
+            (before, prefix, contextWord) = (text, stem, word)
         }
         guard !request.isCancelled, !IsSecureEventInputEnabled(),
               let current = Self.readField(pid: pid), field.matches(current) else {
@@ -307,7 +281,7 @@ final class WordCompletion {
         let scope = connection.apiKey.map { _ in cacheScope(for: current, source: source) }
         let context = scope == nil ? before : PredictiveLocalModel.stableContext(before, caretPosition: current.position)
         // Give a warm model its own budget after the dictionary pass; new input still cancels immediately.
-        let deadline = DispatchTime.now() + .milliseconds(650)
+        let deadline = DispatchTime.now() + .milliseconds(PredictionDecision.modelBudgetMS)
         localModel.predict(before: context, contextWord: contextWord, completing: !prefix.isEmpty,
                            endpoint: connection.baseURL, apiKey: connection.apiKey, cacheScope: scope,
                            request: request, deadline: deadline) { [weak self] event in
@@ -316,7 +290,7 @@ final class WordCompletion {
                 switch event {
                 case .partial(let text), .finished(.some(let text)):
                     guard DispatchTime.now() <= deadline else { finished(nil, "prediction.timeout"); return }
-                    publish(text, reason: "prediction.model")
+                    publish(text, prefix: prefix, reason: "prediction.model")
                 case .failed(let reason): finished(nil, reason)
                 case .finished(nil): finished(nil, "prediction.noMatch")
                 }
