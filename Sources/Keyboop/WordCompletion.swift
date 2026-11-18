@@ -278,11 +278,12 @@ final class WordCompletion {
             let pid = app.processIdentifier
             let references = AppSettings.shared.predictionReferencePreferences
             let usePersonal = self.personalLearningEnabled
+            let useSystemSpelling = AppSettings.shared.predictionSystemSpellingEnabled
             self.worker.async { [weak self] in
                 guard let self, !request.isCancelled else { return }
                 self.makeSuggestion(pid: pid, trigger: trigger, source: source, request: request,
                                     useLocalModel: useLocalModel, references: references,
-                                    usePersonal: usePersonal) { [weak self] candidate, reason in
+                                    usePersonal: usePersonal, useSystemSpelling: useSystemSpelling) { [weak self] candidate, reason in
                     DispatchQueue.main.async { [weak self] in
                         guard let self, self.request === request else { return }
                         guard let candidate else {
@@ -370,7 +371,7 @@ final class WordCompletion {
 
     private func makeSuggestion(pid: pid_t, trigger: Trigger, source: String, request: WordCompletionRequest,
                                 useLocalModel: Bool, references: PredictionReferenceIndex.Preferences,
-                                usePersonal: Bool,
+                                usePersonal: Bool, useSystemSpelling: Bool,
                                 finished: @escaping (Suggestion?, String) -> Void) {
         var fieldReason = "prediction.field"
         guard let field = Self.readField(pid: pid, report: { fieldReason = $0 }) else {
@@ -385,6 +386,31 @@ final class WordCompletion {
                                                 references: referenceIndex(for: references),
                                                 useFieldReferences: references.useField,
                                                 personal: usePersonal ? PersonalPredictionStore.shared.snapshot() : nil)
+        func deliver(_ choice: PredictionDecision.Choice) {
+            guard !request.isCancelled else { return }
+            finishSuggestion(choice, field: field, trigger: trigger, source: source, request: request,
+                             useLocalModel: useLocalModel, finished: finished)
+        }
+
+        if case .model = choice, !useLocalModel {
+            deliver(choice)
+            return
+        }
+        guard useSystemSpelling,
+              let query = choice.systemQuery(before: field.before, startsAtFieldStart: field.startsAtFieldStart),
+              query.mode != .previous || !index.contains(query.word) else {
+            deliver(choice)
+            return
+        }
+        SystemWordRecognizer.shared.recognize(query, replyOn: worker, isCancelled: { request.isCancelled }) { finding in
+            deliver(query.gate(choice, finding: finding))
+        }
+    }
+
+    private func finishSuggestion(_ choice: PredictionDecision.Choice, field: Field, trigger: Trigger, source: String,
+                                  request: WordCompletionRequest, useLocalModel: Bool,
+                                  finished: @escaping (Suggestion?, String) -> Void) {
+        let pid = field.pid
         func publish(_ suffix: String, prefix: String, reason: String) {
             guard !request.isCancelled else { return }
             guard let current = Self.readField(pid: pid), field.matches(current) else {

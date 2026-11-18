@@ -297,6 +297,7 @@ final class Engine: EventTapHandler {
                 self?.refreshContextSnapshot()
             }
             var suggestionPreferences = settings.wordSuggestionPreferences
+            var systemSpellingEnabled = settings.predictionSystemSpellingEnabled
             wordCompletion.configurePersonalLearning(settings.personalPredictionEnabled)
             NotificationCenter.default.addObserver(
                 forName: UserDefaults.didChangeNotification,
@@ -305,8 +306,10 @@ final class Engine: EventTapHandler {
                 guard let self else { return }
                 self.wordCompletion.configurePersonalLearning(self.settings.personalPredictionEnabled)
                 let updated = self.settings.wordSuggestionPreferences
-                if updated != suggestionPreferences {
+                let spellcheck = self.settings.predictionSystemSpellingEnabled
+                if updated != suggestionPreferences || spellcheck != systemSpellingEnabled {
                     suggestionPreferences = updated
+                    systemSpellingEnabled = spellcheck
                     self.wordCompletion.resetInferenceContext()
                 }
                 self.refreshContextSnapshot()

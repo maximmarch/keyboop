@@ -13,6 +13,7 @@ enum PredictionDecision {
     enum Suppression: String {
         case rightText = "prediction.rightText"
         case noMatch = "prediction.noMatch"
+        case spellcheck = "prediction.spellcheck"
     }
 
     enum Choice: Equatable {

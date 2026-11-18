@@ -1877,6 +1877,9 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("completion.personal"), L10n.t("completion.personal.detail"),
                           settings.personalPredictionEnabled, #selector(togglePersonalPrediction),
                           key: "completion.personal", wraps: true),
+                switchRow(L10n.t("completion.systemSpelling"), L10n.t("completion.systemSpelling.detail"),
+                          settings.predictionSystemSpellingEnabled, #selector(togglePredictionSystemSpelling),
+                          key: "completion.systemSpelling", wraps: true),
                 controlRow(L10n.t("completion.personal.history"),
                            NSButton(title: L10n.t("completion.personal.reset"), target: self,
                                     action: #selector(resetPersonalPrediction)),
@@ -1893,6 +1896,10 @@ final class DetailVC: NSViewController {
             sectionTitle(L10n.t("prediction.preview")),
             card([PredictionPreviewView()])
         ])
+    }
+
+    @objc private func togglePredictionSystemSpelling(_ sender: NSSwitch) {
+        settings.predictionSystemSpellingEnabled = sender.state == .on
     }
 
     @objc private func togglePredictionFieldWords(_ sender: NSSwitch) {

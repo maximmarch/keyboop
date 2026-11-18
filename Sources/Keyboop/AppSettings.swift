@@ -82,6 +82,7 @@ final class AppSettings {
             // Кто выключал руками — у того останется выключено (register явные значения не трогает).
             "liveFixEnabled": true,
             "wordCompletionEnabled": false,
+            "predictionSystemSpellingEnabled": false,
             "predictionFieldWordsEnabled": false,
             "personalPredictionEnabled": false,
             "predictionGlossary": "",
@@ -160,6 +161,10 @@ final class AppSettings {
     var predictiveLocalModelEnabled: Bool {
         get { d.bool(forKey: "predictiveLocalModelEnabled") }
         set { d.set(newValue, forKey: "predictiveLocalModelEnabled") }
+    }
+    var predictionSystemSpellingEnabled: Bool {
+        get { d.bool(forKey: "predictionSystemSpellingEnabled") }
+        set { d.set(newValue, forKey: "predictionSystemSpellingEnabled") }
     }
     var wordSuggestionsEnabled: Bool { wordCompletionEnabled || nextWordEnabled }
     var personalPredictionEnabled: Bool {
