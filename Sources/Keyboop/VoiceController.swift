@@ -258,6 +258,7 @@ final class VoiceController {
         guard recorder.isRecording else { VoiceGate.set(false); sessionForcePostProcess = false; dropPendingHistoryOnly(); return }
         noteSendGesture()         // правый ⌘ в момент отпускания = «отправить» (задача 124)
         let wantPostProcess = settings.voicePostProcessEnabled || sessionForcePostProcess
+        let wantProofreading = settings.sageEnabled && settings.voiceSageProofreading && SageRuntime.shared.state == .ready
         sessionForcePostProcess = false
         let targetBundleID = sessionTargetBundleID
         recordingSessionToken &+= 1
@@ -333,7 +334,8 @@ final class VoiceController {
         if contextDecision.isProfileApplied {
             kbLog("voice: профиль=\(contextDecision.category.rawValue) (\(contextDecision.appName.isEmpty ? contextDecision.bundleID : contextDecision.appName))")
         }
-        let gen = beginTranscription(duration: recorder.duration, coldLoad: cold, extraBudget: wantPostProcess ? 18.0 : 0)
+        let extraBudget = (wantPostProcess ? 18.0 : 0) + (wantProofreading ? SageRuntime.dictationBudget : 0)
+        let gen = beginTranscription(duration: recorder.duration, coldLoad: cold, extraBudget: extraBudget)
         refreshIndicator()   // НЕ setState(.processing) напрямую: отменённую диктовку считаем молча
 
         kbLog("voice: transcribe.cpp · модель=\(activeId) язык=\(lang) cold=\(cold) stream=\(usedNativeStream) aiPost=\(wantPostProcess)")
@@ -361,7 +363,17 @@ final class VoiceController {
                 removeFillers: self.settings.voiceRemoveFillers,
                 collapseStutters: self.settings.voiceCollapseStutters
             )
-            var finalText = VoiceDictionary.shared.apply(cleaned)
+            var corrected = cleaned
+            if wantProofreading, SageCorrectionText.supports(cleaned),
+               await MainActor.run(body: { self.shouldProofread(gen) }) {
+                await MainActor.run {
+                    VoiceIndicator.shared.showProcessing(L10n.t("voice.sage.checking"))
+                }
+                corrected = await SageRuntime.shared.correctDictation(cleaned) {
+                    await MainActor.run { self.shouldProofread(gen) }
+                }
+            }
+            var finalText = VoiceDictionary.shared.apply(corrected)
             var showFallbackToast = false
 
             if wantPostProcess && !finalText.isEmpty {
@@ -412,6 +424,12 @@ final class VoiceController {
                 self.scheduleModelRelease()
             }
         }
+    }
+
+    @MainActor
+    private func shouldProofread(_ generation: Int) -> Bool {
+        settings.sageEnabled && settings.voiceSageProofreading &&
+            liveTranscriptions.contains(generation) && !historyOnlyGens.contains(generation)
     }
 
     private func transcribeWithEngine(samples: [Float], language: String, modelId: String) async -> String {

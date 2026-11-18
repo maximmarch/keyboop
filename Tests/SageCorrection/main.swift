@@ -30,3 +30,16 @@ precondition(insertion.range == NSRange(location: 7, length: 0) && insertion.rep
 precondition(SageCorrectionText.typingEdit(from: "Увидимся послезавтра!", to: "Больше никогда не встречаемся.") == nil)
 precondition(SageCorrectionText.typingEdit(from: "Один и тот же текст", to: "Один и тот же текст") == nil)
 print("SAGE typing: sentence boundaries and minimal guarded edits passed")
+
+
+let longDictation = String(repeating: "Проверь, пожалуйста, адрес перед отправкой. ", count: 24)
+    + "\r\n" + String(repeating: "a", count: 800) + "  " + "Готово."
+let dictationParts = SageCorrectionText.dictationChunks(longDictation)
+precondition(dictationParts.joined() == longDictation && dictationParts.contains("\r\n"))
+precondition(dictationParts.filter(SageCorrectionText.supports).allSatisfy {
+    $0.utf8.count <= SageCorrectionText.dictationChunkBytes
+})
+precondition(SageCorrectionText.validatedDictation("Я не знал, что ты придёшь.", for: "Я не знал что ты придешь") == "Я не знал, что ты придёшь.")
+precondition(SageCorrectionText.validatedDictation("отправь 50 писем.", for: "отправь 5 писем") == nil)
+precondition(SageCorrectionText.validatedDictation("отправь в ChatGPT.", for: "отправь в Codex") == nil)
+print("SAGE dictation: bounded fragments, local edits and protected identifiers passed")

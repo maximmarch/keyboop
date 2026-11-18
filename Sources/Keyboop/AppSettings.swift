@@ -164,6 +164,14 @@ final class AppSettings {
         get { d.bool(forKey: "predictionSystemSpellingEnabled") }
         set { d.set(newValue, forKey: "predictionSystemSpellingEnabled") }
     }
+    var sageEnabled: Bool {
+        get { d.object(forKey: "sageEnabled") == nil || d.bool(forKey: "sageEnabled") }
+        set { d.set(newValue, forKey: "sageEnabled") }
+    }
+    var voiceSageProofreading: Bool {
+        get { d.object(forKey: "voiceSageProofreading") == nil || d.bool(forKey: "voiceSageProofreading") }
+        set { d.set(newValue, forKey: "voiceSageProofreading") }
+    }
     var sageTypingMode: SageTypingMode {
         get { d.string(forKey: "sageTypingMode").flatMap(SageTypingMode.init(rawValue:)) ?? .automatic }
         set { d.set(newValue.rawValue, forKey: "sageTypingMode") }

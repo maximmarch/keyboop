@@ -4,6 +4,8 @@ import AppKit
 final class SageSettingsControls: NSStackView {
     private let runtime = SageRuntime.shared
     private let status = NSTextField(wrappingLabelWithString: "")
+    private let enabledSwitch = NSSwitch()
+    private let dictationSwitch = NSSwitch()
     private let mode = NSPopUpButton(frame: .zero, pullsDown: false)
     private let action = NSButton(title: "", target: nil, action: nil)
 
@@ -24,6 +26,20 @@ final class SageSettingsControls: NSStackView {
         detail.font = .systemFont(ofSize: 12)
         addArrangedSubview(detail)
         detail.widthAnchor.constraint(equalTo: widthAnchor, constant: -28).isActive = true
+
+        func addSwitch(_ toggle: NSSwitch, title: String, action: Selector) {
+            let label = NSTextField(labelWithString: L10n.t(title))
+            label.font = .systemFont(ofSize: 12)
+            toggle.setAccessibilityLabel(label.stringValue)
+            toggle.target = self
+            toggle.action = action
+            let row = NSStackView(views: [label, toggle])
+            row.alignment = .centerY
+            row.spacing = 8
+            addArrangedSubview(row)
+        }
+        addSwitch(enabledSwitch, title: "sage.enabled", action: #selector(changeEnabled))
+        addSwitch(dictationSwitch, title: "voice.sage.enable", action: #selector(changeDictation))
 
         mode.addItems(withTitles: SageTypingMode.allCases.map { L10n.t($0.localizationKey) })
         mode.target = self
@@ -51,6 +67,11 @@ final class SageSettingsControls: NSStackView {
     required init?(coder: NSCoder) { fatalError("init(coder:)") }
 
     @objc private func refresh() {
+        let settings = AppSettings.shared
+        enabledSwitch.state = settings.sageEnabled ? .on : .off
+        dictationSwitch.state = settings.voiceSageProofreading ? .on : .off
+        dictationSwitch.isEnabled = settings.sageEnabled
+        mode.isEnabled = settings.sageEnabled
         if let index = SageTypingMode.allCases.firstIndex(of: AppSettings.shared.sageTypingMode) {
             mode.selectItem(at: index)
         }
@@ -75,6 +96,16 @@ final class SageSettingsControls: NSStackView {
             status.stringValue = L10n.t(error.localizationKey)
             action.title = download
         }
+    }
+
+    @objc private func changeEnabled() {
+        AppSettings.shared.sageEnabled = enabledSwitch.state == .on
+        SageCorrectionCoordinator.shared.cancelTyping()
+        refresh()
+    }
+
+    @objc private func changeDictation() {
+        AppSettings.shared.voiceSageProofreading = dictationSwitch.state == .on
     }
 
     @objc private func changeTypingMode() {

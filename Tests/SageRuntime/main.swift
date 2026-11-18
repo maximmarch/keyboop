@@ -115,6 +115,30 @@ waitFor { cancelled != nil }
 guard case let .failure(error) = cancelled else { fatalError("expected cancellation") }
 precondition((error as? CocoaError)?.code == .userCancelled)
 
+var expired: Result<String, Error>?
+runtime.correct("Просроченный запрос", deadline: .now()) { expired = $0 }
+waitFor { expired != nil }
+checkFailure(expired!, .timeout)
+
+let dictation = "Я хачю узнать как это работает"
+let correctedDictation = "Я хочу узнать, как это работает."
+let tokens = correctedDictation.utf8.map(String.init).joined(separator: " ")
+try helperScript("printf '%s\\n' '\(tokens)'")
+func proofread(_ text: String, isCurrent: Bool = true) -> String {
+    var output: String?
+    Task { @MainActor in
+        output = await runtime.correctDictation(text) { isCurrent }
+    }
+    waitFor { output != nil }
+    return output!
+}
+precondition(proofread(dictation) == correctedDictation)
+precondition(proofread(dictation + "\r\nReview PR 42.") == correctedDictation + "\r\nReview PR 42.")
+precondition(proofread(dictation, isCurrent: false) == dictation)
+precondition(proofread("Я отправлю форму № 42.") == "Я отправлю форму № 42.")
+try helperScript("exit 3")
+precondition(proofread(dictation) == dictation)
+
 runtime.deleteModel()
 waitFor { runtime.state == .missing }
 precondition(!FileManager.default.fileExists(atPath: model.path))

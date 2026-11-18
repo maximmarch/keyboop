@@ -965,7 +965,7 @@ final class Engine: EventTapHandler {
     }
 
     private func canProofreadTyping() -> Bool {
-        sageReady && sageTypingMode != .off && !Pause.active
+        sageReady && settings.sageEnabled && sageTypingMode != .off && !Pause.active
             && !resolvedContext.appHardExcluded && resolvedContext.effectiveExceptionMode.isEmpty
             && resolvedContext.matchedRule?.typoFix != .disable && !frontAppIsRemote
             && !muted && !VoiceGate.isActive && !SnippetPicker.shared.isOpen && !SnippetInsertionCoordinator.shared.isFormActive

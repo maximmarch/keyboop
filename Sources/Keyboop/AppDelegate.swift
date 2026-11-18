@@ -189,7 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar.onProofreadSelection = { [weak self] app in
             SageCorrectionCoordinator.shared.checkSelection(
                 in: app,
-                openSettings: { self?.openSettings(section: .snippets) },
+                openSettings: { self?.openSettings(section: .models) },
                 didApply: { self?.engine.handleContextReset(at: ProcessInfo.processInfo.systemUptime) }
             )
         }
@@ -1146,7 +1146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: L10n.t("voice.needModelOpen"))
         alert.addButton(withTitle: L10n.t("voice.needModelLater"))
         NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn { openSettings(section: .voice) }
+        if alert.runModal() == .alertFirstButtonReturn { openSettings(section: .models) }
     }
 
     private func showWelcome() {

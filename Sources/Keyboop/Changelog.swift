@@ -57,6 +57,19 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        Release(version: "0.6.0",
+            ru: [
+                "SAGE Distilled 95M исправляет орфографию, пунктуацию и грамматику русской диктовки перед вставкой.",
+                "В разделе «Модели» можно включать функции, выбирать, скачивать и удалять модели Keyboop.",
+                "Подсказки при наборе поддерживают личную историю, глоссарий, термины из текущего поля и принятие по Tab.",
+                "Защищённая история диктовок подтверждает сохранение записи перед удалением аудио. Старые записи буфера доступны для экспорта."
+            ],
+            en: [
+                "SAGE Distilled 95M proofreads spelling, punctuation and grammar in Russian dictation before insertion.",
+                "The Models section brings together feature switches, model selection, downloads and removal.",
+                "Typing suggestions support personal history, glossaries, terms from the current field and Tab acceptance.",
+                "Encrypted dictation history now confirms that changes are saved before removing audio. Legacy clipboard entries remain exportable."
+            ]),
         Release(version: "0.5.4",
             ru: [
                 "Очередь вставки (KB-022): собирайте несколько текстовых значений из истории, буфера обмена или выделенного текста и вставляйте их по одному в разные поля отдельной настраиваемой горячей клавишей (по умолчанию не назначена; системный ⌘V не перехватывается).",

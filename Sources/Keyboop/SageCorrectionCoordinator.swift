@@ -102,6 +102,7 @@ final class SageCorrectionCoordinator {
     func checkSelection(in app: NSRunningApplication?, openSettings: () -> Void, didApply: @escaping () -> Void) {
         guard !checking, preview == nil else { show("sage.error.busy"); return }
         cancelTyping()
+        guard AppSettings.shared.sageEnabled else { openSettings(); return }
         switch SageRuntime.shared.state {
         case .missing, .failed:
             openSettings()
@@ -131,6 +132,7 @@ final class SageCorrectionCoordinator {
         SageRuntime.shared.correct(selection.text) { [weak self] result in
             guard let self else { return }
             self.checking = false
+            guard AppSettings.shared.sageEnabled else { return }
             guard selection.isCurrent() else { self.show("sage.selection.changed"); return }
             switch result {
             case .failure(let error):
@@ -175,6 +177,7 @@ final class SageCorrectionCoordinator {
 
     private func apply(_ corrected: String, to selection: SelectionText.CorrectionTarget,
                        until deadline: DispatchTime, didApply: @escaping () -> Void) {
+        guard AppSettings.shared.sageEnabled else { checking = false; return }
         if !NSApp.isActive, selection.isCurrent() {
             checking = false
             if selection.replace(with: corrected) {

@@ -63,7 +63,7 @@ enum SettingsSection: Int, CaseIterable {
     /// функции, потом система, потом «про нас». Голосовой набор стоит третьим, а не пятым: это
     /// второй двигатель приложения и первая тема по числу отзывов (21 из 73 содержательных).
     /// `rawValue` нигде не сохраняется, поэтому переставлять здесь безопасно.
-    case switching, predictiveInput, exceptions, sites, ambiguous, voice, snippets, typography, general, updates, privacy, about
+    case switching, predictiveInput, exceptions, sites, ambiguous, voice, models, snippets, typography, general, updates, privacy, about
 
     /// Что показываем в левом меню. «Спорные слова» — подстраница «Исключений» (кнопка внутри):
     /// в меню это был бы одиннадцатый пункт ради списка, который открывают раз в жизни.
@@ -91,6 +91,7 @@ enum SettingsSection: Int, CaseIterable {
         case .snippets:   return "sec.snippets"
         case .typography: return "sec.typography"
         case .voice:      return "sec.voice"
+        case .models:     return "sec.models"
         case .general:    return "sec.general"
         case .updates:    return "sec.updates"
         case .privacy:    return "sec.privacy"
@@ -107,6 +108,7 @@ enum SettingsSection: Int, CaseIterable {
         case .snippets:   return "wand.and.stars"
         case .typography: return "textformat.abc"
         case .voice:      return "mic"
+        case .models:     return "cube.box"
         case .general:    return "gearshape"
         case .updates:    return "arrow.triangle.2.circlepath"
         case .privacy:    return "lock.shield"
@@ -323,6 +325,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.appearance = AppSettings.shared.appAppearance
 
         sidebar.onSelect = { [weak self] s in self?.detail.show(s) }
+        detail.onSectionRequested = { [weak self] section in self?.show(section: section) }
+        rootVC.onSectionRequested = { [weak self] section in self?.show(section: section) }
         detail.observeCapsRemap()
         detail.observeSiteChanges()
         if ReleaseFeatures.slap { detail.observeSlapAvailability() }
@@ -1111,6 +1115,7 @@ final class SidebarVC: NSViewController {
 
 final class DetailVC: NSViewController {
     var onLanguageChanged: (() -> Void)?
+    var onSectionRequested: ((SettingsSection) -> Void)?
     private let settings = AppSettings.shared
     private let exceptions = ExceptionStore.shared
     private let snippets = SnippetStore.shared
@@ -1387,6 +1392,7 @@ final class DetailVC: NSViewController {
         case .snippets:   built = buildSnippets()
         case .typography: built = buildTypography()
         case .voice:      built = buildVoice()
+        case .models:     built = buildModels()
         case .general:    built = buildGeneral()
         case .updates:    built = buildUpdates()
         case .privacy:    built = buildPrivacy()
@@ -1607,7 +1613,7 @@ final class DetailVC: NSViewController {
     }
 
     func revalidateVoiceIfShown() {
-        guard currentSection == .voice else { return }
+        guard currentSection == .models else { return }
         let sig = modelsSignature()
         guard sig != lastModelsSignature else { return }   // на диске ничего не менялось — не трогаем UI
         lastModelsSignature = sig
@@ -1715,7 +1721,7 @@ final class DetailVC: NSViewController {
         // те же 58 превратились в дыру на пол-экрана: содержимое и так уже сдвинуто вниз. Число,
         // замеренное по окну, живёт ровно до следующей правки окна, поэтому его тут больше нет.
         var items: [NSView] = [group(headerRoom), card(rows, vPad: 8)]
-        items += [group(6), rootFooter()]
+        items += [group(6), modelSettingsLink(), group(6), rootFooter()]
         let root = vstack(items)
 
         // ⚠️ СВЯЗЫВАЕМ ШИРИНЫ ТОЛЬКО ПОСЛЕ СБОРКИ ДЕРЕВА. Связь между двумя видами требует общего
@@ -1874,12 +1880,9 @@ final class DetailVC: NSViewController {
             ]),
             group(6),
             card([
-                switchRow(L10n.t("completion.localModel"), L10n.t("completion.localModelDetail"),
-                          settings.predictiveLocalModelEnabled, #selector(togglePredictiveLocalModel),
-                          key: "completion.localModel", wraps: true),
                 switchRow(L10n.t("completion.infill"), L10n.t("completion.infill.detail"),
                           settings.predictionInfillEnabled, #selector(togglePredictionInfill), key: "completion.infill", wraps: true),
-                PredictionModelControls()
+                modelSettingsLink()
             ]),
             group(6),
             sectionTitle(L10n.t("prediction.preview")),
@@ -2548,7 +2551,7 @@ final class DetailVC: NSViewController {
                           #selector(toggleTwoCaps), help: L10n.t("switch.twoCapsHelp"), key: "switch.twoCaps")
             ]),
             group(8),
-            card([SageSettingsControls()]),
+            card([modelSettingsLink()]),
             group(DS.itemGap),
             sectionTitle(L10n.t("snip.textsTitle")),
             sub(L10n.t("snip.textsSub")),
@@ -3784,9 +3787,44 @@ final class DetailVC: NSViewController {
 
     // MARK: helpers
 
-    private func buildVoice() -> NSView {
-        voiceModelStatus.removeAll()
-        voiceModelButton.removeAll()
+    @objc private func openModelSettings() { onSectionRequested?(.models) }
+    @objc private func openVoiceModelOptions() { onSectionRequested?(.voice) }
+
+    private func modelSettingsLink() -> NSView {
+        flatLink(L10n.t("models.open"), action: #selector(openModelSettings))
+    }
+
+    private func buildModels() -> NSView {
+        vstack([
+            sectionTitle(L10n.t("voice.modelsTitle")),
+            card([switchRow(L10n.t("voice.on"), nil, settings.voiceEnabled, #selector(toggleVoice), key: "voice.on")])
+        ] + speechModelRows() + [
+            group(8),
+            sectionTitle(L10n.t("models.correction")),
+            card([SageSettingsControls()]),
+            group(8),
+            sectionTitle(L10n.t("sec.predictiveInput")),
+            card([
+                switchRow(L10n.t("completion.localModel"), L10n.t("completion.localModelDetail"),
+                          settings.predictiveLocalModelEnabled, #selector(togglePredictiveLocalModel),
+                          key: "completion.localModel", wraps: true),
+                PredictionModelControls()
+            ]),
+            group(8),
+            sectionTitle(L10n.t("voice.grpAI")),
+            card([
+                switchRow(L10n.t("voice.postprocess.enable"), nil, settings.voicePostProcessEnabled,
+                          #selector(toggleVoicePostProcess(_:)), key: "voice.postprocess.enable"),
+                hint(L10n.t("models.external")),
+                flatLink(L10n.t("models.voiceOptions"), action: #selector(openVoiceModelOptions))
+            ])
+        ])
+    }
+
+    private func speechModelRows() -> [NSView] {
+        othersBox = nil
+        catalogRefreshButton = nil
+        catalogRefreshLabel = nil
         // Раздел собран по ТЕКУЩЕМУ состоянию диска → запоминаем сигнатуру, чтобы ближайший
         // revalidateVoiceIfShown (активация окна) не делал лишнюю пересборку впустую.
         lastModelsSignature = modelsSignature()
@@ -3804,6 +3842,56 @@ final class DetailVC: NSViewController {
         }
         let modelCard = card(recommended.map { unifiedModelRow($0.element, index: $0.offset) })
 
+        var views: [NSView] = [modelCard]
+        // «Другие модели» — СРАЗУ за двумя рекомендованными, до пояснений: это продолжение списка,
+        // а не сноска к нему. Пояснительный текст уходит ниже — под раскрывшийся список.
+        if !others.isEmpty {
+            // Без треугольника раскрытия (он автору разонравился) и БЕЗ reshow: список строится
+            // всегда и лежит в шторке, кнопка лишь меняет её isHidden. Отправитель клика при этом
+            // жив, поэтому обёртка в async здесь не нужна.
+            let expanded = voiceOthersExpanded ?? false
+            let box = CollapsibleRow(row: card(others.map { unifiedModelRow($0.element, index: $0.offset) }),
+                                     separator: group(4), visible: expanded)
+            othersBox = box
+            views.append(contentsOf: [group(4),
+                                      flatLink(String(format: L10n.t("voice.othersN"), others.count),
+                                               action: #selector(toggleVoiceOthers)),
+                                      box])
+        }
+        views.append(contentsOf: [
+            group(4),
+            catalogRefreshRow(),
+            group(6),
+            hint(L10n.t("voice.modelsNote")),
+            group(2),
+            hint(L10n.t("voice.sizeNote")),          // чем крупнее модель, тем медленнее (и, вероятно, точнее)
+            group(6),
+        ])
+        #if !arch(arm64)
+        views.append(contentsOf: [hint(L10n.t("voice.intelNote")), group(6)])
+        #endif
+        // Выгрузка после каждой диктовки (просьба пользователей, автор 24.09.2026). Стоит в группе
+        // моделей, потому что это про модель, а не про саму диктовку. Подпись сразу говорит, кому
+        // она НЕ нужна: у большинства памяти хватает, и им галочка только добавит задержку.
+        #if arch(arm64)
+        let unloadSub = L10n.t("voice.unloadAfterSub")
+        #else
+        let unloadSub = L10n.t("voice.unloadAfterSubIntel")
+        #endif
+        views.append(card([
+            switchRow(L10n.t("voice.unloadAfter"), unloadSub, settings.voiceUnloadAfterDictation,
+                      #selector(toggleUnloadAfterDictation), help: L10n.t("voice.unloadAfterHelp"), key: "voice.unloadAfter"),
+        ]))
+        return views
+    }
+
+    @objc private func toggleVoiceSageCorrection(_ sender: NSSwitch) {
+        settings.voiceSageProofreading = sender.state == .on
+    }
+
+    private func buildVoice() -> NSView {
+        voiceModelStatus.removeAll()
+        voiceModelButton.removeAll()
         let histClear = NSButton(title: L10n.t("voice.histClear"), target: self, action: #selector(clearVoiceHistory))
         histClear.bezelStyle = .rounded; histClear.controlSize = .regular
         let histShow = NSButton(title: L10n.t("voice.showHistory"), target: self, action: #selector(showVoiceHistory))
@@ -3906,6 +3994,14 @@ final class DetailVC: NSViewController {
                           #selector(toggleVoicePauseChunking(_:)), help: L10n.t("voice.pauseChunkingHelp"), key: "voice.pauseChunking"),
             ]),
             group(6),
+            sectionTitle(L10n.t("models.correction")),
+            card([
+                switchRow(L10n.t("voice.sage.enable"), L10n.t("voice.sage.detail"), settings.voiceSageProofreading,
+                          #selector(toggleVoiceSageCorrection(_:)), enabled: settings.sageEnabled,
+                          key: "voice.sage.enable", wraps: true),
+                modelSettingsLink()
+            ]),
+            group(6),
             sectionTitle(L10n.t("voice.grpAI")),
             card(postProcessRows()),
         ]
@@ -3922,50 +4018,6 @@ final class DetailVC: NSViewController {
         // единственный путь для него — написать нам. Если таких просьб пойдёт много, редактор
         // вернётся, но уже не свалкой: свои записи отдельно от заготовок.
 
-        views.append(contentsOf: [
-            group(6),
-            sectionTitle(L10n.t("voice.modelsTitle")),
-            modelCard
-        ])
-        // «Другие модели» — СРАЗУ за двумя рекомендованными, до пояснений: это продолжение списка,
-        // а не сноска к нему. Пояснительный текст уходит ниже — под раскрывшийся список.
-        if !others.isEmpty {
-            // Без треугольника раскрытия (он автору разонравился) и БЕЗ reshow: список строится
-            // всегда и лежит в шторке, кнопка лишь меняет её isHidden. Отправитель клика при этом
-            // жив, поэтому обёртка в async здесь не нужна.
-            let expanded = voiceOthersExpanded ?? false
-            let box = CollapsibleRow(row: card(others.map { unifiedModelRow($0.element, index: $0.offset) }),
-                                     separator: group(4), visible: expanded)
-            othersBox = box
-            views.append(contentsOf: [group(4),
-                                      flatLink(String(format: L10n.t("voice.othersN"), others.count),
-                                               action: #selector(toggleVoiceOthers)),
-                                      box])
-        }
-        views.append(contentsOf: [
-            group(4),
-            catalogRefreshRow(),
-            group(6),
-            hint(L10n.t("voice.modelsNote")),
-            group(2),
-            hint(L10n.t("voice.sizeNote")),          // чем крупнее модель, тем медленнее (и, вероятно, точнее)
-            group(6),
-        ])
-        #if !arch(arm64)
-        views.append(contentsOf: [hint(L10n.t("voice.intelNote")), group(6)])
-        #endif
-        // Выгрузка после каждой диктовки (просьба пользователей, автор 24.09.2026). Стоит в группе
-        // моделей, потому что это про модель, а не про саму диктовку. Подпись сразу говорит, кому
-        // она НЕ нужна: у большинства памяти хватает, и им галочка только добавит задержку.
-        #if arch(arm64)
-        let unloadSub = L10n.t("voice.unloadAfterSub")
-        #else
-        let unloadSub = L10n.t("voice.unloadAfterSubIntel")
-        #endif
-        views.append(card([
-            switchRow(L10n.t("voice.unloadAfter"), unloadSub, settings.voiceUnloadAfterDictation,
-                      #selector(toggleUnloadAfterDictation), help: L10n.t("voice.unloadAfterHelp"), key: "voice.unloadAfter"),
-        ]))
         views.append(contentsOf: [
             group(6),
             sectionTitle(L10n.t("voice.grpDuck")),

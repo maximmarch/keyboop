@@ -55,6 +55,51 @@ enum SageCorrectionText {
         return TypingEdit(range: range, replacement: new)
     }
 
+    // Dictation can be much longer than a model request. Cut on whitespace and leave
+    // the original separators in place, including the exact newline sequence.
+    static let dictationChunkBytes = 720
+    private static let dictationToken = try! NSRegularExpression(pattern: #"\R|[^\s]+\h*|\h+"#)
+
+    static func dictationChunks(_ text: String) -> [String] {
+        let source = text as NSString
+        let matches = dictationToken.matches(in: text, range: NSRange(location: 0, length: source.length))
+        var result: [String] = []
+        var chunk = ""
+        var cursor = 0
+        for match in matches {
+            // A separator outside the model's alphabet is copied without being interpreted.
+            if match.range.location > cursor {
+                if !chunk.isEmpty { result.append(chunk); chunk = "" }
+                result.append(source.substring(with: NSRange(location: cursor, length: match.range.location - cursor)))
+            }
+            let token = source.substring(with: match.range)
+            cursor = NSMaxRange(match.range)
+            if token.contains(where: \.isNewline) || chunk.utf8.count + token.utf8.count > dictationChunkBytes {
+                if !chunk.isEmpty { result.append(chunk); chunk = "" }
+            }
+            if token.contains(where: \.isNewline) || token.utf8.count > dictationChunkBytes {
+                result.append(token)
+            } else {
+                chunk += token
+            }
+        }
+        if !chunk.isEmpty { result.append(chunk) }
+        if cursor < source.length { result.append(source.substring(from: cursor)) }
+        return result
+    }
+
+    static func validatedDictation(_ answer: String, for original: String) -> String? {
+        guard supports(original), original.utf8.count <= dictationChunkBytes,
+              answer.utf8.count <= 2 * dictationChunkBytes,
+              let corrected = validated(answer, for: original) else { return nil }
+        let source = Array(original)
+        let output = Array(corrected)
+        let allowedEdits = max(2, source.count / 5)
+        guard abs(source.count - output.count) <= allowedEdits,
+              editDistance(source, output) <= allowedEdits else { return nil }
+        return corrected
+    }
+
     private static func editDistance(_ before: [Character], _ after: [Character]) -> Int {
         var previous = Array(0...after.count)
         var current = previous

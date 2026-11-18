@@ -86,6 +86,7 @@ final class SageRuntime {
     private var stateValue: State = .missing
 
     static let maxInputBytes = 4096
+    static let dictationBudget: TimeInterval = 3
     private static let maxOutputBytes = 8192
 
     var state: State { queue.sync { stateValue } }
@@ -226,7 +227,8 @@ final class SageRuntime {
 
     // MARK: Correction
 
-    func correct(_ text: String, requestID: UUID? = nil, completion: @escaping (Result<String, Error>) -> Void) {
+    func correct(_ text: String, requestID: UUID? = nil, deadline: DispatchTime? = nil,
+                 completion: @escaping (Result<String, Error>) -> Void) {
         queue.async { [self] in
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return Self.deliver(.failure(Failure.empty), completion)
@@ -234,6 +236,8 @@ final class SageRuntime {
             guard text.utf8.count <= Self.maxInputBytes else {
                 return Self.deliver(.failure(Failure.tooLong), completion)
             }
+            let timeLimit = min(.now() + self.timeout, deadline ?? .distantFuture)
+            guard timeLimit > .now() else { return Self.deliver(.failure(Failure.timeout), completion) }
             guard self.correction == nil else {
                 return Self.deliver(.failure(Failure.busy), completion)
             }
@@ -244,7 +248,7 @@ final class SageRuntime {
 
             let job = Correction(id: requestID, completion: completion)
             self.correction = job
-            self.queue.asyncAfter(deadline: .now() + self.timeout) { [weak self, weak job] in
+            self.queue.asyncAfter(deadline: timeLimit) { [weak self, weak job] in
                 guard let self, let job, self.correction === job else { return }
                 self.stop(job.process)
                 self.completeCorrection(job, result: .failure(Failure.timeout))
@@ -255,6 +259,29 @@ final class SageRuntime {
                 self.queue.async { self.completeCorrection(job, result: result) }
             }
         }
+    }
+
+    func correctDictation(_ text: String, isCurrent: () async -> Bool) async -> String {
+        let deadline = DispatchTime.now() + Self.dictationBudget
+        var chunks = SageCorrectionText.dictationChunks(text)
+        for index in chunks.indices {
+            guard DispatchTime.now() < deadline, await isCurrent() else { break }
+            let original = chunks[index]
+            guard original.utf8.count <= SageCorrectionText.dictationChunkBytes,
+                  SageCorrectionText.supports(original) else { continue }
+            let corrected: Result<String, Error> = await withCheckedContinuation { continuation in
+                correct(original, deadline: deadline) { continuation.resume(returning: $0) }
+            }
+            // When the same model is busy, unavailable or timed out, finish with the
+            // transcription and any earlier validated corrections.
+            guard let answer = try? corrected.get() else { break }
+            guard await isCurrent() else { return text }
+            if let validated = SageCorrectionText.validatedDictation(answer, for: original) {
+                chunks[index] = validated
+            }
+        }
+        if await isCurrent() { return chunks.joined() }
+        return text
     }
 
     func cancelTypingCorrection(_ id: UUID) {
