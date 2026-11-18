@@ -48,6 +48,45 @@ final class PredictiveLocalModel {
     func predict(before: String, contextWord: String, completing: Bool, endpoint: URL, apiKey: String?, cacheScope: UUID? = nil,
                  request: WordCompletionRequest, deadline: DispatchTime, confidence: Confidence = .baseline,
                  receive: @escaping (Event) -> Void) {
+        guard let input = Input(before: before, contextWord: contextWord, completing: completing) else {
+            receive(.finished(nil))
+            return
+        }
+        stream(.completion(input), endpoint: endpoint, apiKey: apiKey, cacheScope: cacheScope,
+               request: request, deadline: deadline, confidence: confidence, receive: receive)
+    }
+
+    func infill(_ context: PredictionPhrase.InfillContext, endpoint: URL, apiKey: String?, cacheScope: UUID? = nil,
+                request: WordCompletionRequest, deadline: DispatchTime, receive: @escaping (Event) -> Void) {
+        stream(.infill(context), endpoint: endpoint, apiKey: apiKey, cacheScope: cacheScope,
+               request: request, deadline: deadline, confidence: .baseline, receive: receive)
+    }
+
+    private enum Prompt {
+        case completion(Input)
+        case infill(PredictionPhrase.InfillContext)
+
+        var route: String {
+            switch self {
+            case .completion: return "completion"
+            case .infill: return "infill"
+            }
+        }
+
+        var parameters: [String: Any] {
+            switch self {
+            case let .completion(input):
+                return ["prompt": input.prompt, "grammar": input.grammar, "n_predict": 32]
+            case let .infill(context):
+                return ["input_prefix": context.before, "input_suffix": context.after,
+                        "grammar": context.grammar, "n_predict": 12]
+            }
+        }
+    }
+
+    private func stream(_ prompt: Prompt, endpoint: URL, apiKey: String?, cacheScope: UUID?,
+                        request: WordCompletionRequest, deadline: DispatchTime, confidence: Confidence,
+                        receive: @escaping (Event) -> Void) {
         guard !request.isCancelled else { receive(.finished(nil)); return }
         guard DispatchTime.now() < deadline else { receive(.failed("prediction.timeout")); return }
         guard endpoint.scheme == "http", ["127.0.0.1", "::1", "[::1]"].contains(endpoint.host ?? ""),
@@ -55,26 +94,26 @@ final class PredictiveLocalModel {
             receive(.failed("prediction.unavailable"))
             return
         }
-        guard let input = Input(before: before, contextWord: contextWord, completing: completing) else {
-            receive(.finished(nil))
-            return
-        }
-        var outgoing = URLRequest(url: endpoint.appendingPathComponent("completion"))
+        var outgoing = URLRequest(url: endpoint.appendingPathComponent(prompt.route))
         outgoing.httpMethod = "POST"
         outgoing.setValue("application/json", forHTTPHeaderField: "Content-Type")
         outgoing.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         if let apiKey { outgoing.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization") }
-        let key = apiKey.flatMap { token in cacheScope.map { CacheKey(endpoint: endpoint, apiKey: token, scope: $0) } }
+        let key = apiKey.flatMap { token in
+            cacheScope.map { CacheKey(endpoint: endpoint, apiKey: token, scope: $0, route: prompt.route) }
+        }
         let cache = delegate.begin(key)
         // Pre-sampling probabilities keep the confidence score meaningful even under a grammar.
-        var body: [String: Any] = [
-            "prompt": input.prompt, "grammar": input.grammar, "stream": true, "n_predict": 32,
-            "temperature": 0, "n_probs": 1, "post_sampling_probs": false, "cache_prompt": cache.reuse
-        ]
+        var body = prompt.parameters
+        body["stream"] = true
+        body["temperature"] = 0
+        body["n_probs"] = 1
+        body["post_sampling_probs"] = false
+        body["cache_prompt"] = cache.reuse
         if key != nil { body["id_slot"] = 0 }
         outgoing.httpBody = try? JSONSerialization.data(withJSONObject: body)
         let task = session.dataTask(with: outgoing)
-        let stream = Stream(input: input, request: request, deadline: deadline, cache: cache,
+        let stream = Stream(prompt: prompt, request: request, deadline: deadline, cache: cache,
                             confidence: confidence, receive: receive)
         delegate.register(stream, for: task)
         request.startInference(task)
@@ -101,6 +140,7 @@ final class PredictiveLocalModel {
         let endpoint: URL
         let apiKey: String
         let scope: UUID
+        let route: String
     }
 
     private struct CacheAccess {
@@ -156,7 +196,7 @@ final class PredictiveLocalModel {
             let completion_probabilities: [Probability]?
         }
 
-        let input: Input
+        let prompt: Prompt
         let request: WordCompletionRequest
         let deadline: DispatchTime
         let cache: CacheAccess
@@ -169,9 +209,9 @@ final class PredictiveLocalModel {
         var terminal = false
         var confirmedPrompt = false
 
-        init(input: Input, request: WordCompletionRequest, deadline: DispatchTime, cache: CacheAccess,
+        init(prompt: Prompt, request: WordCompletionRequest, deadline: DispatchTime, cache: CacheAccess,
              confidence: Confidence, receive: @escaping (Event) -> Void) {
-            self.input = input
+            self.prompt = prompt
             self.request = request
             self.deadline = deadline
             self.cache = cache
@@ -195,9 +235,28 @@ final class PredictiveLocalModel {
                 scores.append((start..<generated.utf8.count, score))
             }
             let complete = chunk.stop && ["eos", "word"].contains(chunk.stop_type)
+            switch prompt {
+            case let .infill(context):
+                if chunk.stop { finishInfill(context, complete: complete) }
+            case let .completion(input):
+                consumeCompletion(input, complete: complete, stopped: chunk.stop)
+            }
+        }
+
+        private func finishInfill(_ context: PredictionPhrase.InfillContext, complete: Bool) {
+            let word = String(generated.drop(while: { $0 == " " }))
+            let start = generated.utf8.count - word.utf8.count
+            let scores = scores.filter { $0.bytes.overlaps(start..<generated.utf8.count) }
+            guard complete, context.edit(for: word) != nil, !scores.isEmpty,
+                  confidence.accepts(scores.reduce(0) { $0 + $1.logprob } / Double(scores.count),
+                                     completing: false, firstWord: true) else { finish(.finished(nil)); return }
+            finish(.finished(word))
+        }
+
+        private func consumeCompletion(_ input: Input, complete: Bool, stopped: Bool) {
             guard generated.hasPrefix(input.replay) else {
                 if !input.replay.hasPrefix(generated) { finish(.failed("prediction.invalidResponse")) }
-                else if chunk.stop { finish(.finished(nil)) }
+                else if stopped { finish(.finished(nil)) }
                 return
             }
             let suffix = generated.dropFirst(input.replay.count)
@@ -230,9 +289,9 @@ final class PredictiveLocalModel {
             let phrase = parts.joined(separator: " ")
             if phrase.count >= 2, phrase != visible {
                 visible = phrase
-                if !chunk.stop { receive(.partial(phrase)) }
+                if !stopped { receive(.partial(phrase)) }
             }
-            if chunk.stop || parts.count < completeWords.count {
+            if stopped || parts.count < completeWords.count {
                 finish(visible.map { .finished($0) } ?? .failed("prediction.lowConfidence"))
             }
         }
@@ -274,7 +333,9 @@ final class PredictiveLocalModel {
                         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 let stream = lock.withLock { streams[dataTask.taskIdentifier] }
-                stream?.finish(.failed("prediction.unavailable"))
+                if let stream, !stream.request.isCancelled {
+                    stream.finish(.failed(DispatchTime.now() < stream.deadline ? "prediction.unavailable" : "prediction.timeout"))
+                }
                 completionHandler(.cancel)
                 return
             }

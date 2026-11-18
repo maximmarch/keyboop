@@ -35,6 +35,18 @@ private final class PredictionHealthDelegate: NSObject, URLSessionTaskDelegate {
 }
 
 final class PredictionRuntime {
+    enum InfillStatus: String {
+        case waiting, checking, ready, unavailable, unsuitable
+
+        var messageKey: String { "prediction.infill." + rawValue }
+    }
+
+    // Each probe exercises the production grammar, confidence threshold and right-edge checks.
+    static let infillProbes = [
+        (before: "Давайте обсудим ", after: " завтра утром.", expected: Set(["детали", "план", "это"])),
+        (before: "The sky is ", after: " on a clear day.", expected: Set(["blue"]))
+    ]
+
     static let shared = PredictionRuntime()
     private static let defaultModel = PredictionModel(
         id: "qwen3-0.6b-base", title: "Qwen3-0.6B-Base · Q4_K_M",
@@ -73,6 +85,10 @@ final class PredictionRuntime {
     private var retiring: Process?
     private var restartAfterRetirement = false
     private var ready: PredictionConnection?
+    private var infillEnabled = false
+    private var infillState: InfillStatus = .waiting
+    private var infillRequest: WordCompletionRequest?
+    private lazy var infillClient = PredictiveLocalModel()
     private var idleTimer: DispatchSourceTimer?
     private var memoryPressure: DispatchSourceMemoryPressure?
     private var healthRequest: URLSessionDataTask?
@@ -161,13 +177,104 @@ final class PredictionRuntime {
             if external {
                 return PredictionConnection(baseURL: URL(string: "http://127.0.0.1:18181")!, apiKey: nil, modelID: nil)
             }
-            if let ready, process?.isRunning == true {
-                armIdleTimer()
-                return ready
-            }
-            if process == nil, isInstalled, DispatchTime.now() >= retryAfter { startServer() }
-            return nil
+            return managedConnection()
         }
+    }
+
+    private func managedConnection() -> PredictionConnection? {
+        if let ready, process?.isRunning == true {
+            armIdleTimer()
+            return ready
+        }
+        if process == nil, isInstalled, DispatchTime.now() >= retryAfter { startServer() }
+        return nil
+    }
+
+    var infillStatus: InfillStatus {
+        queue.sync { external || Self.bundledServer() == nil ? .unavailable : infillState }
+    }
+
+    func setInfillEnabled(_ value: Bool) {
+        queue.sync {
+            guard infillEnabled != value else { return }
+            infillEnabled = value
+            let previous = infillState
+            if value {
+                checkInfillIfNeeded()
+            } else {
+                resetInfill()
+            }
+            if previous == infillState { notifyObservers() }
+        }
+    }
+
+    func infillConnection() -> PredictionConnection? {
+        queue.sync {
+            guard enabled, infillEnabled, !external, Self.bundledServer() != nil,
+                  let endpoint = managedConnection() else { return nil }
+            checkInfillIfNeeded()
+            return infillState == .ready ? endpoint : nil
+        }
+    }
+
+    private func checkInfillIfNeeded() {
+        guard enabled, infillEnabled, !external, infillState == .waiting,
+              Self.bundledServer() != nil, let endpoint = ready, let child = process, child.isRunning else { return }
+        let request = WordCompletionRequest()
+        infillRequest = request
+        updateInfill(.checking)
+        checkInfillProbe(index: 0, endpoint: endpoint, child: child, request: request)
+    }
+
+    private func checkInfillProbe(index: Int, endpoint: PredictionConnection, child: Process,
+                                  request: WordCompletionRequest) {
+        let probe = Self.infillProbes[index]
+        guard let key = endpoint.apiKey,
+              let context = PredictionPhrase.InfillContext(before: probe.before, after: probe.after) else {
+            infillRequest = nil
+            updateInfill(.unavailable)
+            return
+        }
+        infillClient.infill(context, endpoint: endpoint.baseURL, apiKey: key, request: request,
+                            deadline: .now() + .milliseconds(650)) { [weak self, weak child] event in
+            guard let self, let child else { return }
+            self.queue.async {
+                guard self.infillRequest === request, self.process === child, child.isRunning,
+                      self.infillEnabled else { return }
+                let verdict = Self.infillProbeVerdict(event, expected: probe.expected)
+                if verdict == .ready, index + 1 < Self.infillProbes.count {
+                    self.checkInfillProbe(index: index + 1, endpoint: endpoint, child: child, request: request)
+                } else {
+                    self.infillRequest = nil
+                    self.updateInfill(verdict)
+                }
+            }
+        }
+    }
+
+    static func infillProbeVerdict(_ event: PredictiveLocalModel.Event, expected: Set<String>) -> InfillStatus {
+        switch event {
+        case let .finished(word):
+            return word.map { expected.contains(WordCompletionIndex.key($0)) } == true ? .ready : .unsuitable
+        case .failed, .partial:
+            return .unavailable
+        }
+    }
+
+    private func resetInfill() {
+        infillRequest?.cancel()
+        infillRequest = nil
+        updateInfill(.waiting)
+    }
+
+    private func updateInfill(_ value: InfillStatus) {
+        guard infillState != value else { return }
+        infillState = value
+        notifyObservers()
+    }
+
+    private func notifyObservers() {
+        DispatchQueue.main.async { NotificationCenter.default.post(name: .predictionRuntimeChanged, object: self) }
     }
 
     func downloadSelected() {
@@ -287,9 +394,7 @@ final class PredictionRuntime {
         guard name != state || extra != detail else { return }
         state = name
         detail = extra
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .predictionRuntimeChanged, object: self)
-        }
+        notifyObservers()
     }
 
     private func file(for model: PredictionModel) -> URL { directory.appendingPathComponent(model.filename) }
@@ -378,6 +483,7 @@ final class PredictionRuntime {
                     self.ready = endpoint
                     self.update("ready")
                     self.armIdleTimer()
+                    self.checkInfillIfNeeded()
                 } else {
                     self.queue.asyncAfter(deadline: .now() + .milliseconds(250)) {
                         self.checkReadiness(child, endpoint: endpoint, alias: alias, deadline: deadline)
@@ -407,6 +513,7 @@ final class PredictionRuntime {
         idleTimer = nil
         healthRequest?.cancel()
         healthRequest = nil
+        resetInfill()
         ready = nil
         restartAfterRetirement = false
         if let process, process.isRunning { retiring = process }
@@ -466,14 +573,19 @@ final class PredictionRuntime {
         #endif
     }
 
-    private static func findServer() -> URL? {
+    private static func bundledServer() -> URL? {
         #if arch(x86_64)
         let bundled = "Contents/Helpers/llama/x86_64/llama-server"
         #else
         let bundled = "Contents/Helpers/llama/llama-server"
         #endif
-        let paths = [Bundle.main.bundleURL.appendingPathComponent(bundled).path,
-                     "/opt/homebrew/bin/llama-server", "/usr/local/bin/llama-server",
+        let url = Bundle.main.bundleURL.appendingPathComponent(bundled)
+        return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+    }
+
+    private static func findServer() -> URL? {
+        if let server = bundledServer() { return server }
+        let paths = ["/opt/homebrew/bin/llama-server", "/usr/local/bin/llama-server",
                      "/Applications/Ollama.app/Contents/Resources/llama-server"]
         return paths.first(where: FileManager.default.isExecutableFile(atPath:)).map(URL.init(fileURLWithPath:))
     }

@@ -1890,6 +1890,8 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("completion.localModel"), L10n.t("completion.localModelDetail"),
                           settings.predictiveLocalModelEnabled, #selector(togglePredictiveLocalModel),
                           key: "completion.localModel", wraps: true),
+                switchRow(L10n.t("completion.infill"), L10n.t("completion.infill.detail"),
+                          settings.predictionInfillEnabled, #selector(togglePredictionInfill), key: "completion.infill", wraps: true),
                 PredictionModelControls()
             ]),
             group(6),
@@ -1945,6 +1947,12 @@ final class DetailVC: NSViewController {
 
     @objc private func toggleNextWord(_ sender: NSSwitch) {
         if canSetWordSuggestion(sender) { settings.nextWordEnabled = sender.state == .on }
+    }
+
+    @objc private func togglePredictionInfill(_ sender: NSSwitch) {
+        guard canSetWordSuggestion(sender) else { return }
+        settings.predictionInfillEnabled = sender.state == .on
+        PredictionRuntime.shared.setInfillEnabled(settings.predictionInfillEnabled)
     }
 
     @objc private func togglePredictiveLocalModel(_ sender: NSSwitch) {

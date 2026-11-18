@@ -91,7 +91,9 @@ final class PredictionModelControls: NSStackView {
         else if runtime.hasSelectedModel { key = "prediction.deleteDownload" }
         else { key = "prediction.download" }
         action.title = L10n.t(key)
-        status.stringValue = runtime.statusText
+        let infillMessage = AppSettings.shared.predictionInfillEnabled
+            ? "\n" + L10n.t(runtime.infillStatus.messageKey) : ""
+        status.stringValue = runtime.statusText + infillMessage
         if testedModelID != nil && (external != testedExternal || runtime.selectedModelID != testedModelID ||
                                     !AppSettings.shared.predictiveLocalModelEnabled) {
             clearTest()

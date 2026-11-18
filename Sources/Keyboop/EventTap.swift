@@ -340,6 +340,9 @@ final class EventTap {
                 self.otherKeyBetweenTaps = true
                 self.otherKeyDuringCombo = true
                 self.handler?.handleContextReset(at: clickAt)
+                if ev.type == .leftMouseDown {
+                    (self.handler as? Engine)?.scheduleInfillAfterClick(at: clickAt)
+                }
             }
         }
         return true

@@ -17,9 +17,10 @@ do {
     var tracesURL: URL?
     var completionCandidates: [URL] = []
     var pipelineCandidate: URL?
+    var infillTraces: URL?
     var holdout: URL?
     var confidence: PredictiveLocalModel.Confidence = .qwen3
-    let usage = "Expected --dictionary, --port <number>, --pipeline [--port <number>] [--completion-data <candidate.json>], "
+    let usage = "Expected --dictionary, --port <number>, --pipeline [--port <number>] [--completion-data <candidate.json>] [--infill <traces.json>], "
         + "--compare-completion <traces.json> <candidate.json>..., or --tune-confidence <holdout.json> --port <number> [--completion-data <candidate.json>]. Model runs accept --confidence <qwen3|baseline>."
     func invalidArguments() -> NSError {
         NSError(domain: "KeyboopEvaluation", code: 1, userInfo: [NSLocalizedDescriptionKey: usage])
@@ -46,6 +47,8 @@ do {
             case "--port":
                 guard let port = Int(value), (1...65535).contains(port) else { throw invalidArguments() }
                 baseURL = URL(string: "http://127.0.0.1:\(port)")
+            case "--infill" where mode == .pipeline:
+                infillTraces = URL(fileURLWithPath: value)
             case "--completion-data" where mode == .pipeline || mode == .confidence:
                 pipelineCandidate = URL(fileURLWithPath: value)
             case "--confidence" where mode != .confidence && (value == "qwen3" || value == "baseline"):
@@ -85,6 +88,9 @@ do {
     } else if mode == .pipeline {
         try comparison.comparePipeline(resources: resources, edgesURL: edges, baseURL: baseURL, apiKey: apiKey,
                                        completionData: pipelineCandidate, confidence: confidence, report: report)
+        if let infillTraces {
+            try comparison.compareInfill(tracesURL: infillTraces, baseURL: baseURL, apiKey: apiKey, report: report)
+        }
     } else {
         _ = try comparison.compare(resources: resources, baseURL: baseURL, apiKey: apiKey,
                                    tracesURL: tracesURL, completionCandidates: completionCandidates,

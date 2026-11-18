@@ -237,12 +237,14 @@ final class LocalModelProtocol: URLProtocol {
     static var body: Data?
     static var status = 200
     static var expectedCache = false
+    static var expectedInfill: (before: String, after: String)?
     static var cancellation: DispatchSemaphore?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        precondition(request.url?.absoluteString == "http://127.0.0.1:19217/completion")
+        let route = Self.expectedInfill == nil ? "completion" : "infill"
+        precondition(request.url?.absoluteString == "http://127.0.0.1:19217/\(route)")
         precondition(request.httpMethod == "POST" && request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture")
         var payload = request.httpBody ?? Data()
         if payload.isEmpty, let input = request.httpBodyStream {
@@ -258,6 +260,10 @@ final class LocalModelProtocol: URLProtocol {
         }
         let body = try! JSONSerialization.jsonObject(with: payload) as! [String: Any]
         precondition(body["cache_prompt"] as? Bool == Self.expectedCache)
+        if let expected = Self.expectedInfill {
+            precondition(body["input_prefix"] as? String == expected.before && body["input_suffix"] as? String == expected.after)
+            precondition(body["n_predict"] as? Int == 12 && body["prompt"] == nil)
+        }
         let response = HTTPURLResponse(url: request.url!, statusCode: Self.status,
                                        httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/event-stream"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -282,7 +288,7 @@ func checkStream(_ before: String, _ context: String, _ completing: Bool,
                  pieces: [(String, Double)] = [], stop: String = "eos", expected: [ModelEvent],
                  status: Int = 200, malformed: Bool = false, stall: Bool = false,
                  cancelAfter: DispatchTimeInterval? = nil, endpoint: URL = loopback,
-                 cacheScope: UUID? = nil, expectCache: Bool = false) {
+                 cacheScope: UUID? = nil, expectCache: Bool = false, infill: PredictionPhrase.InfillContext? = nil) {
     var wire = Data(": keep-alive\r\n\r\n".utf8)
     func appendEvent(_ event: [String: Any]) {
         wire.append(contentsOf: "data: ".utf8)
@@ -300,19 +306,27 @@ func checkStream(_ before: String, _ context: String, _ completing: Bool,
     LocalModelProtocol.body = stall ? nil : wire
     LocalModelProtocol.status = status
     LocalModelProtocol.expectedCache = expectCache
+    LocalModelProtocol.expectedInfill = infill.map { ($0.before, $0.after) }
     let transportCancelled = cancelAfter.map { _ in DispatchSemaphore(value: 0) }
     LocalModelProtocol.cancellation = transportCancelled
     let request = WordCompletionRequest()
     let done = DispatchSemaphore(value: 0)
     var events: [ModelEvent] = []
     let deadline = DispatchTime.now() + .milliseconds(stall && cancelAfter == nil ? 40 : 1500)
-    model.predict(before: before, contextWord: context, completing: completing,
-                  endpoint: endpoint, apiKey: "fixture", cacheScope: cacheScope, request: request, deadline: deadline) { event in
+    func receive(_ event: ModelEvent) {
         events.append(event)
         switch event {
         case .partial: break
         case .finished, .failed: done.signal()
         }
+    }
+    if let infill {
+        model.infill(infill, endpoint: endpoint, apiKey: "fixture", cacheScope: cacheScope,
+                    request: request, deadline: deadline, receive: receive)
+    } else {
+        model.predict(before: before, contextWord: context, completing: completing,
+                      endpoint: endpoint, apiKey: "fixture", cacheScope: cacheScope,
+                      request: request, deadline: deadline, receive: receive)
     }
     if let cancelAfter { DispatchQueue.global().asyncAfter(deadline: .now() + cancelAfter) { request.cancel() } }
     precondition(done.wait(timeout: .now() + .seconds(2)) == .success, "Missing end-of-stream event")
@@ -366,4 +380,44 @@ checkStream("куда ", "куда", false, expected: [.failed("prediction.unava
 checkStream("куда ", "куда", false, expected: [.failed("prediction.timeout")], stall: true)
 checkStream("куда ", "куда", false, expected: [.finished(nil)], stall: true, cancelAfter: .milliseconds(30))
 checkStream("куда ", "куда", false, expected: [.failed("prediction.unavailable")], endpoint: URL(string: "https://example.com")!)
+let seam = PredictionPhrase.InfillContext(before: "Другой абзац\nДавайте обсудим ", after: " завтра.\nЗаметка")!
+precondition(seam.before == "Давайте обсудим " && seam.after == " завтра.")
+let edit = seam.edit(for: "детали")!
+precondition(edit.insertion == "детали" && edit.borrowedSpace == " ")
+precondition(seam.edit(for: "ЗАВТРА") == nil && seam.edit(for: "обсудим") == nil)
+precondition(seam.edit(for: "другие детали") == nil && seam.edit(for: "more") == nil)
+precondition(PredictionPhrase.InfillContext(before: "обсу", after: "дим завтра") == nil)
+precondition(PredictionPhrase.InfillContext(before: "сайт", after: ".com") == nil)
+precondition(PredictionPhrase.InfillContext(before: "Давайте обсудим ", after: "\nзавтра") == nil)
+precondition(PredictionPhrase.InfillContext(before: "Давайте обсудим ", after: "завтра")!.edit(for: "детали")!.insertion == "детали ")
+precondition(PredictionPhrase.InfillContext(before: "Я купил ", after: ", молоко")!.edit(for: "хлеб")!.insertion == "хлеб")
+precondition(PredictionPhrase.InfillContext(before: "I want", after: "\u{00a0}go home")!.edit(for: "to")!.insertion == " to")
+precondition(PredictionPhrase.InfillContext(before: "I want ", after: "go ho", endsAtFieldEnd: false)?.after == "go")
+let beforeInfill = "Давайте обсудим "
+let afterInfill = " завтра."
+let insertEnd = beforeInfill.utf16.count + edit.insertion.utf16.count
+precondition(edit.verifies(before: beforeInfill, after: afterInfill, position: beforeInfill.utf16.count,
+                          newBefore: beforeInfill + edit.insertion + " ", newAfter: "завтра.",
+                          newPosition: insertEnd + 1, advanced: true))
+precondition(!edit.verifies(before: beforeInfill, after: afterInfill, position: beforeInfill.utf16.count,
+                           newBefore: beforeInfill + edit.insertion + " ", newAfter: "сегодня.",
+                           newPosition: insertEnd + 1, advanced: true))
+precondition(!edit.verifies(before: beforeInfill, after: afterInfill, position: beforeInfill.utf16.count,
+                           newBefore: beforeInfill + edit.insertion, newAfter: " завтра.",
+                           newPosition: insertEnd, advanced: true))
+modelChecks += 14
+
+let sharedScope = UUID()
+checkStream("мы ", "мы", false, pieces: [(" дома", 0.9)], expected: [.finished("дома")], cacheScope: sharedScope)
+checkStream("", "", false, pieces: [(" де", 0.75), ("тали", 0.81)], expected: [.finished("детали")],
+            cacheScope: sharedScope, infill: seam)
+checkStream("", "", false, pieces: [(" завтра", 0.99)], expected: [.finished(nil)],
+            cacheScope: sharedScope, expectCache: true, infill: seam)
+checkStream("мы ", "мы", false, pieces: [(" дома", 0.9)], expected: [.finished("дома")], cacheScope: sharedScope)
+checkStream("", "", false, pieces: [(" детали", 0.90)], stop: "limit", expected: [.finished(nil)], infill: seam)
+checkStream("", "", false, pieces: [(" детали", 0.06)], expected: [.finished(nil)], infill: seam)
+checkStream("", "", false, pieces: [(" детали завтра", 0.9)], expected: [.finished(nil)], infill: seam)
+checkStream("", "", false, expected: [.failed("prediction.unavailable")], status: 400, infill: seam)
+checkStream("", "", false, expected: [.failed("prediction.timeout")], stall: true, infill: seam)
+checkStream("", "", false, expected: [.finished(nil)], stall: true, cancelAfter: .milliseconds(30), infill: seam)
 print("Word suggestions: \(suffixCases.count + prefixCases.count + nextCases.count + rankedCases.count + corpusCases.count + modelChecks + fieldCases.count + 56) checks passed")

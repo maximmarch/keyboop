@@ -87,6 +87,7 @@ final class AppSettings {
             "personalPredictionEnabled": false,
             "predictionGlossary": "",
             "nextWordEnabled": false,
+            "predictionInfillEnabled": false,
             "predictiveLocalModelEnabled": false,
             "wordCompletionKeyCode": 48,
             "wordCompletionModifiers": Int(CGEventFlags.maskAlternate.rawValue),
@@ -170,7 +171,13 @@ final class AppSettings {
         get { d.string(forKey: "sageTypingMode").flatMap(SageTypingMode.init(rawValue:)) ?? .automatic }
         set { d.set(newValue.rawValue, forKey: "sageTypingMode") }
     }
-    var wordSuggestionsEnabled: Bool { wordCompletionEnabled || nextWordEnabled }
+    var predictionInfillEnabled: Bool {
+        get { d.bool(forKey: "predictionInfillEnabled") }
+        set { d.set(newValue, forKey: "predictionInfillEnabled") }
+    }
+    var wordSuggestionsEnabled: Bool {
+        wordCompletionEnabled || nextWordEnabled || (predictiveLocalModelEnabled && predictionInfillEnabled)
+    }
     var personalPredictionEnabled: Bool {
         get { d.bool(forKey: "personalPredictionEnabled") }
         set { d.set(newValue, forKey: "personalPredictionEnabled") }

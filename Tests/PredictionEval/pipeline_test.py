@@ -46,6 +46,7 @@ for group in ("personal-future", "personal-copy", "personal-document", "personal
 
 class ModelServer(BaseHTTPRequestHandler):
     prompts = []
+    infill_prompts = []
 
     def reply(self, content_type, payload):
         self.send_response(200)
@@ -62,8 +63,17 @@ class ModelServer(BaseHTTPRequestHandler):
         self.reply("application/json", b'{"status":"ok"}')
 
     def do_POST(self):
-        assert self.path == "/completion", self.path
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/infill":
+            pair = (body["input_prefix"], body["input_suffix"])
+            self.infill_prompts.append(pair)
+            assert body["stream"] and body["grammar"] and body["n_predict"] == 12
+            text = " детали" if pair == ("Давайте обсудим ", " завтра утром.") else ""
+            event = {"stop": True, "stop_type": "eos", "content": text,
+                     "completion_probabilities": [{"logprob": -0.1}]}
+            self.reply("text/event-stream", ("data: " + json.dumps(event) + "\n\n").encode())
+            return
+        assert self.path == "/completion", self.path
         prompt = body["prompt"]
         self.prompts.append(prompt)
         assert body["stream"] and body["grammar"], body
@@ -88,6 +98,9 @@ with ThreadingHTTPServer(("127.0.0.1", 0), ModelServer) as server:
     thread.start()
     try:
         live = run("--pipeline", "--port", str(server.server_port))
+        assert not ModelServer.infill_prompts
+        infill = run("--pipeline", "--port", str(server.server_port),
+                     "--infill", "Tests/PredictionEval/infill_traces.json")
         with TemporaryDirectory() as scratch:
             holdout = Path(scratch) / "holdout.json"
             holdout.write_text(json.dumps([
@@ -111,4 +124,9 @@ assert thresholds["confidence-holdout-baseline", "trigger:completion"]["hit_%"] 
 assert thresholds["confidence-holdout-high", "trigger:completion"]["shown"] == "0"
 assert thresholds["confidence-holdout-low", "trigger:next-word"]["hit_%"] == "100.0"
 assert thresholds["confidence-holdout-baseline", "trigger:next-word"]["shown"] == "0"
-print("Prediction pipeline CLI, model fallback, cancellation and personal holdout checks passed")
+infill_result = infill["pipeline-infill", "all"]
+assert (infill_result["cases"], infill_result["shown"], infill_result["hit_%"]) == ("20", "1", "5.0"), infill_result
+assert ("Давайте обсудим ", " завтра утром.") in ModelServer.infill_prompts
+assert all("опе" not in left and not right.startswith("/etc/") for left, right in ModelServer.infill_prompts)
+assert infill_result["negative_shows"] == "0"
+print("Prediction pipeline CLI, infill fencing, model fallback, cancellation and personal holdout checks passed")

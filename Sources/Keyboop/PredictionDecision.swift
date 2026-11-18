@@ -8,6 +8,12 @@ enum PredictionDecision {
     enum Trigger {
         case completion(useContext: Bool)
         case nextWord
+        case infill
+
+        var isInfill: Bool {
+            if case .infill = self { return true }
+            return false
+        }
     }
 
     enum Suppression: String {
@@ -65,6 +71,9 @@ enum PredictionDecision {
                 return .dictionary(prefix: prefix, suffix: suffix)
             }
             return .model(before: before, prefix: prefix, contextWord: prefix)
+        case .infill:
+            // Middle-of-sentence requests use a verified, wider AX snapshot in WordCompletion.
+            return .skip(.noMatch)
         case .nextWord:
             if before.last == " ", before.dropLast().last?.isWhitespace == false,
                let personal = personal(), !PredictionReferenceIndex.isInsideCode(before) {

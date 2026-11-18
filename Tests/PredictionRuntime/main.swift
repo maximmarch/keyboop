@@ -74,3 +74,13 @@ let start = ProcessInfo.processInfo.systemUptime
 let exitStatus = try PredictionRuntime.supervise(child, owner: pipe.fileHandleForReading)
 precondition(exitStatus != 0 && !child.isRunning && ProcessInfo.processInfo.systemUptime - start < 4)
 print("Prediction runtime: model defaults, saved selection, migration, startup failure, deletion, shutdown and parent-pipe ownership passed")
+
+
+let rightNeighbors = Set(["plan", "details"])
+precondition(PredictionRuntime.infillProbeVerdict(.finished("Plan"), expected: rightNeighbors) == .ready)
+precondition(PredictionRuntime.infillProbeVerdict(.finished("tomorrow"), expected: rightNeighbors) == .unsuitable)
+precondition(PredictionRuntime.infillProbeVerdict(.finished(nil), expected: rightNeighbors) == .unsuitable)
+precondition(PredictionRuntime.infillProbeVerdict(.failed("prediction.unavailable"), expected: rightNeighbors) == .unavailable)
+migrated.setInfillEnabled(true)
+precondition(migrated.infillConnection() == nil && migrated.infillStatus == .unavailable)
+print("Infill requires the bundled runner and a passing quality probe")

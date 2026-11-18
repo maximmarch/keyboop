@@ -1,0 +1,22 @@
+[
+  {"id":"ru1","group":"ru-gap","text":"Давайте обсудим |детали","rightText":" завтра утром.","alternatives":["план","это"]},
+  {"id":"ru2","group":"ru-gap","text":"Я записала |адрес","rightText":" на бумаге.","alternatives":["номер","имя"]},
+  {"id":"ru3","group":"ru-gap","text":"Перенеси встречу |на","rightText":"завтра утром."},
+  {"id":"ru4","group":"ru-gap","text":"Мы договорились|встретиться","rightText":" у метро."},
+  {"id":"ru5","group":"ru-punctuation","text":"Я купил |хлеб","rightText":", молоко и сыр.","alternatives":["яйца","масло"]},
+  {"id":"ru6","group":"ru-punctuation","text":"Поезд уже |прибыл","rightText":".","alternatives":["ушёл","уехал","отправился"]},
+  {"id":"ru7","group":"ru-gap","text":"На столе стоит |чашка","rightText":" с чаем.","alternatives":["кружка","стакан"]},
+  {"id":"ru8","group":"ru-negative","text":"Мы вчера |","rightText":"вчера обсуждали сроки.","expectation":"hide"},
+  {"id":"ru9","group":"ru-negative","text":"Я исправил опе|","rightText":"чатку за минуту.","expectation":"hide"},
+  {"id":"ru10","group":"ru-negative","text":"Я отправил |","rightText":"\nВторая строка","expectation":"hide"},
+  {"id":"en1","group":"en-gap","text":"The sky is |blue","rightText":" on a clear day."},
+  {"id":"en2","group":"en-gap","text":"I left the |keys","rightText":" next to the door.","alternatives":["bag","package","key"]},
+  {"id":"en3","group":"en-gap","text":"The machine is |out","rightText":"of order."},
+  {"id":"en4","group":"en-gap","text":"I want|to","rightText":" go home."},
+  {"id":"en5","group":"en-punctuation","text":"I bought |bread","rightText":", milk and cheese.","alternatives":["eggs","butter"]},
+  {"id":"en6","group":"en-punctuation","text":"Where is the |station","rightText":"?","alternatives":["exit","nearest"]},
+  {"id":"en7","group":"en-gap","text":"We need to |finish","rightText":" the report by Friday.","alternatives":["send","submit","complete","write"]},
+  {"id":"en8","group":"en-negative","text":"File file |","rightText":"file the document.","expectation":"hide"},
+  {"id":"en9","group":"en-negative","text":"Please auth|","rightText":"orize the request.","expectation":"hide"},
+  {"id":"en10","group":"en-negative","text":"Run cat |","rightText":"/etc/hosts","expectation":"hide"}
+]

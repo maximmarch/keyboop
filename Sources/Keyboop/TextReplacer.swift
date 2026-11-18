@@ -685,6 +685,17 @@ enum TextReplacer {
         return postUnicodeChunkChecked(Array(text.utf16), flags: [], source: nil, pid: pid)
     }
 
+    static func postSuggestionRightArrow(to pid: pid_t) -> Bool {
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_RightArrow), keyDown: true),
+              let up = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_RightArrow), keyDown: false) else { return false }
+        for event in [down, up] {
+            event.flags = []
+            event.setIntegerValueField(.eventSourceUserData, value: kbSyntheticMarker)
+            event.postToPid(pid)
+        }
+        return true
+    }
+
     private static func postUnicodeChunkChecked(_ chunk: [UniChar], flags: CGEventFlags,
                                                 source: CGEventSource?, pid: pid_t? = nil) -> Bool {
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),

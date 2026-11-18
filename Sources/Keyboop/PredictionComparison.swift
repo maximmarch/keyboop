@@ -328,6 +328,26 @@ private final class ModelComparison {
         request.cancel()
         return row
     }
+
+    func sampleInfill(_ trace: Trace, context: PredictionPhrase.InfillContext, deadlineMS: Double) -> Sample {
+        guard deadlineMS > 0 else { return Sample(trace: trace, interrupted: true) }
+        let keyLimitsDeadline = deadlineMS < modelBudgetMS
+        let result = ResultCollector(trace, lookup: nil, keyLimitsDeadline: keyLimitsDeadline)
+        let request = WordCompletionRequest()
+        let deadline = DispatchTime(uptimeNanoseconds: result.start) + .nanoseconds(Int(deadlineMS * 1_000_000))
+        model.infill(context, endpoint: endpoint, apiKey: apiKey, request: request, deadline: deadline) { event in
+            switch event {
+            case .finished(let word): result.update(word, final: true)
+            case .failed(let reason): result.update(nil, final: true, failure: reason)
+            case .partial: break
+            }
+        }
+        _ = result.done.wait(timeout: deadline)
+        let row = result.close(interrupted: keyLimitsDeadline)
+        request.cancel()
+        return row
+    }
+
 }
 
 // Frozen single-word baseline from the previous prototype, including the old mixed-script restriction.
@@ -511,6 +531,23 @@ final class PredictionComparison {
         }
         report(Self.summaries(mode: "pipeline-empty", samples: withoutHistory, byTrigger: true))
         report(Self.summaries(mode: "pipeline-history", samples: withHistory, byTrigger: true))
+    }
+
+    func compareInfill(tracesURL: URL, baseURL: URL?, apiKey: String?, report: ([Summary]) -> Void) throws {
+        let traces = try Self.loadTraces(tracesURL)
+        guard traces.allSatisfy({ $0.rightText != nil }) else { throw EvalError("An infill trace needs rightText") }
+        let comparison = try baseURL.map { try ModelComparison(endpoint: $0, apiKey: apiKey) }
+        let samples = try traces.map { trace -> Sample in
+            try checkCancelled()
+            let budget = min(modelBudgetMS, (trace.nextKeyMS ?? .infinity) - appDebounceMS)
+            guard budget > 0 else { return Sample(trace: trace, interrupted: true) }
+            guard let comparison, let right = trace.rightText,
+                  let context = PredictionPhrase.InfillContext(before: trace.prompt, after: right) else {
+                return Sample(trace: trace)
+            }
+            return comparison.sampleInfill(trace, context: context, deadlineMS: budget)
+        }
+        report(Self.summaries(mode: "pipeline-infill", samples: samples, byLanguage: true))
     }
 
     func compareConfidence(resources: URL, edgesURL: URL, holdoutURL: URL, baseURL: URL, apiKey: String?,

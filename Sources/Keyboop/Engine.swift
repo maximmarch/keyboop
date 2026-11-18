@@ -308,6 +308,8 @@ final class Engine: EventTapHandler {
             }
             var suggestionPreferences = settings.wordSuggestionPreferences
             var systemSpellingEnabled = settings.predictionSystemSpellingEnabled
+            var infillEnabled = settings.predictionInfillEnabled
+            PredictionRuntime.shared.setInfillEnabled(infillEnabled)
             wordCompletion.configurePersonalLearning(settings.personalPredictionEnabled)
             NotificationCenter.default.addObserver(
                 forName: UserDefaults.didChangeNotification,
@@ -321,6 +323,12 @@ final class Engine: EventTapHandler {
                 }
                 let updated = self.settings.wordSuggestionPreferences
                 let spellcheck = self.settings.predictionSystemSpellingEnabled
+                let infill = self.settings.predictionInfillEnabled
+                if infill != infillEnabled {
+                    infillEnabled = infill
+                    PredictionRuntime.shared.setInfillEnabled(infill)
+                    self.wordCompletion.resetInferenceContext()
+                }
                 if updated != suggestionPreferences || spellcheck != systemSpellingEnabled {
                     suggestionPreferences = updated
                     systemSpellingEnabled = spellcheck
@@ -854,7 +862,7 @@ final class Engine: EventTapHandler {
             if keyCode == 49, !cmdOrCtrl, !optOrCmd,
                flags.intersection([.maskShift, .maskSecondaryFn]).isEmpty {
                 observePersonalTyping(" ")
-                scheduleWordSuggestion(.nextWord, typed: " ")
+                scheduleWordSuggestion(settings.nextWordEnabled ? .nextWord : .infill, typed: " ")
             }
         case 123, 124, 125, 126: // стрелки
             wordCompletion.resetInferenceContext()
@@ -873,6 +881,9 @@ final class Engine: EventTapHandler {
                 buffer.clear(); TypographyCoordinator.shared.resetContext(); UndoLearner.shared.resetContext()
             } else if settings.arrowsCancel {
                 buffer.clear(); TypographyCoordinator.shared.resetContext(); UndoLearner.shared.resetContext()
+            }
+            if flags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift, .maskSecondaryFn]).isEmpty {
+                scheduleWordSuggestion(.infill, typed: "")
             }
         case 53, 117, 115, 116, 119, 121:
             // Esc, Fwd-Delete, Home/End/PageUp/PageDown → навигация, всегда сбрасываем контекст
@@ -940,6 +951,7 @@ final class Engine: EventTapHandler {
         case .completion(let useContext):
             enabled = settings.wordCompletionEnabled && (!useContext || settings.nextWordEnabled)
         case .nextWord: enabled = settings.nextWordEnabled
+        case .infill: enabled = settings.predictionInfillEnabled && settings.predictiveLocalModelEnabled && !frontAppIsRemote
         }
         return enabled && !Pause.active
             && !resolvedContext.appHardExcluded && resolvedContext.effectiveExceptionMode.isEmpty
@@ -975,11 +987,19 @@ final class Engine: EventTapHandler {
         canSuggestWord(.completion(useContext: false)) || canSuggestWord(.nextWord)
     }
 
+    func scheduleInfillAfterClick(at eventTime: TimeInterval) {
+        guard eventTime >= lastRealKeyAt, canSuggestWord(.infill) else { return }
+        wordCompletion.schedule(.infill, useLocalModel: true, useInfill: true) { [weak self] trigger in
+            NSEvent.pressedMouseButtons == 0 && self?.canSuggestWord(trigger) == true
+        }
+    }
+
     private func scheduleWordSuggestion(_ trigger: WordCompletion.Trigger, typed: String) {
         if wordCompletion.continueTyping(typed, isEligible: { [weak self] in self?.canSuggestWord($0) ?? false }) { return }
         guard canSuggestWord(trigger) else { return }
-        wordCompletion.schedule(trigger, useLocalModel: settings.predictiveLocalModelEnabled) { [weak self] in
-            self?.canSuggestWord(trigger) ?? false
+        wordCompletion.schedule(trigger, useLocalModel: settings.predictiveLocalModelEnabled,
+                                useInfill: canSuggestWord(.infill)) { [weak self] actualTrigger in
+            self?.canSuggestWord(actualTrigger) ?? false
         }
     }
 

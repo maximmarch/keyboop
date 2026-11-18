@@ -9,6 +9,7 @@ final class WordCompletion {
         let element: AXUIElement
         let pid: pid_t
         let position: Int
+        let length: Int
         let before: String
         let after: String
         let startsAtFieldStart: Bool
@@ -22,6 +23,10 @@ final class WordCompletion {
                 && startsAtFieldStart == other.startsAtFieldStart && endsAtFieldEnd == other.endsAtFieldEnd
                 && before.utf16.elementsEqual(other.before.utf16) && after.utf16.elementsEqual(other.after.utf16)
                 && CFEqual(element, other.element)
+        }
+
+        func matchesInfill(_ other: Field) -> Bool {
+            length == other.length && matches(other)
         }
 
         func hasSameLayout(as other: Field) -> Bool {
@@ -39,6 +44,7 @@ final class WordCompletion {
 
     enum Insertion {
         case confirmed(prefix: String, suffix: String)
+        case confirmedInfill
         case unconfirmed
     }
 
@@ -215,7 +221,7 @@ final class WordCompletion {
     }
 
     func continueTyping(_ characters: String, isEligible: @escaping (Trigger) -> Bool) -> Bool {
-        guard var tail = keySeed, !characters.isEmpty,
+        guard var tail = keySeed, !tail.original.trigger.isInfill, !characters.isEmpty,
               isEligible(tail.original.trigger) else { return false }
         tail.typed += characters
         guard tail.original.suffix.hasPrefix(tail.typed) else { return false }
@@ -262,14 +268,15 @@ final class WordCompletion {
         return true
     }
 
-    func schedule(_ trigger: Trigger, useLocalModel: Bool, isEligible: @escaping () -> Bool) {
+    func schedule(_ trigger: Trigger, useLocalModel: Bool, useInfill: Bool,
+                  isEligible: @escaping (Trigger) -> Bool) {
         invalidate()
         let request = WordCompletionRequest()
         self.request = request
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.request === request else { return }
             self.debounce = nil
-            guard isEligible(), let source = Self.keyboardLayoutID(),
+            guard isEligible(trigger), let source = Self.keyboardLayoutID(),
                   let app = NSWorkspace.shared.frontmostApplication else {
                 PredictionDiagnostic.shared.record("prediction.ineligible")
                 self.invalidate()
@@ -282,7 +289,7 @@ final class WordCompletion {
             self.worker.async { [weak self] in
                 guard let self, !request.isCancelled else { return }
                 self.makeSuggestion(pid: pid, trigger: trigger, source: source, request: request,
-                                    useLocalModel: useLocalModel, references: references,
+                                    useLocalModel: useLocalModel, useInfill: useInfill, references: references,
                                     usePersonal: usePersonal, useSystemSpelling: useSystemSpelling) { [weak self] candidate, reason in
                     DispatchQueue.main.async { [weak self] in
                         guard let self, self.request === request else { return }
@@ -295,7 +302,7 @@ final class WordCompletion {
                         }
                         if let visible = self.suggestion, visible.suffix == candidate.suffix,
                            visible.field.hasSameLayout(as: candidate.field) { return }
-                        guard self.present(candidate, request: request, isEligible: isEligible) else {
+                        guard self.present(candidate, request: request, isEligible: { isEligible(candidate.trigger) }) else {
                             self.invalidate()
                             return
                         }
@@ -319,8 +326,9 @@ final class WordCompletion {
             return true
         }
         guard let candidate = suggestion, isEligible(candidate.trigger),
-              Self.keyboardLayoutID() == candidate.inputSource,
-              let accepted = PredictionPhrase.acceptFirstWord(candidate.suffix) else { return false }
+              Self.keyboardLayoutID() == candidate.inputSource else { return false }
+        if candidate.trigger.isInfill { return acceptInfill(candidate, finished: finished) }
+        guard let accepted = PredictionPhrase.acceptFirstWord(candidate.suffix) else { return false }
         invalidate()
         let current = WordCompletionRequest()
         request = current
@@ -370,15 +378,23 @@ final class WordCompletion {
     }
 
     private func makeSuggestion(pid: pid_t, trigger: Trigger, source: String, request: WordCompletionRequest,
-                                useLocalModel: Bool, references: PredictionReferenceIndex.Preferences,
+                                useLocalModel: Bool, useInfill: Bool, references: PredictionReferenceIndex.Preferences,
                                 usePersonal: Bool, useSystemSpelling: Bool,
                                 finished: @escaping (Suggestion?, String) -> Void) {
+        if trigger.isInfill {
+            makeInfillSuggestion(pid: pid, source: source, request: request, finished: finished)
+            return
+        }
         var fieldReason = "prediction.field"
         guard let field = Self.readField(pid: pid, report: { fieldReason = $0 }) else {
             finished(nil, fieldReason)
             return
         }
         guard !request.isCancelled else { return }
+        if case .nextWord = trigger, useInfill, let first = field.after.first, !first.isNewline {
+            makeInfillSuggestion(pid: pid, source: source, request: request, finished: finished)
+            return
+        }
         let choice = PredictionDecision.resolve(before: field.before, after: field.after,
                                                 startsAtFieldStart: field.startsAtFieldStart,
                                                 endsAtFieldEnd: field.endsAtFieldEnd, trigger: trigger,
@@ -405,6 +421,64 @@ final class WordCompletion {
         SystemWordRecognizer.shared.recognize(query, replyOn: worker, isCancelled: { request.isCancelled }) { finding in
             deliver(query.gate(choice, finding: finding))
         }
+    }
+
+    private func makeInfillSuggestion(pid: pid_t, source: String, request: WordCompletionRequest,
+                                      finished: @escaping (Suggestion?, String) -> Void) {
+        guard !request.isCancelled, !IsSecureEventInputEnabled() else { return }
+        guard let endpoint = PredictionRuntime.shared.infillConnection(), let key = endpoint.apiKey else {
+            finished(nil, PredictionRuntime.shared.infillStatus.messageKey)
+            return
+        }
+        guard let field = Self.readField(pid: pid, rightLimit: PredictionPhrase.InfillContext.rightLimit),
+              let context = Self.infillContext(field), !request.isCancelled else {
+            finished(nil, "prediction.rightText")
+            return
+        }
+        let deadline = DispatchTime.now() + .milliseconds(PredictionDecision.modelBudgetMS)
+        localModel.infill(context, endpoint: endpoint.baseURL, apiKey: key,
+                          cacheScope: cacheScope(for: field, source: source), request: request, deadline: deadline) { [weak self] event in
+            self?.worker.async {
+                guard !request.isCancelled else { return }
+                guard DispatchTime.now() < deadline else { finished(nil, "prediction.timeout"); return }
+                switch event {
+                case .finished(let word):
+                    guard let word else { finished(nil, "prediction.lowConfidence"); return }
+                    guard let current = Self.readField(pid: pid, rightLimit: PredictionPhrase.InfillContext.rightLimit),
+                          field.matchesInfill(current),
+                          Self.infillContext(current)?.edit(for: word) != nil, !request.isCancelled else {
+                        finished(nil, "prediction.changed")
+                        return
+                    }
+                    guard DispatchTime.now() < deadline else { finished(nil, "prediction.timeout"); return }
+                    finished(Suggestion(field: current, trigger: .infill, prefix: "", suffix: word, inputSource: source),
+                             "prediction.infill")
+                case .failed(let reason): finished(nil, reason)
+                case .partial: break
+                }
+            }
+        }
+    }
+
+    private static func infillContext(_ field: Field) -> PredictionPhrase.InfillContext? {
+        PredictionPhrase.InfillContext(before: field.before, after: field.after, endsAtFieldEnd: field.endsAtFieldEnd)
+    }
+
+    private func acceptInfill(_ candidate: Suggestion, finished: @escaping (Insertion) -> Void) -> Bool {
+        guard let edit = Self.infillContext(candidate.field)?.edit(for: candidate.suffix) else { return false }
+        invalidate()
+        let current = WordCompletionRequest()
+        request = current
+        worker.async { [weak self] in
+            let result = Self.insertInfill(candidate, edit: edit, request: current)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.request === current else { return }
+                self.invalidate()
+                self.cancelPersonalLearningContext()
+                finished(result)
+            }
+        }
+        return true
     }
 
     private func finishSuggestion(_ choice: PredictionDecision.Choice, field: Field, trigger: Trigger, source: String,
@@ -495,10 +569,12 @@ final class WordCompletion {
         // AX reads. Keep the latest streamed suffix and place it at the current coordinates.
         worker.asyncAfter(deadline: .now() + .milliseconds(300)) { [weak self] in
             guard !request.isCancelled else { return }
-            let current = DispatchTime.now() < expiry ? Self.readField(pid: candidate.field.pid) : nil
+            let rightLimit = candidate.trigger.isInfill ? PredictionPhrase.InfillContext.rightLimit : 12
+            let current = DispatchTime.now() < expiry ? Self.readField(pid: candidate.field.pid, rightLimit: rightLimit) : nil
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.request === request, var visible = self.suggestion else { return }
-                guard let current, visible.field.matches(current), isEligible() else { self.invalidate(); return }
+                guard let current, visible.field.matches(current), isEligible(),
+                      !visible.trigger.isInfill || visible.field.length == current.length else { self.invalidate(); return }
                 if !visible.field.hasSameLayout(as: current) {
                     visible.field = current
                     guard self.present(visible, request: request, isEligible: isEligible) else {
@@ -544,7 +620,60 @@ final class WordCompletion {
         }
     }
 
-    private static func readField(pid: pid_t, report: (String) -> Void = { _ in }) -> Field? {
+    private static func insertInfill(_ suggestion: Suggestion, edit: PredictionPhrase.InfillEdit,
+                                     request: WordCompletionRequest) -> Insertion {
+        let target = suggestion.field
+        let rightLimit = PredictionPhrase.InfillContext.rightLimit
+        func read() -> Field? { readField(pid: target.pid, rightLimit: rightLimit) }
+        func verify(advanced: Bool) -> Field? {
+            let expectedPosition = target.position + edit.insertion.utf16.count
+                + (advanced ? edit.borrowedSpace.utf16.count : 0)
+            for attempt in 0..<5 {
+                guard !request.isCancelled else { return nil }
+                if attempt > 0 { Thread.sleep(forTimeInterval: 0.02) }
+                guard let updated = read(), CFEqual(updated.element, target.element) else { return nil }
+                if updated.position != expectedPosition { continue }
+                guard updated.length == target.length + edit.insertion.utf16.count,
+                      edit.verifies(before: target.before, after: target.after, position: target.position,
+                                    newBefore: updated.before, newAfter: updated.after, newPosition: updated.position,
+                                    advanced: advanced) else { return nil }
+                return updated
+            }
+            return nil
+        }
+        let result = request.insert(readTarget: { () -> Field? in
+            guard let field = read(), target.matchesInfill(field),
+                  infillContext(field)?.edit(for: edit.word) == edit else { return nil }
+            return field
+        }, write: { field in
+            TextReplacer.postSuggestion(edit.insertion, to: field.pid)
+        }, verify: {
+            guard let written = verify(advanced: false) else { return false }
+            guard !edit.borrowedSpace.isEmpty else { return true }
+            guard !request.isCancelled, let latest = read(), written.matchesInfill(latest),
+                  !request.isCancelled else { return false }
+            let next = latest.position + edit.borrowedSpace.utf16.count
+            guard advanceCaret(in: latest, to: next, request: request) else { return false }
+            return verify(advanced: true) != nil
+        })
+        return result == .confirmed ? .confirmedInfill : .unconfirmed
+    }
+
+    private static func advanceCaret(in field: Field, to position: Int, request: WordCompletionRequest) -> Bool {
+        var writable = DarwinBoolean(false)
+        let result = AXUIElementIsAttributeSettable(field.element, kAXSelectedTextRangeAttribute as CFString, &writable)
+        guard !request.isCancelled, !IsSecureEventInputEnabled(),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == field.pid else { return false }
+        if result == .success, writable.boolValue {
+            var range = CFRange(location: position, length: 0)
+            guard let selection = AXValueCreate(.cfRange, &range) else { return false }
+            return AXUIElementSetAttributeValue(field.element, kAXSelectedTextRangeAttribute as CFString, selection) == .success
+        }
+        // Marker-only editors can accept the same single right arrow as an ordinary keyboard event.
+        return TextReplacer.postSuggestionRightArrow(to: field.pid)
+    }
+
+    private static func readField(pid: pid_t, rightLimit: Int = 12, report: (String) -> Void = { _ in }) -> Field? {
         guard !IsSecureEventInputEnabled(), NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return nil }
         let system = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(system, 0.15)
@@ -562,7 +691,7 @@ final class WordCompletion {
         guard AXUIElementGetPid(element, &actualPID) == .success, actualPID == pid else { return nil }
         AXUIElementSetMessagingTimeout(element, 0.15)
         guard isEditableText(element) else { return nil }
-        return snapshot(element: element, pid: pid, report: report)
+        return snapshot(element: element, pid: pid, rightLimit: rightLimit, report: report)
     }
 
     private static func isEditableText(_ element: AXUIElement) -> Bool {
@@ -585,11 +714,11 @@ final class WordCompletion {
         }
     }
 
-    private static func snapshot(element: AXUIElement, pid: pid_t, report: (String) -> Void) -> Field? {
+    private static func snapshot(element: AXUIElement, pid: pid_t, rightLimit: Int, report: (String) -> Void) -> Field? {
         var range = CFRange()
         guard let selected = attribute(element, kAXSelectedTextRangeAttribute), CFGetTypeID(selected) == AXValueGetTypeID(),
               AXValueGetValue(selected as! AXValue, .cfRange, &range) else {
-            if let field = markerSnapshot(element: element, pid: pid) { return field }
+            if let field = markerSnapshot(element: element, pid: pid, rightLimit: rightLimit) { return field }
             report("prediction.caret")
             return nil
         }
@@ -598,31 +727,31 @@ final class WordCompletion {
         let nearby: (before: String, after: String, length: Int)?
         if let length = attribute(element, kAXNumberOfCharactersAttribute) as? Int, length >= range.location,
            let before = text(element, from: left, length: range.location - left),
-           let after = text(element, from: range.location, length: min(12, length - range.location)) {
+           let after = text(element, from: range.location, length: min(rightLimit, length - range.location)) {
             nearby = (before, after, length)
         } else if let value = attribute(element, kAXValueAttribute) as? NSString,
                   value.length >= range.location {
             nearby = (value.substring(with: NSRange(location: left, length: range.location - left)),
-                      value.substring(with: NSRange(location: range.location, length: min(12, value.length - range.location))),
+                      value.substring(with: NSRange(location: range.location, length: min(rightLimit, value.length - range.location))),
                       value.length)
         } else {
-            if let field = markerSnapshot(element: element, pid: pid) { return field }
+            if let field = markerSnapshot(element: element, pid: pid, rightLimit: rightLimit) { return field }
             report("prediction.field")
             return nil
         }
         guard let (before, after, length) = nearby,
               let geometry = CaretLocator.inlineGeometry(in: element, at: range.location, before: before, after: after, viewport: frame(of: element)) else {
-            if let field = markerSnapshot(element: element, pid: pid) { return field }
+            if let field = markerSnapshot(element: element, pid: pid, rightLimit: rightLimit) { return field }
             report("prediction.caret")
             return nil
         }
-        return Field(element: element, pid: pid, position: range.location, before: before, after: after,
-                     startsAtFieldStart: left == 0, endsAtFieldEnd: length - range.location <= 12,
+        return Field(element: element, pid: pid, position: range.location, length: length, before: before, after: after,
+                     startsAtFieldStart: left == 0, endsAtFieldEnd: length - range.location <= rightLimit,
                      geometry: geometry, viewport: frame(of: element))
     }
 
     // Web editors can expose selection and bounds as text markers instead of UTF-16 ranges.
-    private static func markerSnapshot(element: AXUIElement, pid: pid_t) -> Field? {
+    private static func markerSnapshot(element: AXUIElement, pid: pid_t, rightLimit: Int) -> Field? {
         func parameter(_ name: String, _ value: CFTypeRef) -> CFTypeRef? {
             var result: CFTypeRef?
             guard AXUIElementCopyParameterizedAttributeValue(element, name as CFString, value, &result) == .success else { return nil }
@@ -646,13 +775,13 @@ final class WordCompletion {
               let after = parameter(string, right) as? NSString,
               before.length > 0, before.length + after.length == count else { return nil }
         let leftText = before.substring(from: max(0, before.length - 128))
-        let rightText = after.substring(to: min(12, after.length))
+        let rightText = after.substring(to: min(rightLimit, after.length))
         guard let geometry = CaretLocator.inlineGeometry(in: element, at: before.length,
             before: leftText, after: rightText, viewport: frame(of: element), selectedMarker: selected) else { return nil }
-        return Field(element: element, pid: pid, position: before.length,
+        return Field(element: element, pid: pid, position: before.length, length: count,
                      before: leftText,
                      after: rightText, startsAtFieldStart: before.length <= 128,
-                     endsAtFieldEnd: after.length <= 12,
+                     endsAtFieldEnd: after.length <= rightLimit,
                      geometry: geometry, viewport: frame(of: element))
     }
 
@@ -697,6 +826,9 @@ final class WordCompletion {
         let label = NSTextField(labelWithString: candidate.suffix)
         label.font = candidate.field.geometry.font ?? .systemFont(ofSize: min(32, max(9, caret.height * 0.78)))
         label.textColor = .systemGray
+        if candidate.trigger.isInfill {
+            return showInfill(label, near: caret, on: screen)
+        }
         let fieldRight = candidate.field.viewport.map { CaretLocator.flipToCocoa($0).maxX } ?? screen.visibleFrame.maxX
         func fit() -> NSRect? {
             label.sizeToFit()
@@ -712,6 +844,35 @@ final class WordCompletion {
         }
         guard let frame = fitted else { return false }
 
+        displayOverlay(label, frame: frame)
+        return true
+    }
+
+    private func showInfill(_ label: NSTextField, near caret: CGRect, on screen: NSScreen) -> Bool {
+        label.sizeToFit()
+        let padding = NSSize(width: 7, height: 3)
+        let size = NSSize(width: label.frame.width + padding.width * 2, height: label.frame.height + padding.height * 2)
+        let visible = screen.visibleFrame
+        guard size.width <= visible.width else { return false }
+        let above = caret.maxY + 3
+        let y = above + size.height <= visible.maxY ? above : caret.minY - size.height - 3
+        let x = min(max(caret.minX, visible.minX), visible.maxX - size.width)
+        let frame = CGRect(origin: CGPoint(x: x, y: y), size: size)
+        guard visible.contains(frame) else { return false }
+        let bubble = NSView(frame: CGRect(origin: .zero, size: size))
+        bubble.wantsLayer = true
+        bubble.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        bubble.layer?.cornerRadius = 5
+        bubble.layer?.borderWidth = 1
+        bubble.layer?.borderColor = NSColor.separatorColor.cgColor
+        label.textColor = .labelColor
+        label.setFrameOrigin(CGPoint(x: padding.width, y: padding.height))
+        bubble.addSubview(label)
+        displayOverlay(bubble, frame: frame)
+        return true
+    }
+
+    private func displayOverlay(_ content: NSView, frame: CGRect) {
         if overlay == nil {
             let window = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
                                  backing: .buffered, defer: false)
@@ -723,9 +884,8 @@ final class WordCompletion {
             window.collectionBehavior = [.moveToActiveSpace, .ignoresCycle, .fullScreenAuxiliary]
             overlay = window
         }
-        overlay?.contentView = label
+        overlay?.contentView = content
         overlay?.setFrame(frame, display: true)
         overlay?.orderFrontRegardless()
-        return true
     }
 }
