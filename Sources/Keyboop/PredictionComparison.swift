@@ -1,15 +1,34 @@
 import Foundation
 
 private struct Trace: Decodable {
+    struct History: Decodable {
+        let timeline: String
+        let document: String
+        let order: Int
+    }
+
+    enum Expectation: String, Decodable { case suggest, hide }
+
     let id: String
     let group: String
     let text: String
     let nextKeyMS: Double?
+    let rightText: String?
+    let startsAtFieldStart: Bool?
+    let expectation: Expectation?
+    let alternatives: [String]?
+    let history: History?
+    let historyOnly: Bool?
 
     var prompt: String { String(text.prefix(while: { $0 != "|" })) }
     var reference: String { String(text.dropFirst(prompt.count + 1)) }
     var completing: Bool { prompt.last != " " }
     var word: String { String(prompt.split(whereSeparator: \.isWhitespace).last ?? "") }
+    var hidden: Bool { expectation == .hide }
+    var references: [String] { hidden ? [] : [reference] + (alternatives ?? []) }
+    var pipelineCompleting: Bool { prompt.last != " " && prompt.last != "\u{00A0}" }
+    var trigger: PredictionDecision.Trigger { pipelineCompleting ? .completion(useContext: true) : .nextWord }
+    var triggerGroup: String { pipelineCompleting ? "trigger:completion" : "trigger:next-word" }
 }
 
 private struct Sample {
@@ -20,16 +39,24 @@ private struct Sample {
     var lookupMS: Double?
     var failure: String?
     var interrupted = false
+    var source: Source?
+    var modelFirstWordMS: Double?
+
+    enum Source: Equatable { case dictionary, model, history }
 
     // Score only complete chunks. Each accepted word costs one invocation of the shortcut.
     var savedKeys: Int {
         guard let latest else { return 0 }
+        return trace.references.map { savedKeys(latest: latest, reference: $0) }.max() ?? 0
+    }
+
+    private func savedKeys(latest: String, reference: String) -> Int {
         var accepted = ""
         var count = 0
         for word in latest.split(separator: " ") {
             let next = accepted.isEmpty ? String(word) : accepted + " " + word
-            guard trace.reference.hasPrefix(next) else { break }
-            let rest = trace.reference.dropFirst(next.count)
+            guard reference.hasPrefix(next) else { break }
+            let rest = reference.dropFirst(next.count)
             guard rest.first?.isLetter != true else { break }
             accepted = next
             count += 1
@@ -38,13 +65,15 @@ private struct Sample {
     }
 
     var hit: Bool {
-        guard let word = first?.split(separator: " ").first, trace.reference.hasPrefix(word) else { return false }
-        return trace.reference.dropFirst(word.count).first?.isLetter != true
+        guard let word = first?.split(separator: " ").first else { return false }
+        return trace.references.contains { reference in
+            reference.hasPrefix(word) && reference.dropFirst(word.count).first?.isLetter != true
+        }
     }
 }
 
-private let appDebounceMS = 120.0
-private let modelBudgetMS = 650.0
+private let appDebounceMS = Double(PredictionDecision.debounceMS)
+private let modelBudgetMS = Double(PredictionDecision.modelBudgetMS)
 
 private func elapsedMS(_ start: UInt64) -> Double {
     Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
@@ -104,6 +133,58 @@ private struct DictionaryPredictor {
         }
         return result
     }
+
+    func liveChoice(_ trace: Trace) -> PredictionDecision.Choice {
+        PredictionDecision.resolve(before: trace.prompt, after: trace.rightText ?? "",
+                                   startsAtFieldStart: trace.startsAtFieldStart ?? true, trigger: trace.trigger,
+                                   index: index, next: next)
+    }
+}
+
+/// A synthetic reference predictor for validating the evaluation split before the app has a personal store.
+private struct EvaluationHistory {
+    let training: [Trace]
+
+    init(traces: [Trace]) {
+        let holdout = traces.filter { $0.historyOnly != true }.filter { $0.history != nil }
+        let heldOutTexts = Set(holdout.map(Self.documentKey))
+        let heldOutDocuments = Set(holdout.compactMap { $0.history?.document })
+        training = traces.filter { row in
+            guard let history = row.history, row.historyOnly == true else { return false }
+            return !heldOutDocuments.contains(history.document) && !heldOutTexts.contains(Self.documentKey(row))
+        }.sorted { ($0.history?.order ?? 0, $0.id) < ($1.history?.order ?? 0, $1.id) }
+    }
+
+    func nextWord(for trace: Trace) -> String? {
+        guard let target = trace.history, !trace.pipelineCompleting, let context = Self.context(trace) else { return nil }
+        var documents: Set<String> = []
+        var texts: Set<String> = []
+        var counts: [String: Int] = [:]
+        for row in training {
+            guard let record = row.history, record.timeline == target.timeline, record.order < target.order,
+                  Self.context(row) == context else { continue }
+            let token = String(row.reference.prefix(while: \.isLetter))
+            let word = WordCompletionIndex.key(token)
+            let text = Self.documentKey(row)
+            guard WordCompletionIndex.isWord(word), !documents.contains(record.document),
+                  !texts.contains(text) else { continue }
+            documents.insert(record.document)
+            texts.insert(text)
+            counts[word, default: 0] += 1
+        }
+        guard counts.count == 1, let (word, count) = counts.first, count >= 2 else { return nil }
+        return word
+    }
+
+    private static func context(_ trace: Trace) -> [String]? {
+        let words = trace.prompt.split(whereSeparator: { !$0.isLetter }).suffix(2)
+        return words.count == 2 ? words.map { WordCompletionIndex.key(String($0)) } : nil
+    }
+
+    private static func documentKey(_ trace: Trace) -> String {
+        WordCompletionIndex.key(trace.prompt + trace.reference)
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ")
+    }
 }
 
 private struct EvalError: Error, CustomStringConvertible {
@@ -117,16 +198,29 @@ private final class ResultCollector {
     private let lock = NSLock()
     private var row: Sample
     private var closed = false
-    init(_ trace: Trace) { row = Sample(trace: trace) }
+    private let lookupOffset: Double
+    private let keyLimitsDeadline: Bool
+
+    init(_ trace: Trace, lookup: Double?, keyLimitsDeadline: Bool) {
+        row = Sample(trace: trace, lookupMS: lookup)
+        lookupOffset = lookup ?? 0
+        self.keyLimitsDeadline = keyLimitsDeadline
+    }
 
     func update(_ text: String?, final: Bool, failure: String? = nil) {
         lock.withLock {
             guard !closed else { return }
             let elapsed = elapsedMS(start)
             let expired = elapsed >= modelBudgetMS
-            let interrupted = row.trace.nextKeyMS.map { elapsed + appDebounceMS >= $0 } ?? false
+            let nextKeyArrived = row.trace.nextKeyMS.map { elapsed + lookupOffset + appDebounceMS >= $0 } ?? false
+            let interrupted = nextKeyArrived || (keyLimitsDeadline && failure == "prediction.timeout")
             if let text, !text.isEmpty, !expired, !interrupted {
-                if row.first == nil { row.first = text; row.firstWordMS = elapsed }
+                if row.first == nil {
+                    row.first = text
+                    row.firstWordMS = lookupOffset + elapsed
+                    row.modelFirstWordMS = elapsed
+                    row.source = .model
+                }
                 row.latest = text
             }
             if final || expired || interrupted {
@@ -204,14 +298,19 @@ private final class ModelComparison {
         }
     }
 
-    func sample(_ trace: Trace, constrained: Bool) -> Sample {
-        let remaining = min(modelBudgetMS, (trace.nextKeyMS ?? .infinity) - appDebounceMS)
-        guard remaining > 0 else { return Sample(trace: trace, interrupted: true) }
-        let result = ResultCollector(trace)
+    func sample(_ trace: Trace, constrained: Bool,
+                input: (before: String, contextWord: String, completing: Bool)? = nil,
+                lookup: Double? = nil) -> Sample {
+        let untilNextKey = (trace.nextKeyMS ?? .infinity) - appDebounceMS - (lookup ?? 0)
+        let remaining = min(modelBudgetMS, untilNextKey)
+        guard remaining > 0 else { return Sample(trace: trace, lookupMS: lookup, interrupted: true) }
+        let keyLimitsDeadline = untilNextKey <= modelBudgetMS
+        let result = ResultCollector(trace, lookup: lookup, keyLimitsDeadline: keyLimitsDeadline)
         let request = WordCompletionRequest()
-        let deadline = DispatchTime(uptimeNanoseconds: result.start) + .milliseconds(Int(remaining))
+        let deadline = DispatchTime(uptimeNanoseconds: result.start) + .nanoseconds(Int(remaining * 1_000_000))
         if constrained {
-            model.predict(before: trace.prompt, contextWord: trace.word, completing: trace.completing,
+            let context = input ?? (trace.prompt, trace.word, trace.completing)
+            model.predict(before: context.before, contextWord: context.contextWord, completing: context.completing,
                           endpoint: endpoint, apiKey: apiKey, request: request, deadline: deadline) { event in
                 switch event {
                 case let .partial(text): result.update(text, final: false)
@@ -239,7 +338,7 @@ private final class ModelComparison {
             request.startInference(task)
         }
         _ = result.done.wait(timeout: deadline)
-        let row = result.close(interrupted: remaining < modelBudgetMS)
+        let row = result.close(interrupted: keyLimitsDeadline)
         request.cancel()
         return row
     }
@@ -269,7 +368,7 @@ private struct DirectResponse: Decodable {
     }
 }
 
-/// Only built-in synthetic fixtures enter this runner. The UI keeps a run per model selection.
+/// The UI uses built-in synthetic fixtures and keeps one run per model selection.
 final class PredictionComparison {
     struct Summary {
         let mode: String
@@ -283,6 +382,13 @@ final class PredictionComparison {
         let firstP50MS: Double?
         let firstP95MS: Double?
         let lookupP95MS: Double?
+        let modelP95MS: Double?
+        let negativeCases: Int
+        let negativeShows: Int
+        let misses: Int
+        let dictionaryShows: Int
+        let modelShows: Int
+        let historyShows: Int
         var modeledKeyP95MS: Double? { firstP95MS.map { $0 + appDebounceMS } }
     }
 
@@ -317,11 +423,7 @@ final class PredictionComparison {
                  report: ([Summary]) -> Void) throws -> [Summary] {
         try checkCancelled()
         let url = tracesURL ?? resources.appendingPathComponent("prediction_benchmark.json")
-        let traces = try JSONDecoder().decode([Trace].self, from: Data(contentsOf: url))
-        guard !traces.isEmpty, Set(traces.map(\.id)).count == traces.count,
-              traces.allSatisfy({ $0.text.filter { $0 == "|" }.count == 1 && !$0.reference.isEmpty }) else {
-            throw EvalError("Malformed evaluation traces")
-        }
+        let traces = try Self.loadTraces(url)
         func measureDictionary(mode: String, completion: URL? = nil) throws -> Summary {
             let dictionary = try DictionaryPredictor(resources: resources, completionData: completion)
             try checkCancelled()
@@ -368,10 +470,72 @@ final class PredictionComparison {
         return [basic, directStats[0], constrainedStats[0]]
     }
 
-    private static func summaries(mode: String, samples: [Sample]) -> [Summary] {
-        let groups = ["all"] + Set(samples.map(\.trace.group)).sorted()
+    func comparePipeline(resources: URL, edgesURL: URL, baseURL: URL?, apiKey: String?,
+                         report: ([Summary]) -> Void) throws {
+        let original = try Self.loadTraces(resources.appendingPathComponent("prediction_benchmark.json"))
+        let edges = try Self.loadTraces(edgesURL)
+        let history = EvaluationHistory(traces: edges)
+        let dictionary = try DictionaryPredictor(resources: resources)
+        let comparison = try baseURL.map { try ModelComparison(endpoint: $0, apiKey: apiKey) }
+        try comparison?.requireReady()
+
+        func sample(_ trace: Trace) throws -> Sample {
+            try checkCancelled()
+            if trace.nextKeyMS.map({ $0 <= appDebounceMS }) == true {
+                return Sample(trace: trace, interrupted: true)
+            }
+            let start = DispatchTime.now().uptimeNanoseconds
+            let choice = dictionary.liveChoice(trace)
+            let duration = elapsedMS(start)
+            if trace.nextKeyMS.map({ $0 <= appDebounceMS + duration }) == true {
+                return Sample(trace: trace, lookupMS: duration, interrupted: true)
+            }
+            switch choice {
+            case .skip:
+                return Sample(trace: trace, lookupMS: duration)
+            case let .dictionary(_, suffix):
+                return Sample(trace: trace, first: suffix, latest: suffix, firstWordMS: duration,
+                              lookupMS: duration, source: .dictionary)
+            case let .model(before, prefix, word):
+                guard let comparison else { return Sample(trace: trace, lookupMS: duration) }
+                return comparison.sample(trace, constrained: true, input: (before, word, !prefix.isEmpty), lookup: duration)
+            }
+        }
+
+        report(Self.summaries(mode: "pipeline", samples: try original.map(sample), byTrigger: true))
+        let edgeSamples = try edges.filter { $0.historyOnly != true }.map(sample)
+        report(Self.summaries(mode: "pipeline-edges", samples: edgeSamples, byTrigger: true))
+        let withoutHistory = edgeSamples.filter { $0.trace.history != nil }
+        let withHistory = withoutHistory.map { row -> Sample in
+            let start = DispatchTime.now().uptimeNanoseconds
+            guard !row.trace.hidden, let word = history.nextWord(for: row.trace) else { return row }
+            if case .skip = dictionary.liveChoice(row.trace) { return row }
+            let duration = elapsedMS(start)
+            if let next = row.trace.nextKeyMS, next <= appDebounceMS + duration { return row }
+            return Sample(trace: row.trace, first: word, latest: word, firstWordMS: duration,
+                          lookupMS: duration, source: .history)
+        }
+        report(Self.summaries(mode: "pipeline-empty", samples: withoutHistory, byTrigger: true))
+        report(Self.summaries(mode: "pipeline-history", samples: withHistory, byTrigger: true))
+    }
+
+    private static func loadTraces(_ url: URL) throws -> [Trace] {
+        let traces = try JSONDecoder().decode([Trace].self, from: Data(contentsOf: url))
+        guard !traces.isEmpty, Set(traces.map(\.id)).count == traces.count,
+              traces.allSatisfy({
+                  $0.text.filter { $0 == "|" }.count == 1 && ($0.hidden || !$0.reference.isEmpty)
+                      && ($0.alternatives?.allSatisfy { !$0.isEmpty } ?? true)
+                      && ($0.historyOnly != true || $0.history != nil)
+                      && $0.group != "all" && !$0.group.hasPrefix("trigger:")
+              }) else { throw EvalError("Malformed evaluation traces in \(url.lastPathComponent)") }
+        return traces
+    }
+
+    private static func summaries(mode: String, samples: [Sample], byTrigger: Bool = false) -> [Summary] {
+        var groups = ["all"] + Set(samples.map(\.trace.group)).sorted()
+        if byTrigger { groups += Set(samples.map(\.trace.triggerGroup)).sorted() }
         return groups.map { group in
-            let rows = samples.filter { group == "all" || $0.trace.group == group }
+            let rows = samples.filter { group == "all" || $0.trace.group == group || $0.trace.triggerGroup == group }
             func percentile(_ fraction: Double, in latencies: [Double]) -> Double? {
                 guard !latencies.isEmpty else { return nil }
                 return latencies[Int(ceil(Double(latencies.count) * fraction)) - 1]
@@ -382,7 +546,14 @@ final class PredictionComparison {
                            interrupted: rows.filter(\.interrupted).count, savedKeys: rows.reduce(0) { $0 + $1.savedKeys },
                            firstP50MS: percentile(0.5, in: firstWordLatencies),
                            firstP95MS: percentile(0.95, in: firstWordLatencies),
-                           lookupP95MS: percentile(0.95, in: rows.compactMap(\.lookupMS).sorted()))
+                           lookupP95MS: percentile(0.95, in: rows.compactMap(\.lookupMS).sorted()),
+                           modelP95MS: percentile(0.95, in: rows.compactMap(\.modelFirstWordMS).sorted()),
+                           negativeCases: rows.filter { $0.trace.hidden }.count,
+                           negativeShows: rows.filter { $0.trace.hidden && $0.first != nil }.count,
+                           misses: rows.filter { !$0.trace.hidden && !$0.interrupted && $0.first == nil }.count,
+                           dictionaryShows: rows.filter { $0.source == .dictionary }.count,
+                           modelShows: rows.filter { $0.source == .model }.count,
+                           historyShows: rows.filter { $0.source == .history }.count)
         }
     }
 }
