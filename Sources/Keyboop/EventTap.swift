@@ -351,7 +351,7 @@ final class EventTap {
     private func teardown() {
         swallowedDownKeyCodes.removeAll()
         wordCompletionHeldKey = nil
-        (handler as? Engine)?.wordCompletion.invalidate()
+        (handler as? Engine)?.wordCompletion.resetInferenceContext()
         if let s = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), s, .commonModes) }
         runLoopSource = nil
         tap = nil
@@ -460,7 +460,7 @@ final class EventTap {
             // оживления тапа его не зовёт.
             swallowedDownKeyCodes.removeAll()
             wordCompletionHeldKey = nil
-            (handler as? Engine)?.wordCompletion.invalidate()
+            (handler as? Engine)?.wordCompletion.resetInferenceContext()
             // ⚠️ Проглоченный keyDown тоже сбрасываем: пока тап был мёртв, его keyUp прошёл мимо, и
             // метка «эту клавишу мы съели» пережила бы смерть тапа, съев чужое отпускание.
             inlineSwallowedKeyCodeReset()
@@ -533,7 +533,10 @@ final class EventTap {
                                            && !event.flags.contains(.maskSecondaryFn)))
             if !completionKey { engine?.wordCompletion.beginKeyDown() }
             defer {
-                if completionKey, wordCompletionHeldKey != keyCode { engine?.wordCompletion.invalidate() }
+                if completionKey, wordCompletionHeldKey != keyCode {
+                    engine?.wordCompletion.invalidate()
+                    engine?.wordCompletion.cancelPersonalLearningContext()
+                }
                 if !completionKey { engine?.wordCompletion.endKeyDown() }
             }
             // Опрос Spotlight. Здесь выполняется одно чтение часов: сама проба (1.3 мс) уходит в

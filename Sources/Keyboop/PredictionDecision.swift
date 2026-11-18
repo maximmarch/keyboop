@@ -19,6 +19,7 @@ enum PredictionDecision {
         case skip(Suppression)
         case dictionary(prefix: String, suffix: String)
         case reference(prefix: String, suffix: String, source: PredictionReferenceIndex.Source)
+        case personal(prefix: String, suffix: String)
         case model(before: String, prefix: String, contextWord: String)
     }
 
@@ -27,7 +28,8 @@ enum PredictionDecision {
                         index: @autoclosure () -> WordCompletionIndex,
                         next: @autoclosure () -> NextWordIndex?,
                         references: @autoclosure () -> PredictionReferenceIndex? = nil,
-                        useFieldReferences: Bool = false) -> Choice {
+                        useFieldReferences: Bool = false,
+                        personal: @autoclosure () -> PersonalPredictionHistory? = nil) -> Choice {
         guard after.isEmpty || after.first?.isNewline == true else { return .skip(.rightText) }
         let before = rawBefore.replacingOccurrences(of: "\u{00A0}", with: " ")
         switch trigger {
@@ -48,13 +50,26 @@ enum PredictionDecision {
                     break
                 }
             }
-            let preferred = useContext ? next()?.predict(before: String(before.dropLast(prefix.count)),
+            let preceding = String(before.dropLast(prefix.count))
+            if let personal = personal(), !PredictionReferenceIndex.isInsideCode(before) {
+                let context = useContext ? PersonalPredictionObservation.context(before: preceding,
+                                                                                 startsAtFieldStart: startsAtFieldStart) : []
+                if let suffix = personal.completion(for: prefix, after: context), !index().contains(prefix) {
+                    return .personal(prefix: prefix, suffix: suffix)
+                }
+            }
+            let preferred = useContext ? next()?.predict(before: preceding,
                                                          startsAtFieldStart: startsAtFieldStart) : nil
             if let suffix = index().suffix(for: prefix, preferredWord: preferred) {
                 return .dictionary(prefix: prefix, suffix: suffix)
             }
             return .model(before: before, prefix: prefix, contextWord: prefix)
         case .nextWord:
+            if before.last == " ", before.dropLast().last?.isWhitespace == false,
+               let personal = personal(), !PredictionReferenceIndex.isInsideCode(before) {
+                let context = PersonalPredictionObservation.context(before: before, startsAtFieldStart: startsAtFieldStart)
+                if let word = personal.nextWord(after: context) { return .personal(prefix: "", suffix: word) }
+            }
             if let suffix = next()?.predict(before: before, startsAtFieldStart: startsAtFieldStart) {
                 return .dictionary(prefix: "", suffix: suffix)
             }

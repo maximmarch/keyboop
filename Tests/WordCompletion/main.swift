@@ -151,6 +151,24 @@ precondition(PredictionDecision.resolve(before: "До сих ", after: "", start
                                         references: PredictionReferenceIndex(glossary: "документ"),
                                         useFieldReferences: true) == .dictionary(prefix: "", suffix: "пор"))
 
+var personal = PersonalPredictionHistory()
+for _ in 0..<3 {
+    personal.record(PersonalPredictionObservation(word: "ZetaEngineCore", context: ["завтра", "пришлю"])!)
+}
+precondition(PredictionDecision.resolve(before: "ZetaEng", after: "", startsAtFieldStart: true,
+                                        trigger: .completion(useContext: false), index: ranked, next: next,
+                                        personal: personal) == .personal(prefix: "ZetaEng", suffix: "ineCore"))
+precondition(PredictionDecision.resolve(before: "Завтра пришлю ", after: "", startsAtFieldStart: true,
+                                        trigger: .nextWord, index: ranked, next: next,
+                                        personal: personal) == .personal(prefix: "", suffix: "ZetaEngineCore"))
+precondition(PredictionDecision.resolve(before: "Завтра пришлю  ", after: "", startsAtFieldStart: true,
+                                        trigger: .nextWord, index: ranked, next: next,
+                                        personal: personal) == route("Завтра пришлю  ", trigger: .nextWord))
+precondition(PredictionDecision.resolve(before: "ZetaEng", after: "", startsAtFieldStart: true,
+                                        trigger: .completion(useContext: false), index: ranked, next: next,
+                                        references: PredictionReferenceIndex(glossary: "ZetaEngineering"),
+                                        personal: personal) == .reference(prefix: "ZetaEng", suffix: "ineering", source: .glossary))
+
 let stale = WordCompletionRequest()
 precondition(stale.insert(readTarget: { stale.cancel(); return 1 }, write: { _ in
     preconditionFailure("A request cancelled during AX validation must never write")
@@ -301,4 +319,4 @@ checkStream("куда ", "куда", false, expected: [.failed("prediction.unava
 checkStream("куда ", "куда", false, expected: [.failed("prediction.timeout")], stall: true)
 checkStream("куда ", "куда", false, expected: [.finished(nil)], stall: true, cancelAfter: .milliseconds(30))
 checkStream("куда ", "куда", false, expected: [.failed("prediction.unavailable")], endpoint: URL(string: "https://example.com")!)
-print("Word suggestions: \(suffixCases.count + prefixCases.count + nextCases.count + rankedCases.count + corpusCases.count + modelChecks + fieldCases.count + 38) checks passed")
+print("Word suggestions: \(suffixCases.count + prefixCases.count + nextCases.count + rankedCases.count + corpusCases.count + modelChecks + fieldCases.count + 42) checks passed")

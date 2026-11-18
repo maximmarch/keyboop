@@ -1873,7 +1873,14 @@ final class DetailVC: NSViewController {
                 controlRow(L10n.t("completion.glossary"),
                            NSButton(title: L10n.t("completion.glossary.edit"), target: self,
                                     action: #selector(editPredictionGlossary)),
-                           key: "completion.glossary")
+                           key: "completion.glossary"),
+                switchRow(L10n.t("completion.personal"), L10n.t("completion.personal.detail"),
+                          settings.personalPredictionEnabled, #selector(togglePersonalPrediction),
+                          key: "completion.personal", wraps: true),
+                controlRow(L10n.t("completion.personal.history"),
+                           NSButton(title: L10n.t("completion.personal.reset"), target: self,
+                                    action: #selector(resetPersonalPrediction)),
+                           key: "completion.personal.history")
             ]),
             group(6),
             card([
@@ -1894,6 +1901,29 @@ final class DetailVC: NSViewController {
 
     @objc private func editPredictionGlossary() {
         PredictionGlossaryEditor.edit(settings: settings)
+    }
+
+    @objc private func togglePersonalPrediction(_ sender: NSSwitch) {
+        settings.personalPredictionEnabled = sender.state == .on
+    }
+
+    @objc private func resetPersonalPrediction() {
+        let alert = NSAlert()
+        alert.messageText = L10n.t("completion.personal.resetTitle")
+        alert.informativeText = L10n.t("completion.personal.resetDetail")
+        alert.addButton(withTitle: L10n.t("completion.personal.clear"))
+        alert.addButton(withTitle: L10n.t("common.cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        PersonalPredictionStore.shared.reset { success in
+            guard !success else { return }
+            DispatchQueue.main.async {
+                let error = NSAlert()
+                error.messageText = L10n.t("completion.personal.resetFailed")
+                error.addButton(withTitle: L10n.t("common.ok"))
+                error.runModal()
+            }
+        }
+        NotificationCenter.default.post(name: PersonalPredictionStore.didReset, object: nil)
     }
 
     private func wordCompletionShortcut() -> NSButton {

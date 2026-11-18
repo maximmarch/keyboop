@@ -376,6 +376,7 @@ enum L10n {
         "prediction.dictionary": [.ru: "Показана подсказка из словаря.", .en: "Showing a dictionary suggestion."],
         "prediction.fieldWord": [.ru: "Показано слово из текущего поля.", .en: "Showing a word from the current field."],
         "prediction.glossary": [.ru: "Показано слово из личного глоссария.", .en: "Showing a word from the personal glossary."],
+        "prediction.personal": [.ru: "Показана подсказка из истории набора.", .en: "Showing a suggestion from typing history."],
         "prediction.model": [.ru: "Показана подсказка локальной модели.", .en: "Showing a local model suggestion."],
         "prediction.timeout": [.ru: "Модель не успела ответить за отведённое время.", .en: "The model exceeded the response time limit."],
         "prediction.unavailable": [.ru: "Нет соединения с локальным сервером.", .en: "Could not reach the local server."],
@@ -408,6 +409,14 @@ enum L10n {
         "completion.glossary.edit": [.ru: "Редактировать…", .en: "Edit…"],
         "completion.glossary.help": [.ru: "Вставьте или введите по одному слову на строку. Слова используются для дописывания и хранятся на этом Mac.", .en: "Paste or enter one word per line. These words are used for completion and stored on this Mac."],
         "completion.glossary.save": [.ru: "Сохранить", .en: "Save"],
+        "completion.personal": [.ru: "Учиться на моём наборе", .en: "Learn from my typing"],
+        "completion.personal.detail": [.ru: "Запоминать слова и короткие сочетания для подсказок. История хранится на этом Mac.", .en: "Remember words and short word combinations for suggestions. History is stored on this Mac."],
+        "completion.personal.history": [.ru: "История подсказок", .en: "Suggestion history"],
+        "completion.personal.reset": [.ru: "Сбросить…", .en: "Reset…"],
+        "completion.personal.resetTitle": [.ru: "Сбросить историю подсказок?", .en: "Reset suggestion history?"],
+        "completion.personal.resetDetail": [.ru: "Сохранённые слова и сочетания будут удалены.", .en: "Learned words and word combinations will be deleted."],
+        "completion.personal.clear": [.ru: "Удалить историю", .en: "Delete history"],
+        "completion.personal.resetFailed": [.ru: "Системе не удалось удалить файл истории подсказок.", .en: "The system could not delete the suggestion history file."],
         // Подпись переписана вместе со сменой дефолта на ВКЛ (21.07): пометка «(агрессивно)» пугала
         // ровно там, где тумблер теперь включён из коробки. Объясняем пользу, а не пугаем.
         "switch.liveSub": [.ru: "Не ждать пробела: чиню посреди слова. В браузерах и Slack жду пробел", .en: "Don’t wait for the space: I fix mid-word. In browsers and Slack I wait"],

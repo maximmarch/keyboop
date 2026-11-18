@@ -297,17 +297,24 @@ final class Engine: EventTapHandler {
                 self?.refreshContextSnapshot()
             }
             var suggestionPreferences = settings.wordSuggestionPreferences
+            wordCompletion.configurePersonalLearning(settings.personalPredictionEnabled)
             NotificationCenter.default.addObserver(
                 forName: UserDefaults.didChangeNotification,
                 object: UserDefaults.standard, queue: .main
             ) { [weak self] _ in
                 guard let self else { return }
+                self.wordCompletion.configurePersonalLearning(self.settings.personalPredictionEnabled)
                 let updated = self.settings.wordSuggestionPreferences
                 if updated != suggestionPreferences {
                     suggestionPreferences = updated
                     self.wordCompletion.resetInferenceContext()
                 }
                 self.refreshContextSnapshot()
+            }
+            NotificationCenter.default.addObserver(
+                forName: PersonalPredictionStore.didReset, object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.wordCompletion.resetInferenceContext()
             }
             NotificationCenter.default.addObserver(
                 forName: NSSpellChecker.didChangeAutomaticPeriodSubstitutionNotification,
@@ -580,10 +587,12 @@ final class Engine: EventTapHandler {
     // Голосовой ввод (hold-to-talk) — делегируем оркестратору.
     func handleVoiceBegin() {
         wordCompletion.invalidate()
+        wordCompletion.cancelPersonalLearningContext()
         VoiceController.shared.begin()
     }
     func handleVoiceAIBegin() {
         wordCompletion.invalidate()
+        wordCompletion.cancelPersonalLearningContext()
         VoiceController.shared.begin(forcePostProcess: true)
     }
     func handleVoiceEnd() { VoiceController.shared.end() }
@@ -618,6 +627,7 @@ final class Engine: EventTapHandler {
         // «мёртв» ВО ВСЕХ приложениях. Раньше это происходило без единой строки в логе (гейт добавлен
         // в 0.2.60) — теперь логируем ПЕРЕХОДЫ и находим держателя (pid из ioreg, асинхронно).
         if IsSecureEventInputEnabled() {
+            wordCompletion.cancelPersonalLearningContext()
             noteSecureInput(true)
             liveFixLast = ""; buffer.clear(); TypographyCoordinator.shared.resetContext(); pendingContextClear = false; return false
         }
@@ -824,6 +834,7 @@ final class Engine: EventTapHandler {
             }
             if keyCode == 49, !cmdOrCtrl, !optOrCmd,
                flags.intersection([.maskShift, .maskSecondaryFn]).isEmpty {
+                observePersonalTyping(" ")
                 scheduleWordSuggestion(.nextWord, typed: " ")
             }
         case 123, 124, 125, 126: // стрелки
@@ -877,6 +888,10 @@ final class Engine: EventTapHandler {
                 UndoLearner.shared.observe(current: buffer.currentWord)   // U2: перенабор оригинала = откат
                 if !optOrCmd, characters.count == 1,
                    characters.first?.isLetter == true {
+                    if wordCompletion.personalLearningEnabled, !flags.contains(.maskSecondaryFn),
+                       WordCompletionIndex.isWord(WordCompletionIndex.key(characters)) {
+                        observePersonalTyping(characters)
+                    }
                     scheduleWordSuggestion(.completion(useContext: settings.nextWordEnabled), typed: characters)
                 }
                 // Умная типографика для завершающей пунктуации и закрывающих кавычек/скобок (KB-021).
@@ -911,6 +926,15 @@ final class Engine: EventTapHandler {
             && !resolvedContext.appHardExcluded && resolvedContext.effectiveExceptionMode.isEmpty
             && !muted && !VoiceGate.isActive && !SnippetPicker.shared.isOpen && !SnippetInsertionCoordinator.shared.isFormActive
             && !IsSecureEventInputEnabled() && !HotkeyRecording.active
+    }
+
+    private func observePersonalTyping(_ text: String) {
+        guard wordCompletion.personalLearningEnabled, canLearnPrediction() else { return }
+        wordCompletion.observePersonalInput(text) { [weak self] in self?.canLearnPrediction() ?? false }
+    }
+
+    private func canLearnPrediction() -> Bool {
+        canSuggestWord(.completion(useContext: false)) || canSuggestWord(.nextWord)
     }
 
     private func scheduleWordSuggestion(_ trigger: WordCompletion.Trigger, typed: String) {

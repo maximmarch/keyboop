@@ -83,6 +83,7 @@ final class AppSettings {
             "liveFixEnabled": true,
             "wordCompletionEnabled": false,
             "predictionFieldWordsEnabled": false,
+            "personalPredictionEnabled": false,
             "predictionGlossary": "",
             "nextWordEnabled": false,
             "predictiveLocalModelEnabled": false,
@@ -161,6 +162,10 @@ final class AppSettings {
         set { d.set(newValue, forKey: "predictiveLocalModelEnabled") }
     }
     var wordSuggestionsEnabled: Bool { wordCompletionEnabled || nextWordEnabled }
+    var personalPredictionEnabled: Bool {
+        get { d.bool(forKey: "personalPredictionEnabled") }
+        set { d.set(newValue, forKey: "personalPredictionEnabled") }
+    }
     var predictionFieldWordsEnabled: Bool {
         get { d.bool(forKey: "predictionFieldWordsEnabled") }
         set { d.set(newValue, forKey: "predictionFieldWordsEnabled") }

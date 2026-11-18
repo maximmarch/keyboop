@@ -134,14 +134,14 @@ private struct DictionaryPredictor {
         return result
     }
 
-    func liveChoice(_ trace: Trace) -> PredictionDecision.Choice {
+    func liveChoice(_ trace: Trace, personal: PersonalPredictionHistory? = nil) -> PredictionDecision.Choice {
         PredictionDecision.resolve(before: trace.prompt, after: trace.rightText ?? "",
                                    startsAtFieldStart: trace.startsAtFieldStart ?? true, trigger: trace.trigger,
-                                   index: index, next: next)
+                                   index: index, next: next, personal: personal)
     }
 }
 
-/// A synthetic reference predictor for validating the evaluation split before the app has a personal store.
+/// Uses synthetic records only and builds the same ranking as the live personal store.
 private struct EvaluationHistory {
     let training: [Trace]
 
@@ -155,30 +155,27 @@ private struct EvaluationHistory {
         }.sorted { ($0.history?.order ?? 0, $0.id) < ($1.history?.order ?? 0, $1.id) }
     }
 
-    func nextWord(for trace: Trace) -> String? {
-        guard let target = trace.history, !trace.pipelineCompleting, let context = Self.context(trace) else { return nil }
+    func snapshot(for trace: Trace) -> PersonalPredictionHistory? {
+        guard let target = trace.history, !trace.pipelineCompleting else { return nil }
         var documents: Set<String> = []
         var texts: Set<String> = []
-        var counts: [String: Int] = [:]
+        var history = PersonalPredictionHistory()
+        let now = Date()
         for row in training {
             guard let record = row.history, record.timeline == target.timeline, record.order < target.order,
-                  Self.context(row) == context else { continue }
-            let token = String(row.reference.prefix(while: \.isLetter))
-            let word = WordCompletionIndex.key(token)
+                  !row.pipelineCompleting else { continue }
             let text = Self.documentKey(row)
-            guard WordCompletionIndex.isWord(word), !documents.contains(record.document),
-                  !texts.contains(text) else { continue }
+            let word = String(row.reference.prefix(while: \.isLetter))
+            let startsAtFieldStart = row.startsAtFieldStart ?? true
+            let context = PersonalPredictionObservation.context(before: row.prompt, startsAtFieldStart: startsAtFieldStart)
+            guard !documents.contains(record.document), !texts.contains(text),
+                  let observation = PersonalPredictionObservation(word: word, context: context,
+                      at: now.addingTimeInterval(Double(record.order) - Double(target.order))) else { continue }
             documents.insert(record.document)
             texts.insert(text)
-            counts[word, default: 0] += 1
+            history.record(observation)
         }
-        guard counts.count == 1, let (word, count) = counts.first, count >= 2 else { return nil }
-        return word
-    }
-
-    private static func context(_ trace: Trace) -> [String]? {
-        let words = trace.prompt.split(whereSeparator: { !$0.isLetter }).suffix(2)
-        return words.count == 2 ? words.map { WordCompletionIndex.key(String($0)) } : nil
+        return history
     }
 
     private static func documentKey(_ trace: Trace) -> String {
@@ -496,6 +493,9 @@ final class PredictionComparison {
             case let .dictionary(_, suffix), let .reference(_, suffix, _):
                 return Sample(trace: trace, first: suffix, latest: suffix, firstWordMS: duration,
                               lookupMS: duration, source: .dictionary)
+            case let .personal(_, suffix):
+                return Sample(trace: trace, first: suffix, latest: suffix, firstWordMS: duration,
+                              lookupMS: duration, source: .history)
             case let .model(before, prefix, word):
                 guard let comparison else { return Sample(trace: trace, lookupMS: duration) }
                 return comparison.sample(trace, constrained: true, input: (before, word, !prefix.isEmpty), lookup: duration)
@@ -508,8 +508,8 @@ final class PredictionComparison {
         let withoutHistory = edgeSamples.filter { $0.trace.history != nil }
         let withHistory = withoutHistory.map { row -> Sample in
             let start = DispatchTime.now().uptimeNanoseconds
-            guard !row.trace.hidden, let word = history.nextWord(for: row.trace) else { return row }
-            if case .skip = dictionary.liveChoice(row.trace) { return row }
+            guard !row.trace.hidden, let learned = history.snapshot(for: row.trace) else { return row }
+            guard case let .personal(_, word) = dictionary.liveChoice(row.trace, personal: learned) else { return row }
             let duration = elapsedMS(start)
             if let next = row.trace.nextKeyMS, next <= appDebounceMS + duration { return row }
             return Sample(trace: row.trace, first: word, latest: word, firstWordMS: duration,

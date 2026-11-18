@@ -45,6 +45,19 @@ struct PredictionReferenceIndex {
         }
     }
 
+    static func renderSuffix(of word: String, matching prefix: String) -> String? {
+        let normalized = prefix.precomposedStringWithCanonicalMapping
+        let key = WordCompletionIndex.key(normalized)
+        guard WordCompletionIndex.key(word).hasPrefix(key) else { return nil }
+        let rendered: String
+        if word.hasPrefix(normalized) { rendered = word }
+        else if normalized == normalized.uppercased() { rendered = word.uppercased() }
+        else if normalized.dropFirst() == key.dropFirst() { rendered = word }
+        else { return nil }
+        let suffix = rendered.dropFirst(normalized.count)
+        return suffix.count >= 2 ? String(suffix) : nil
+    }
+
     private static func fieldWords(before: String, after: String, startsAtFieldStart: Bool,
                                    endsAtFieldEnd: Bool) -> [String] {
         let left = before.split(whereSeparator: \.isWhitespace).dropLast() // The last token is being typed.
@@ -86,14 +99,8 @@ struct PredictionReferenceIndex {
                   start + 1 == keys.count || !keys[start + 1].hasPrefix(key),
                   let variants = spellings[keys[start]] else { return nil }
             let normalized = prefix.precomposedStringWithCanonicalMapping
-            let length = normalized.count
-            let word: String
-            if let exact = variants.first(where: { $0.hasPrefix(normalized) }) { word = exact }
-            else if normalized == normalized.uppercased() { word = variants[0].uppercased() }
-            else if normalized.dropFirst() == key.dropFirst() { word = variants[0] }
-            else { return nil }
-            let suffix = word.dropFirst(length)
-            return suffix.count >= 2 ? String(suffix) : nil
+            let word = variants.first(where: { $0.hasPrefix(normalized) }) ?? variants[0]
+            return PredictionReferenceIndex.renderSuffix(of: word, matching: normalized)
         }
     }
 }

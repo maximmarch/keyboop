@@ -73,6 +73,18 @@ final class WordCompletion {
     private var overlay: NSPanel?
     var hasSuggestion: Bool { suggestion != nil || pendingTail != nil }
 
+    private struct PersonalAnchor {
+        let field: Field
+        let session: UInt64
+    }
+    private(set) var personalLearningEnabled = false
+    private var learning = PendingPredictionLearning<PersonalAnchor>()
+    private var learningEpoch: UInt64 = 0
+    private var didPassPersonalKey = false
+    private var manuallyTyped = ""
+    private var manualBoundary: UInt64 = 0
+    private var personalForward = ""
+
     func invalidate() {
         clearRequest()
         keySeed = nil
@@ -81,7 +93,22 @@ final class WordCompletion {
 
     func resetInferenceContext() {
         invalidate()
+        cancelPersonalLearningContext()
         worker.async { [weak self] in self?.inferenceContext = nil }
+    }
+
+    func configurePersonalLearning(_ enabled: Bool) {
+        guard enabled != personalLearningEnabled else { return }
+        personalLearningEnabled = enabled
+        PersonalPredictionStore.shared.setEnabled(enabled)
+        resetInferenceContext()
+    }
+
+    func cancelPersonalLearningContext() {
+        learningEpoch &+= 1
+        learning.cancel()
+        manuallyTyped = ""
+        personalForward = ""
     }
 
     private func cacheScope(for field: Field, source: String) -> UUID {
@@ -105,13 +132,86 @@ final class WordCompletion {
     // The event tap calls these around a physical key. Only input that survives all hotkeys,
     // layout fixes and snippet handling reaches continueTyping.
     func beginKeyDown() {
+        didPassPersonalKey = false
         keySeed = pendingTail ?? suggestion.map { TypedTail(original: $0, typed: "") }
         clearRequest()
     }
 
     func endKeyDown() {
+        if personalLearningEnabled && !didPassPersonalKey { cancelPersonalLearningContext() }
         keySeed = nil
         if suggestion == nil && pendingTail == nil && overlay?.isVisible == true { overlay?.orderOut(nil) }
+    }
+
+    // Called only for letters and a plain space that the engine lets through to the editor.
+    func observePersonalInput(_ text: String, isEligible: @escaping () -> Bool) {
+        guard personalLearningEnabled else { return }
+        didPassPersonalKey = true
+        let boundary = text == " "
+        let typedWord = boundary ? manuallyTyped : ""
+        if boundary {
+            manuallyTyped = ""
+            manualBoundary &+= 1
+        } else if manuallyTyped.count <= 32 {
+            manuallyTyped.append(text)
+        }
+
+        let pending = learning.pending
+        guard pending != nil || (2...32).contains(typedWord.count) else { return }
+        if pending != nil {
+            personalForward += text
+            if personalForward.utf16.count > 128 {
+                learning.cancel()
+                personalForward = ""
+            }
+        }
+        let appended = personalForward
+        let epoch = learningEpoch
+        let boundaryNumber = manualBoundary
+        // Allow the editor to process the physical key and the existing boundary corrections.
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(boundary ? 80 : 20)) { [weak self] in
+            guard let self, self.learningEpoch == epoch, isEligible(),
+                  let session = PersonalPredictionStore.shared.session,
+                  let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return }
+            let verifiesPending = pending?.anchor.session == session && !appended.isEmpty &&
+                self.learning.pending?.observation.id == pending?.observation.id && self.personalForward == appended
+            let checksWord = (2...32).contains(typedWord.count) && self.manualBoundary == boundaryNumber
+            let laterTyping = checksWord ? self.manuallyTyped : ""
+            guard verifiesPending || checksWord else { return }
+            self.worker.async { [weak self] in
+                let current = Self.readField(pid: pid)
+                let forwardConfirmed = verifiesPending && Self.matchesPersonalAdvance(from: pending?.anchor.field,
+                                                                                        to: current, text: appended)
+                let word = current.flatMap { field -> PersonalPredictionObservation? in
+                    guard checksWord, field.after.isEmpty || field.after.first?.isNewline == true else { return nil }
+                    return PersonalPredictionObservation.manual(typedWord, in: field.before,
+                                                                 startsAtFieldStart: field.startsAtFieldStart,
+                                                                 followedBy: laterTyping)
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.learningEpoch == epoch, isEligible() else { return }
+                    if verifiesPending, let pending, self.personalForward == appended,
+                       self.learning.pending?.observation.id == pending.observation.id {
+                        self.personalForward = ""
+                        if let accepted = self.learning.advance(pending.observation.id, verified: forwardConfirmed) {
+                            self.savePersonalObservation(accepted, session: session)
+                        }
+                    }
+                    if let word, self.manualBoundary == boundaryNumber { self.savePersonalObservation(word, session: session) }
+                }
+            }
+        }
+    }
+
+    private static func matchesPersonalAdvance(from anchor: Field?, to current: Field?, text: String) -> Bool {
+        guard let anchor, let current, anchor.pid == current.pid, CFEqual(anchor.element, current.element) else { return false }
+        return PredictionPhrase.matchesEdit(before: anchor.before, after: anchor.after, inserted: text,
+                                            position: anchor.position, newBefore: current.before, newAfter: current.after,
+                                            newPosition: current.position)
+    }
+
+    private func savePersonalObservation(_ observation: PersonalPredictionObservation, session: UInt64) {
+        worker.async { PersonalPredictionStore.shared.record(observation, session: session) }
     }
 
     func continueTyping(_ characters: String, isEligible: @escaping (Trigger) -> Bool) -> Bool {
@@ -177,10 +277,12 @@ final class WordCompletion {
             }
             let pid = app.processIdentifier
             let references = AppSettings.shared.predictionReferencePreferences
+            let usePersonal = self.personalLearningEnabled
             self.worker.async { [weak self] in
                 guard let self, !request.isCancelled else { return }
                 self.makeSuggestion(pid: pid, trigger: trigger, source: source, request: request,
-                                    useLocalModel: useLocalModel, references: references) { [weak self] candidate, reason in
+                                    useLocalModel: useLocalModel, references: references,
+                                    usePersonal: usePersonal) { [weak self] candidate, reason in
                     DispatchQueue.main.async { [weak self] in
                         guard let self, self.request === request else { return }
                         guard let candidate else {
@@ -221,16 +323,38 @@ final class WordCompletion {
         invalidate()
         let current = WordCompletionRequest()
         request = current
+        let learn = personalLearningEnabled
+        let epoch = learningEpoch
         worker.async { [weak self] in
+            let session = learn ? PersonalPredictionStore.shared.session : nil
             let result = Self.insert(candidate, chunk: accepted.insertion, request: current)
             var next: Suggestion?
-            if case .confirmed = result, !accepted.remainder.isEmpty {
+            if case .confirmed = result?.insertion, !accepted.remainder.isEmpty {
                 next = Self.readAdvanced(candidate, inserted: accepted.insertion, remainder: accepted.remainder, request: current)
+            }
+            let observation = session.flatMap { _ in
+                result?.field.flatMap { field in
+                    let word = candidate.prefix + accepted.insertion.trimmingCharacters(in: .whitespaces)
+                    return PersonalPredictionObservation.manual(word, in: field.before, startsAtFieldStart: field.startsAtFieldStart)
+                }
             }
             let tail = next
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 let valid = self.request === current && isEligible(candidate.trigger)
+                if self.learningEpoch == epoch, learn {
+                    if valid, let observation, let session, let newField = result?.field,
+                       PersonalPredictionStore.shared.session == session {
+                        let anchor = PersonalAnchor(field: newField, session: session)
+                        if let last = self.learning.accepted(observation, at: anchor, follows: {
+                            $0.session == session && $0.field.matches(candidate.field)
+                        }) { self.savePersonalObservation(last, session: session) }
+                        self.manuallyTyped = ""
+                        self.personalForward = ""
+                    } else {
+                        self.cancelPersonalLearningContext()
+                    }
+                }
                 if self.request === current {
                     if let tail, valid {
                         if !self.present(tail, request: current, isEligible: { isEligible(candidate.trigger) }) { self.invalidate() }
@@ -238,7 +362,7 @@ final class WordCompletion {
                         self.invalidate()
                     }
                 }
-                if let result { finished(valid ? result : .unconfirmed) }
+                if let result { finished(valid ? result.insertion : .unconfirmed) }
             }
         }
         return true
@@ -246,6 +370,7 @@ final class WordCompletion {
 
     private func makeSuggestion(pid: pid_t, trigger: Trigger, source: String, request: WordCompletionRequest,
                                 useLocalModel: Bool, references: PredictionReferenceIndex.Preferences,
+                                usePersonal: Bool,
                                 finished: @escaping (Suggestion?, String) -> Void) {
         var fieldReason = "prediction.field"
         guard let field = Self.readField(pid: pid, report: { fieldReason = $0 }) else {
@@ -258,7 +383,8 @@ final class WordCompletion {
                                                 endsAtFieldEnd: field.endsAtFieldEnd, trigger: trigger,
                                                 index: index, next: nextWordIndex,
                                                 references: referenceIndex(for: references),
-                                                useFieldReferences: references.useField)
+                                                useFieldReferences: references.useField,
+                                                personal: usePersonal ? PersonalPredictionStore.shared.snapshot() : nil)
         func publish(_ suffix: String, prefix: String, reason: String) {
             guard !request.isCancelled else { return }
             guard let current = Self.readField(pid: pid), field.matches(current) else {
@@ -277,6 +403,9 @@ final class WordCompletion {
             return
         case let .reference(prefix, suffix, origin):
             publish(suffix, prefix: prefix, reason: origin.rawValue)
+            return
+        case let .personal(prefix, suffix):
+            publish(suffix, prefix: prefix, reason: "prediction.personal")
             return
         case let .model(text, stem, word):
             guard useLocalModel else { finished(nil, "prediction.noMatch"); return }
@@ -356,8 +485,10 @@ final class WordCompletion {
         }
     }
 
-    private static func insert(_ suggestion: Suggestion, chunk: String, request: WordCompletionRequest) -> Insertion? {
+    private static func insert(_ suggestion: Suggestion, chunk: String,
+                               request: WordCompletionRequest) -> (insertion: Insertion, field: Field?)? {
         let target = suggestion.field
+        var validated: Field?
         let result = request.insert(readTarget: { () -> Field? in
             guard let current = readField(pid: target.pid),
                   target.matches(current), !IsSecureEventInputEnabled() else { return nil }
@@ -372,15 +503,18 @@ final class WordCompletion {
                 guard let updated = readField(pid: target.pid),
                       CFEqual(updated.element, target.element) else { return false }
                 guard updated.position == target.position + chunk.utf16.count else { continue }
-                return PredictionPhrase.matchesEdit(before: target.before, after: target.after, inserted: chunk, position: target.position,
-                                                    newBefore: updated.before, newAfter: updated.after, newPosition: updated.position)
+                guard PredictionPhrase.matchesEdit(before: target.before, after: target.after, inserted: chunk,
+                                                    position: target.position, newBefore: updated.before,
+                                                    newAfter: updated.after, newPosition: updated.position) else { return false }
+                validated = updated
+                return true
             }
             return false
         })
         switch result {
         case .skipped: return nil
-        case .unconfirmed: return .unconfirmed
-        case .confirmed: return .confirmed(prefix: suggestion.prefix, suffix: chunk)
+        case .unconfirmed: return (.unconfirmed, nil)
+        case .confirmed: return (.confirmed(prefix: suggestion.prefix, suffix: chunk), validated)
         }
     }
 
