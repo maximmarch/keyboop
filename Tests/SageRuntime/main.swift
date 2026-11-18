@@ -98,6 +98,16 @@ check(runtime, "второй запрос") { checkFailure($0, .busy) }
 waitFor { timed != nil }
 checkFailure(timed!, .timeout)
 
+let typingID = UUID()
+var typingResult: Result<String, Error>?
+runtime.correct("проверка набранного текста", requestID: typingID) { typingResult = $0 }
+runtime.cancelTypingCorrection(UUID())
+check(runtime, "второй запрос") { checkFailure($0, .busy) }
+runtime.cancelTypingCorrection(typingID)
+waitFor { typingResult != nil }
+guard case let .failure(typingError) = typingResult else { fatalError("expected typing cancellation") }
+precondition((typingError as? CocoaError)?.code == .userCancelled)
+
 var cancelled: Result<String, Error>?
 runtime.correct("тест завершения") { cancelled = $0 }
 runtime.shutdown()

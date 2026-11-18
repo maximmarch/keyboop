@@ -9,6 +9,8 @@ final class Engine: EventTapHandler {
     private let buffer = KeystrokeBuffer()
     private let eventTap = EventTap()
     let wordCompletion = WordCompletion()
+    private var sageTypingMode: SageTypingMode = .off
+    private var sageReady = false
 
     /// Переключить диктовку не с клавиатуры (быстрое действие в строке меню, задача 21).
     func toggleVoiceFromMenu() { eventTap.toggleVoiceExternally() }
@@ -260,12 +262,20 @@ final class Engine: EventTapHandler {
         if !didSetup {
             systemDoubleSpacePeriodEnabled = Self.readSystemDoubleSpacePeriodEnabled()
             eventTap.handler = self
+            sageTypingMode = settings.sageTypingMode
+            sageReady = SageRuntime.shared.state == .ready
+            NotificationCenter.default.addObserver(forName: SageRuntime.didChange, object: nil, queue: .main) { [weak self] _ in
+                let ready = SageRuntime.shared.state == .ready
+                self?.sageReady = ready
+                if !ready { SageCorrectionCoordinator.shared.cancelTyping() }
+            }
             // Смена активного приложения → контекст слова больше не достоверен.
             NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didActivateApplicationNotification,
                 object: nil, queue: .main
             ) { [weak self] _ in
                 self?.wordCompletion.resetInferenceContext()
+                SageCorrectionCoordinator.shared.cancelTyping()
                 // Активация ДРУГОГО приложения (уведомление/баннер/мигание фокуса) — каретка НЕ
                 // двигалась. НЕ полный clear (он «сиротил» набираемое слово → «ть»→«nm», баг 29.06):
                 // мягкий сброс перед следующим нажатием — забываем завершённый контекст, но НЕ
@@ -305,6 +315,10 @@ final class Engine: EventTapHandler {
             ) { [weak self] _ in
                 guard let self else { return }
                 self.wordCompletion.configurePersonalLearning(self.settings.personalPredictionEnabled)
+                if self.sageTypingMode != self.settings.sageTypingMode {
+                    self.sageTypingMode = self.settings.sageTypingMode
+                    SageCorrectionCoordinator.shared.cancelTyping()
+                }
                 let updated = self.settings.wordSuggestionPreferences
                 let spellcheck = self.settings.predictionSystemSpellingEnabled
                 if updated != suggestionPreferences || spellcheck != systemSpellingEnabled {
@@ -347,6 +361,7 @@ final class Engine: EventTapHandler {
             // об этом сам — и дальше всё идёт тем же путём, что и обычная смена программы.
             SpotlightWatch.onChange = { [weak self] in
                 self?.wordCompletion.resetInferenceContext()
+                SageCorrectionCoordinator.shared.cancelTyping()
                 self?.pendingSoftReset = true
                 self?.refreshFrontmostAppCache()
             }
@@ -544,6 +559,7 @@ final class Engine: EventTapHandler {
 
     func handleContextReset(at eventTime: TimeInterval) {
         wordCompletion.resetInferenceContext()
+        SageCorrectionCoordinator.shared.cancelTyping(through: eventTime)
         contextResetAt = eventTime
         // Клик/навигация двигает курсор — групповая история недействительна даже под muted (G10):
         // нашу синтетику мы шлём только с клавиатуры, mouse-down — всегда намерение пользователя.
@@ -931,6 +947,25 @@ final class Engine: EventTapHandler {
             && !IsSecureEventInputEnabled() && !HotkeyRecording.active
     }
 
+    func scheduleSageTyping(_ text: String, flags: CGEventFlags, at eventTime: TimeInterval) {
+        guard sageTypingMode != .off, sageReady, let pid = frontAppPID,
+              flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskSecondaryFn]).isEmpty,
+              text.count == 1, let key = text.first,
+              key.isLetter || key.isNumber || key.isPunctuation || key == " ",
+              canProofreadTyping() else { return }
+        SageCorrectionCoordinator.shared.observeTyping(key, in: pid, at: eventTime, mode: sageTypingMode,
+            isEligible: { [weak self] in self?.canProofreadTyping() ?? false },
+            didApply: { [weak self] in self?.handleContextReset(at: ProcessInfo.processInfo.systemUptime) })
+    }
+
+    private func canProofreadTyping() -> Bool {
+        sageReady && sageTypingMode != .off && !Pause.active
+            && !resolvedContext.appHardExcluded && resolvedContext.effectiveExceptionMode.isEmpty
+            && resolvedContext.matchedRule?.typoFix != .disable && !frontAppIsRemote
+            && !muted && !VoiceGate.isActive && !SnippetPicker.shared.isOpen && !SnippetInsertionCoordinator.shared.isFormActive
+            && !IsSecureEventInputEnabled() && !HotkeyRecording.active
+    }
+
     private func observePersonalTyping(_ text: String) {
         guard wordCompletion.personalLearningEnabled, canLearnPrediction() else { return }
         wordCompletion.observePersonalInput(text) { [weak self] in self?.canLearnPrediction() ?? false }
@@ -1013,6 +1048,7 @@ final class Engine: EventTapHandler {
     /// Только для лога решений. Имя (`localizedName`) тут звать нельзя — это NSWorkspace на горячем
     /// пути, а bundle id уже посчитан строкой ниже и стоит ноль.
     private var frontAppBID = ""
+    private var frontAppPID: pid_t?
     /// Иммутабельный снимок эффективных правил ввода (FR-4), пересчитанный на main.
     /// Горячий callback читает только его, без походов в UserDefaults/сокет/NSWorkspace.
     private(set) var resolvedContext: ResolvedInputContext = .empty
@@ -1024,6 +1060,8 @@ final class Engine: EventTapHandler {
     func refreshFrontmostAppCache() {
         let bid = Engine.frontmostBundleID()
         frontAppBID = bid
+        let frontApp = NSWorkspace.shared.frontmostApplication
+        frontAppPID = frontApp?.processIdentifier
         // ⚠️ ЧЕРЕЗ ОБЩИЙ ИСТОЧНИК, не напрямую в ExceptionStore. Здесь живёт кэш для ГОРЯЧЕГО пути
         // (мид-слово, pause-fix), и когда 30.07 мы исключили собственные окна в frontmostAppMode,
         // эта строка тихо осталась в обход — то есть правка закрыла границу слова, но не закрыла
@@ -1038,7 +1076,7 @@ final class Engine: EventTapHandler {
         // живой Figma 08.09.2026, разбор в TextReplacer.primeFirstKey). Ставим флаг здесь, потому
         // что здесь и так считается семейство, а `TextReplacer` статический и активного приложения
         // не знает. Один раз на смену фокуса — в горячий путь ничего не добавляется.
-        TextReplacer.primeFirstKey = frontAppIsChromium || Engine.isElectronApp(NSWorkspace.shared.frontmostApplication)
+        TextReplacer.primeFirstKey = frontAppIsChromium || Engine.isElectronApp(frontApp)
         // ⚠️ НЕ удлинять паузу перед первым Backspace для Chromium/Electron (пробовали 25.07: 9→40мс).
         // Симптом «остаётся первая буква» — это НЕ поздний backspace, а ГОНКА: пока летит асинхронная
         // пачка (пауза + бэкспейсы + Unicode), пользователь успевает нажать следующую клавишу, и она

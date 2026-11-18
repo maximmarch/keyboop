@@ -268,7 +268,12 @@ enum L10n {
         // Заголовок над «Исправлять опечатки» и «Две заглавные подряд»: обе правят текст, а не
         // раскладку, поэтому и переехали сюда из «Переключения» (автор 11.08).
         "sage.title": [.ru: "Корректор русского текста · SAGE", .en: "Russian proofreading · SAGE"],
-        "sage.detail": [.ru: "Выделите текст и выберите «Проверить выделенный текст» в меню Keyboop. Правки применяются после предпросмотра.", .en: "Select text and choose “Proofread Selected Text” in the Keyboop menu. Review the changes before applying them."],
+        "sage.detail": [.ru: "Проверяет последнее предложение после паузы в наборе. Работает локально в поддерживаемых полях.", .en: "Checks the last sentence after a pause in typing. Runs on this Mac in supported text fields."],
+        "sage.typing.mode": [.ru: "Исправления при наборе", .en: "Corrections while typing"],
+        "sage.typing.automatic": [.ru: "Автоматически", .en: "Automatically"],
+        "sage.typing.confirmation": [.ru: "С подтверждением", .en: "Ask Before Applying"],
+        "sage.typing.off": [.ru: "Выкл.", .en: "Off"],
+        "sage.typing.preview": [.ru: "SAGE предлагает исправление", .en: "SAGE suggested a correction"],
         "sage.command": [.ru: "Проверить выделенный текст", .en: "Proofread Selected Text"],
         "sage.download": [.ru: "Скачать SAGE (%@)", .en: "Download SAGE (%@)"],
         "sage.status.missing": [.ru: "SAGE Distilled 95M нужно скачать", .en: "Download SAGE Distilled 95M to get started"],

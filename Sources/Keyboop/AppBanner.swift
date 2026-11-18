@@ -23,8 +23,10 @@ final class AppBanner {
     private var onAbandon: (() -> Void)?
 
     func show(title: String, body: String, actions: [Action] = [], autoDismiss: TimeInterval = 0,
+              shouldPresent: (() -> Bool)? = nil,
               onClose: (() -> Void)? = nil, onAbandon: (() -> Void)? = nil) {
         DispatchQueue.main.async {
+            guard shouldPresent?() != false else { return }
             self.present(title: title, body: body, actions: actions, autoDismiss: autoDismiss,
                          onClose: onClose, onAbandon: onAbandon)
         }

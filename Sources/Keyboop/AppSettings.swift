@@ -166,6 +166,10 @@ final class AppSettings {
         get { d.bool(forKey: "predictionSystemSpellingEnabled") }
         set { d.set(newValue, forKey: "predictionSystemSpellingEnabled") }
     }
+    var sageTypingMode: SageTypingMode {
+        get { d.string(forKey: "sageTypingMode").flatMap(SageTypingMode.init(rawValue:)) ?? .automatic }
+        set { d.set(newValue.rawValue, forKey: "sageTypingMode") }
+    }
     var wordSuggestionsEnabled: Bool { wordCompletionEnabled || nextWordEnabled }
     var personalPredictionEnabled: Bool {
         get { d.bool(forKey: "personalPredictionEnabled") }

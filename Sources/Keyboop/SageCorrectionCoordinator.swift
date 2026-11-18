@@ -1,15 +1,107 @@
 import AppKit
 import Carbon
 
-/// Invoked explicitly from the status menu. The model never observes ongoing typing.
+/// Coordinates explicit selection checks and optional proofreading after a typing pause.
 final class SageCorrectionCoordinator {
     static let shared = SageCorrectionCoordinator()
 
     private var checking = false
     private var preview: TypographyPreviewPanelController?
+    private let typingWorker = DispatchQueue(label: "ru.keyboop.sage-typing", qos: .userInitiated)
+    private var suggestionBanner: AppBanner?
+    private var typingDebounce: DispatchWorkItem?
+    private var typingID: UUID?
+    private var runningTypingID: UUID?
+    private var typingAt: TimeInterval = 0
+
+    func cancelTyping(through eventTime: TimeInterval = .infinity) {
+        guard typingID != nil, typingAt <= eventTime else { return }
+        typingID = nil
+        typingDebounce?.cancel()
+        typingDebounce = nil
+        if let runningTypingID {
+            SageRuntime.shared.cancelTypingCorrection(runningTypingID)
+            self.runningTypingID = nil
+        }
+        suggestionBanner?.dismiss()
+        suggestionBanner = nil
+    }
+
+    func observeTyping(_ key: Character, in pid: pid_t, at eventTime: TimeInterval, mode: SageTypingMode,
+                       isEligible: @escaping () -> Bool, didApply: @escaping () -> Void) {
+        guard mode != .off, !checking, preview == nil else { return }
+        let id = UUID()
+        typingID = id
+        typingAt = eventTime
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.typingID == id else { return }
+            self.typingDebounce = nil
+            guard isEligible(), AppSettings.shared.sageTypingMode == mode, SageRuntime.shared.state == .ready else {
+                self.cancelTyping()
+                return
+            }
+            self.typingWorker.async { [weak self] in
+                let target = SelectionText.typingTarget(in: pid, afterTyping: key)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.typingID == id else { return }
+                    guard let target, isEligible(), AppSettings.shared.sageTypingMode == mode else {
+                        self.cancelTyping()
+                        return
+                    }
+                    self.proofread(target, id: id, mode: mode, isEligible: isEligible, didApply: didApply)
+                }
+            }
+        }
+        typingDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(850), execute: work)
+    }
+
+    private func proofread(_ target: SelectionText.TypingTarget, id: UUID, mode: SageTypingMode,
+                           isEligible: @escaping () -> Bool, didApply: @escaping () -> Void) {
+        runningTypingID = id
+        SageRuntime.shared.correct(target.text, requestID: id) { [weak self] result in
+            guard let self, self.typingID == id else { return }
+            self.runningTypingID = nil
+            guard isEligible(), AppSettings.shared.sageTypingMode == mode,
+                  case let .success(answer) = result,
+                  let edit = SageCorrectionText.typingEdit(from: target.text, to: answer) else {
+                self.cancelTyping()
+                return
+            }
+            let apply = { [weak self] in
+                guard let self, self.typingID == id else { return }
+                self.cancelTyping()
+                guard isEligible(), AppSettings.shared.sageTypingMode == mode,
+                      target.replace(edit) else { return }
+                didApply()
+            }
+            switch mode {
+            case .automatic:
+                apply()
+            case .confirmation:
+                guard target.isCurrent() else { self.cancelTyping(); return }
+                let corrected = (target.text as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
+                let banner = AppBanner()
+                self.suggestionBanner = banner
+                banner.show(
+                    title: L10n.t("sage.typing.preview"), body: corrected,
+                    actions: [.init(title: L10n.t("typo.preview.apply"), coral: true, handler: apply)],
+                    autoDismiss: 12,
+                    shouldPresent: { [weak self] in self?.typingID == id && isEligible() },
+                    onAbandon: { [weak self] in
+                        guard let self, self.typingID == id else { return }
+                        self.cancelTyping()
+                    }
+                )
+            case .off:
+                self.cancelTyping()
+            }
+        }
+    }
 
     func checkSelection(in app: NSRunningApplication?, openSettings: () -> Void, didApply: @escaping () -> Void) {
         guard !checking, preview == nil else { show("sage.error.busy"); return }
+        cancelTyping()
         switch SageRuntime.shared.state {
         case .missing, .failed:
             openSettings()

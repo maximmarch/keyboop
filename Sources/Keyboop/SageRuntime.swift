@@ -64,9 +64,14 @@ final class SageRuntime {
     }
 
     private final class Correction {
+        let id: UUID?
         let completion: (Result<String, Error>) -> Void
         var process: Process?
-        init(_ completion: @escaping (Result<String, Error>) -> Void) { self.completion = completion }
+
+        init(id: UUID?, completion: @escaping (Result<String, Error>) -> Void) {
+            self.id = id
+            self.completion = completion
+        }
     }
 
     private let queue = DispatchQueue(label: "ru.keyboop.sage-runtime", qos: .utility)
@@ -221,7 +226,7 @@ final class SageRuntime {
 
     // MARK: Correction
 
-    func correct(_ text: String, completion: @escaping (Result<String, Error>) -> Void) {
+    func correct(_ text: String, requestID: UUID? = nil, completion: @escaping (Result<String, Error>) -> Void) {
         queue.async { [self] in
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return Self.deliver(.failure(Failure.empty), completion)
@@ -237,7 +242,7 @@ final class SageRuntime {
                 return Self.deliver(.failure(installed == .unavailable ? Failure.unavailable : Failure.missing), completion)
             }
 
-            let job = Correction(completion)
+            let job = Correction(id: requestID, completion: completion)
             self.correction = job
             self.queue.asyncAfter(deadline: .now() + self.timeout) { [weak self, weak job] in
                 guard let self, let job, self.correction === job else { return }
@@ -249,6 +254,13 @@ final class SageRuntime {
                 let result = Result { try self.runCorrection(text, job: job) }
                 self.queue.async { self.completeCorrection(job, result: result) }
             }
+        }
+    }
+
+    func cancelTypingCorrection(_ id: UUID) {
+        queue.async { [self] in
+            guard correction?.id == id else { return }
+            cancelCorrection()
         }
     }
 

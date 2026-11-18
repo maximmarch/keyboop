@@ -4,6 +4,7 @@ import AppKit
 final class SageSettingsControls: NSStackView {
     private let runtime = SageRuntime.shared
     private let status = NSTextField(wrappingLabelWithString: "")
+    private let mode = NSPopUpButton(frame: .zero, pullsDown: false)
     private let action = NSButton(title: "", target: nil, action: nil)
 
     init() {
@@ -20,11 +21,25 @@ final class SageSettingsControls: NSStackView {
         let detail = NSTextField(wrappingLabelWithString: L10n.t("sage.detail"))
         detail.textColor = .secondaryLabelColor
         status.textColor = .secondaryLabelColor
-        for label in [detail, status] {
-            label.font = .systemFont(ofSize: 12)
-            addArrangedSubview(label)
-            label.widthAnchor.constraint(equalTo: widthAnchor, constant: -28).isActive = true
-        }
+        detail.font = .systemFont(ofSize: 12)
+        addArrangedSubview(detail)
+        detail.widthAnchor.constraint(equalTo: widthAnchor, constant: -28).isActive = true
+
+        mode.addItems(withTitles: SageTypingMode.allCases.map { L10n.t($0.localizationKey) })
+        mode.target = self
+        mode.action = #selector(changeTypingMode)
+        let modeLabel = NSTextField(labelWithString: L10n.t("sage.typing.mode"))
+        modeLabel.font = .systemFont(ofSize: 12)
+        mode.setAccessibilityLabel(modeLabel.stringValue)
+        let modeRow = NSStackView(views: [modeLabel, mode])
+        modeRow.orientation = .horizontal
+        modeRow.alignment = .centerY
+        modeRow.spacing = 8
+        addArrangedSubview(modeRow)
+
+        status.font = .systemFont(ofSize: 12)
+        addArrangedSubview(status)
+        status.widthAnchor.constraint(equalTo: widthAnchor, constant: -28).isActive = true
 
         action.target = self
         action.action = #selector(manageModel)
@@ -36,6 +51,9 @@ final class SageSettingsControls: NSStackView {
     required init?(coder: NSCoder) { fatalError("init(coder:)") }
 
     @objc private func refresh() {
+        if let index = SageTypingMode.allCases.firstIndex(of: AppSettings.shared.sageTypingMode) {
+            mode.selectItem(at: index)
+        }
         let byteCount = ByteCountFormatter.string(fromByteCount: runtime.downloadByteCount, countStyle: .file)
         let download = L10n.t("sage.download", byteCount)
         action.isEnabled = true
@@ -57,6 +75,12 @@ final class SageSettingsControls: NSStackView {
             status.stringValue = L10n.t(error.localizationKey)
             action.title = download
         }
+    }
+
+    @objc private func changeTypingMode() {
+        guard SageTypingMode.allCases.indices.contains(mode.indexOfSelectedItem) else { return }
+        AppSettings.shared.sageTypingMode = SageTypingMode.allCases[mode.indexOfSelectedItem]
+        SageCorrectionCoordinator.shared.cancelTyping()
     }
 
     @objc private func manageModel() {

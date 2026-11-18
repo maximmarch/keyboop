@@ -488,3 +488,152 @@ extension SelectionText {
         return ch.isLetter ? .letter : .boundary
     }
 }
+
+extension SelectionText {
+    /// A bounded snapshot at a collapsed caret. Auto-proofreading uses only editors with
+    /// native AX range and selected-text setters.
+    struct TypingTarget {
+        let text: String
+        fileprivate let field: TypingField
+        fileprivate let range: NSRange
+
+        func isCurrent() -> Bool {
+            guard let current = SelectionText.typingField(in: field.pid) else { return false }
+            return CFEqual(field.element, current.element) && field.position == current.position
+                && field.length == current.length
+                && field.before.utf16.elementsEqual(current.before.utf16)
+                && field.after.utf16.elementsEqual(current.after.utf16)
+        }
+
+        func replace(_ edit: SageCorrectionText.TypingEdit) -> Bool {
+            guard isCurrent() else { return false }
+            let element = field.element
+            let change = NSRange(location: range.location + edit.range.location, length: edit.range.length)
+            var applied = false
+            var caret = field.position
+            defer {
+                if SelectionText.focusedTypingElement(in: field.pid).map({ CFEqual($0, element) }) == true,
+                   applied || SelectionText.typingSelection(in: element) == change {
+                    _ = SelectionText.setTypingSelection(NSRange(location: caret, length: 0), in: element)
+                }
+            }
+            guard SelectionText.setTypingSelection(change, in: element),
+                  SelectionText.typingSelection(in: element) == change,
+                  SelectionText.focusedTypingElement(in: field.pid).map({ CFEqual($0, element) }) == true else { return false }
+            let expected = (text as NSString).substring(with: edit.range)
+            let original = expected.isEmpty ? "" : SelectionText.typingText(in: element, range: change)
+            guard original?.utf16.elementsEqual(expected.utf16) == true else { return false }
+
+            let result = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString,
+                                                      edit.replacement as CFTypeRef)
+            let corrected = (text as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
+            let updatedRange = NSRange(location: range.location, length: corrected.utf16.count)
+            applied = SelectionText.typingText(in: element, range: updatedRange)?.utf16.elementsEqual(corrected.utf16) == true
+            if applied { caret = NSMaxRange(updatedRange) }
+            return applied || result == .success
+        }
+    }
+
+    fileprivate struct TypingField {
+        let pid: pid_t
+        let element: AXUIElement
+        let position: Int
+        let length: Int
+        let before: String
+        let after: String
+    }
+
+    static func typingTarget(in pid: pid_t, afterTyping key: Character) -> TypingTarget? {
+        guard let field = typingField(in: pid), let last = field.before.last,
+              last == key || (key == " " && last.isWhitespace && !last.isNewline),
+              field.after.isEmpty || field.after.first?.isNewline == true,
+              let local = SageCorrectionText.typingRange(before: field.before,
+                                                         startsAtFieldStart: field.position == field.before.utf16.count) else { return nil }
+        let start = field.position - field.before.utf16.count + local.location
+        return TypingTarget(text: (field.before as NSString).substring(with: local), field: field,
+                            range: NSRange(location: start, length: local.length))
+    }
+
+    private static func typingField(in pid: pid_t) -> TypingField? {
+        guard let element = focusedTypingElement(in: pid),
+              typingAttribute(element, kAXSubroleAttribute) as? String != kAXSecureTextFieldSubrole as String,
+              typingAttribute(element, kAXEnabledAttribute) as? Bool != false,
+              let selected = typingSelection(in: element), selected.length == 0, selected.location > 0 else { return nil }
+        let owner = ownerApp(of: element)
+        guard !isGecko(bundleID: owner.bid, bundleURL: owner.url) else { return nil }
+        for name in [kAXSelectedTextRangeAttribute, kAXSelectedTextAttribute] {
+            var writable = DarwinBoolean(false)
+            guard AXUIElementIsAttributeSettable(element, name as CFString, &writable) == .success,
+                  writable.boolValue else { return nil }
+        }
+
+        let start = max(0, selected.location - SageCorrectionText.typingWindowLength)
+        let left = NSRange(location: start, length: selected.location - start)
+        if let length = typingAttribute(element, kAXNumberOfCharactersAttribute) as? Int, length >= selected.location,
+           let before = typingText(in: element, range: left),
+           let after = typingText(in: element, range: NSRange(location: selected.location,
+                                                              length: min(16, length - selected.location))) {
+            return TypingField(pid: pid, element: element, position: selected.location, length: length,
+                               before: before, after: after)
+        }
+        guard let value = typingAttribute(element, kAXValueAttribute) as? NSString,
+              value.length <= 16_384, value.length >= selected.location else { return nil }
+        return TypingField(pid: pid, element: element, position: selected.location, length: value.length,
+                           before: value.substring(with: left),
+                           after: value.substring(with: NSRange(location: selected.location,
+                                                                length: min(16, value.length - selected.location))))
+    }
+
+    private static func focusedTypingElement(in pid: pid_t) -> AXUIElement? {
+        guard !IsSecureEventInputEnabled(), pid != ProcessInfo.processInfo.processIdentifier,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return nil }
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.08)
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.08)
+        guard let focus = typingAttribute(system, kAXFocusedUIElementAttribute)
+                ?? typingAttribute(app, kAXFocusedUIElementAttribute),
+              CFGetTypeID(focus) == AXUIElementGetTypeID() else { return nil }
+        let element = focus as! AXUIElement
+        var owner: pid_t = 0
+        guard AXUIElementGetPid(element, &owner) == .success, owner == pid else { return nil }
+        AXUIElementSetMessagingTimeout(element, 0.08)
+        guard typingAttribute(element, kAXRoleAttribute) as? String != kAXSecureTextFieldSubrole as String else { return nil }
+        return element
+    }
+
+    private static func typingAttribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+        var result: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &result) == .success else { return nil }
+        return result
+    }
+
+    private static func typingSelection(in element: AXUIElement) -> NSRange? {
+        var range = CFRange()
+        guard let value = typingAttribute(element, kAXSelectedTextRangeAttribute),
+              CFGetTypeID(value) == AXValueGetTypeID(),
+              AXValueGetValue(value as! AXValue, .cfRange, &range), range.location >= 0, range.length >= 0 else { return nil }
+        return NSRange(location: range.location, length: range.length)
+    }
+
+    private static func setTypingSelection(_ range: NSRange, in element: AXUIElement) -> Bool {
+        var selection = CFRange(location: range.location, length: range.length)
+        guard let value = AXValueCreate(.cfRange, &selection) else { return false }
+        return AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success
+    }
+
+    private static func typingText(in element: AXUIElement, range: NSRange) -> String? {
+        guard range.length > 0 else { return "" }
+        var parameter = CFRange(location: range.location, length: range.length)
+        guard let value = AXValueCreate(.cfRange, &parameter) else { return nil }
+        var result: CFTypeRef?
+        if AXUIElementCopyParameterizedAttributeValue(element, kAXStringForRangeParameterizedAttribute as CFString,
+                                                      value, &result) == .success, let text = result as? String,
+           text.utf16.count == range.length {
+            return text
+        }
+        guard let full = typingAttribute(element, kAXValueAttribute) as? NSString,
+              full.length <= 16_384, NSMaxRange(range) <= full.length else { return nil }
+        return full.substring(with: range)
+    }
+}

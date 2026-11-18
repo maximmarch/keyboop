@@ -461,6 +461,7 @@ final class EventTap {
             swallowedDownKeyCodes.removeAll()
             wordCompletionHeldKey = nil
             (handler as? Engine)?.wordCompletion.resetInferenceContext()
+            SageCorrectionCoordinator.shared.cancelTyping()
             // ⚠️ Проглоченный keyDown тоже сбрасываем: пока тап был мёртв, его keyUp прошёл мимо, и
             // метка «эту клавишу мы съели» пережила бы смерть тапа, съев чужое отпускание.
             inlineSwallowedKeyCodeReset()
@@ -525,6 +526,7 @@ final class EventTap {
                 return swallowDown(keyCode)
             }
             let engine = handler as? Engine
+            SageCorrectionCoordinator.shared.cancelTyping()
             let completionMods = s.wordCompletionModifiers
             let completionKey = engine?.wordCompletion.hasSuggestion == true && s.wordSuggestionsEnabled
                 && keyMatches(keyCode, s.wordCompletionKeyCode)
@@ -868,8 +870,9 @@ final class EventTap {
             // sink живёт РОВНО на время колбэка: proxy валиден только здесь (Apple: использовать
             // его после возврата нельзя). Engine принимает его как обычное замыкание и не хранит.
             let post: (CGEvent) -> Void = { $0.tapPostEvent(proxy) }
+            let eventTime = Self.eventUptime(event)
             if handler?.handleKeyDown(keyCode: keyCode, characters: chars, flags: event.flags,
-                                      eventTime: Self.eventUptime(event), post: post) == true {
+                                      eventTime: eventTime, post: post) == true {
                 // Здесь НЕ регистрируем парность: за inline-замену учёт ведёт Engine
                 // (inlineSwallowedKeyCode → consumeInlineSwallowedKeyUp), и двойной учёт съел бы
                 // keyUp дважды. ⚠️ Но handleKeyDown возвращает true из ТРЁХ мест, а метку ставит
@@ -883,6 +886,7 @@ final class EventTap {
             // keyUp когда-то потерялся (переключение из приложения с зажатой клавишей), запись в
             // наборе съела бы отпускание СЛЕДУЮЩЕГО, честного нажатия. Так набор самоизлечивается.
             swallowedDownKeyCodes.remove(keyCode)
+            engine?.scheduleSageTyping(chars, flags: event.flags, at: eventTime)
         case .keyUp:
             // F3: keyDown этой клавиши мы проглотили inline-заменой → её keyUp тоже нельзя пускать,
             // иначе Chromium/Qt/игры получают непарное «отпускание» клавиши, которую не нажимали.
