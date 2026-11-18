@@ -52,7 +52,6 @@ enum CueSynth {
 
     /// Звук перевода: тёплое восходящее трезвучие (три ноты) — «преобразование / перетекание
     /// смысла из языка в язык». Отличается от двухтонового «тук-тук» конвертации и записи.
-    static let translateData: Data = makeTriTone(330, 415, 523)                      // до-ми-соль ↗ мажор
 
     // ── Пасхалка: «мяу» по ПЯТИкратному клику на версию (одиночный — ничего) ──
     private static var eggCount = 0
@@ -102,16 +101,6 @@ enum CueSynth {
         appendTone(&s, f1, toneDur)
         appendSilence(&s, gapDur)
         appendTone(&s, f2, toneDur)
-        return wav(s)
-    }
-
-    private static func makeTriTone(_ f1: Double, _ f2: Double, _ f3: Double) -> Data {
-        var s: [Int16] = []
-        appendTone(&s, f1, toneDur)
-        appendSilence(&s, gapDur * 0.6)   // ноты ближе друг к другу — слитное арпеджио, не «тук-тук-тук»
-        appendTone(&s, f2, toneDur)
-        appendSilence(&s, gapDur * 0.6)
-        appendTone(&s, f3, toneDur)
         return wav(s)
     }
 

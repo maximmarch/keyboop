@@ -6,7 +6,7 @@ final class SageCorrectionCoordinator {
     static let shared = SageCorrectionCoordinator()
 
     private var checking = false
-    private var preview: TypographyPreviewPanelController?
+    private var preview: SageCorrectionPreview?
     private let typingWorker = DispatchQueue(label: "ru.keyboop.sage-typing", qos: .userInitiated)
     private var suggestionBanner: AppBanner?
     private var typingDebounce: DispatchWorkItem?
@@ -151,7 +151,7 @@ final class SageCorrectionCoordinator {
 
     private func showPreview(_ corrected: String, for selection: SelectionText.CorrectionTarget,
                              in app: NSRunningApplication, near caret: NSRect?, didApply: @escaping () -> Void) {
-        let panel = TypographyPreviewPanelController(
+        let panel = SageCorrectionPreview(
             originalText: selection.text,
             transformedText: corrected,
             title: L10n.t("sage.command"),

@@ -185,7 +185,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.openAddSiteRule(domain: domain, browser: browser)
         }
         menuBar.onShowVoiceHistory = { [weak self] in self?.openVoiceHistory() }
-        menuBar.onShowPasteQueue = { [weak self] in self?.openPasteQueue() }
         menuBar.onQuickDictate = { [weak self] in self?.engine.toggleVoiceFromMenu() }
         menuBar.onProofreadSelection = { [weak self] app in
             SageCorrectionCoordinator.shared.checkSelection(
@@ -267,8 +266,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.promptModelDownload() }
         }
         VoiceController.shared.preload()   // прогрев модели в фоне → первое нажатие диктовки без задержки
-        VoiceHistory.migrateKeyIfNeeded()  // ключ истории: старый .histkey → Keychain (security-аудит M1, 01.07)
-        ClipboardWatcher.shared.apply()    // история буфера (задача 228): живёт только при явном тумблере
         CallRecorder.recoverUnfinishedSessions()   // запись звонка, оборванная крэшем или выключением (230)
 
         // Dev-помощник: запуск с --settings[=snippets] сразу открывает Настройки (на нужном разделе).
@@ -1244,14 +1241,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             historyWC?.onOpenVoiceSettings = { [weak self] in self?.openSettings(section: .voice) }
         }
         historyWC?.show()
-    }
-
-    private func openPasteQueue() {
-        if historyWC == nil {
-            historyWC = VoiceHistoryWindowController()
-            historyWC?.onOpenVoiceSettings = { [weak self] in self?.openSettings(section: .voice) }
-        }
-        historyWC?.showQueue()
     }
 
     // MARK: - Шлепок по MacBook (задача 35)

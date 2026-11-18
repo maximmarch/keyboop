@@ -191,29 +191,21 @@ enum VoiceClips {
 
     static func exists(_ id: String) -> Bool { FileManager.default.fileExists(atPath: url(id).path) }
 
-    static func delete(_ id: String) { try? FileManager.default.removeItem(at: url(id)) }
+    static func delete(_ id: String) { _ = removeUnreferenced(id) }
 
-    /// Снести все клипы разом (выключение опции, «очистить историю», кнопка в настройках).
-    static func deleteAll() {
-        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
-        for f in files where f.pathExtension == "enc" { try? FileManager.default.removeItem(at: f) }
-    }
-
-    /// Оставить на диске только те клипы, которые кто-то ещё держит за руку.
-    ///
-    /// ⚠️ Нужен именно СБОРЩИК СИРОТ, а не только точечное удаление. Запись истории может исчезнуть
-    /// путём, который про файл ничего не знает: перевыпуск ключа шифрования (`resolveKey` делает это
-    /// молча, когда связка перестала узнавать подпись) обнуляет историю целиком, и без уборки клипы
-    /// остались бы лежать навсегда, да ещё и нечитаемыми, потому что старым ключом их уже не открыть.
-    static func keepOnly(_ ids: Set<String>) {
-        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
-        var killed = 0
-        for f in files where f.pathExtension == "enc" {
-            if !ids.contains(f.deletingPathExtension().lastPathComponent) {
-                try? FileManager.default.removeItem(at: f); killed += 1
-            }
+    /// Returns false for retry after a committed history update. No clip identifier
+    /// or filesystem error is written to the log.
+    static func removeUnreferenced(_ id: String) -> Bool {
+        guard UUID(uuidString: id) != nil else { return false }
+        do {
+            try FileManager.default.removeItem(at: url(id))
+            return true
+        } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            return true
+        } catch {
+            kbLog("voice history: deferred cleanup of an unreferenced clip")
+            return false
         }
-        if killed > 0 { kbLog("аудио диктовки: убрано \(killed) осиротевших клипов") }
     }
 
     /// Сколько всего занято на диске, байт. Для честной строки в настройках.

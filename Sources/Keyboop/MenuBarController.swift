@@ -24,7 +24,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onAddSiteRule: ((_ domain: String, _ browser: SiteBrowser) -> Void)?
     private var pendingQuickSite: (domain: String, browser: SiteBrowser)?
     var onShowVoiceHistory: (() -> Void)?
-    var onShowPasteQueue: (() -> Void)?
     /// Старт диктовки из быстрого действия (задача 21).
     var onQuickDictate: (() -> Void)?
     var onProofreadSelection: ((NSRunningApplication?) -> Void)?
@@ -810,7 +809,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             addLayoutTwins(of: copyLast, keyCode: 8)   // c
         }
 
-        menu.addItem(makePasteQueueMenu())
         let proofreading = NSMenuItem(title: L10n.t("sage.command"), action: #selector(proofreadSelection), keyEquivalent: "")
         proofreading.target = self
         proofreading.image = icon("checkmark.bubble")
@@ -993,61 +991,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         return parts.joined(separator: ", ")
     }
     @objc private func showVoiceHistory() { onShowVoiceHistory?() }
-    @objc private func showPasteQueue() { onShowPasteQueue?() }
-    @objc private func queueAddClipboard() { PasteQueueSystem.addClipboard() }
-    @objc private func queueAddSelection() { PasteQueueSystem.addSelection() }
-    @objc private func queuePasteNext() { PasteQueueCoordinator.shared.pasteNext() }
-    @objc private func queueRestart() { PasteQueueStore.shared.restart() }
-    @objc private func queueClear() { PasteQueueStore.shared.clear() }
-
-    private func makePasteQueueMenu() -> NSMenuItem {
-        let store = PasteQueueStore.shared
-        let count = store.items.count
-        let title = count > 0 ? "\(L10n.t("menu.pq")) (\(count))" : L10n.t("menu.pq")
-        let root = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        root.image = icon("list.number")
-        let sub = NSMenu()
-        sub.autoenablesItems = false
-
-        let next = NSMenuItem(title: L10n.t("menu.pq.next"), action: #selector(queuePasteNext), keyEquivalent: "")
-        next.target = self
-        next.isEnabled = !store.items.isEmpty && !store.isCompleted && !store.isPausedAfterPartial
-        sub.addItem(next)
-
-        let addClip = NSMenuItem(title: L10n.t("menu.pq.addClipboard"), action: #selector(queueAddClipboard), keyEquivalent: "")
-        addClip.target = self
-        sub.addItem(addClip)
-
-        let addSel = NSMenuItem(title: L10n.t("menu.pq.addSelection"), action: #selector(queueAddSelection), keyEquivalent: "")
-        addSel.target = self
-        sub.addItem(addSel)
-
-        sub.addItem(.separator())
-
-        let open = NSMenuItem(title: L10n.t("menu.pq.open"), action: #selector(showPasteQueue), keyEquivalent: "")
-        open.target = self
-        sub.addItem(open)
-
-        let restart = NSMenuItem(title: L10n.t("menu.pq.restart"), action: #selector(queueRestart), keyEquivalent: "")
-        restart.target = self
-        restart.isEnabled = !store.items.isEmpty
-        sub.addItem(restart)
-
-        let clear = NSMenuItem(title: L10n.t("menu.pq.clear"), action: #selector(queueClear), keyEquivalent: "")
-        clear.target = self
-        clear.isEnabled = !store.items.isEmpty
-        sub.addItem(clear)
-
-        root.submenu = sub
-        return root
-    }
     @objc private func checkUpdatesItem() { onCheckUpdates?() }
 
     /// «Скопировать последнюю диктовку» (задача T40).
     ///
     /// ⚠️ Единственное место во всём приложении, где мы СОЗНАТЕЛЬНО и НЕОБРАТИМО пишем в буфер обмена.
     /// Принцип №1 запрещает трогать буфер ради своих нужд (поэтому и замена текста идёт печатью
-    /// Unicode, а чтение выделения через ⌘C восстанавливает буфер — SelectionText.swift). Здесь запись
+    /// Unicode. Здесь запись
     /// буфера и ЕСТЬ то, о чём человек попросил, поэтому ничего не восстанавливаем.
     @objc private func copyLastDictation() {
         // Пароль на историю (HistoryGate) действует и на этот пункт. Иначе последнюю расшифровку можно

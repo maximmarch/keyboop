@@ -505,8 +505,8 @@ final class CallRecorder {
             if let data = Self.mergeSegments(in: dir, names: s.segments) { clip = VoiceClips.saveEncoded(data, wave: wave) }
         }
         DispatchQueue.main.async { [self] in
-            defer {
-                if let dir { try? FileManager.default.removeItem(at: dir) }
+            func finish(removeSession: Bool) {
+                if removeSession, let dir { try? FileManager.default.removeItem(at: dir) }
                 session = nil; sessionDir = nil; stopping = false
                 // Модели звонок больше не нужен. Зовём ПОСЛЕ снятия `stopping`: выгрузка после
                 // диктовки (настройка) смотрит на `isBusy` и иначе пропустила бы этот раз.
@@ -538,12 +538,15 @@ final class CallRecorder {
                 } else {
                     VoiceIndicator.shared.showToast(L10n.t("call.empty"))
                 }
+                finish(removeSession: true)
                 return
             }
             VoiceHistory.shared.addImported(text, fileName: CallSession.title(app: s.app, recovered: false),
-                                            audio: clip?.id, wave: clip?.wave, kind: .call)
-            kbLog("звонок: сохранён, \(text.count) симв., \(chunksDone) кусков, \(ImportProgressFormat.clock(seconds)), клип \(clip == nil ? "нет" : "есть")")
-            VoiceIndicator.shared.showToast(L10n.t(reason == .stalled ? "call.savedAfterStall" : "call.saved"))
+                                            audio: clip?.id, wave: clip?.wave, kind: .call) { result in
+                finish(removeSession: result == .saved)
+                guard result == .saved else { VoiceHistory.reportFailure(result); return }
+                VoiceIndicator.shared.showToast(L10n.t(reason == .stalled ? "call.savedAfterStall" : "call.saved"))
+            }
         }
     }
 

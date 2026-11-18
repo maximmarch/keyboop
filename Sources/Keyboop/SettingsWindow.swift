@@ -63,7 +63,7 @@ enum SettingsSection: Int, CaseIterable {
     /// функции, потом система, потом «про нас». Голосовой набор стоит третьим, а не пятым: это
     /// второй двигатель приложения и первая тема по числу отзывов (21 из 73 содержательных).
     /// `rawValue` нигде не сохраняется, поэтому переставлять здесь безопасно.
-    case switching, predictiveInput, exceptions, sites, ambiguous, voice, snippets, typography, translate, general, updates, privacy, about
+    case switching, predictiveInput, exceptions, sites, ambiguous, voice, snippets, typography, general, updates, privacy, about
 
     /// Что показываем в левом меню. «Спорные слова» — подстраница «Исключений» (кнопка внутри):
     /// в меню это был бы одиннадцатый пункт ради списка, который открывают раз в жизни.
@@ -90,7 +90,6 @@ enum SettingsSection: Int, CaseIterable {
         case .ambiguous:  return "sec.ambiguous"
         case .snippets:   return "sec.snippets"
         case .typography: return "sec.typography"
-        case .translate:  return "sec.translate"
         case .voice:      return "sec.voice"
         case .general:    return "sec.general"
         case .updates:    return "sec.updates"
@@ -107,7 +106,6 @@ enum SettingsSection: Int, CaseIterable {
         case .ambiguous:  return "arrow.left.arrow.right"
         case .snippets:   return "wand.and.stars"
         case .typography: return "textformat.abc"
-        case .translate:  return "character.bubble"
         case .voice:      return "mic"
         case .general:    return "gearshape"
         case .updates:    return "arrow.triangle.2.circlepath"
@@ -1388,7 +1386,6 @@ final class DetailVC: NSViewController {
         case .ambiguous:  built = buildAmbiguous()
         case .snippets:   built = buildSnippets()
         case .typography: built = buildTypography()
-        case .translate:  built = buildTranslate()
         case .voice:      built = buildVoice()
         case .general:    built = buildGeneral()
         case .updates:    built = buildUpdates()
@@ -1692,8 +1689,6 @@ final class DetailVC: NSViewController {
     /// Бокового меню нет вовсе: список разделов это обещание, что дальше есть ещё, а в простом
     /// режиме дальше ничего быть не должно.
     private func buildSimpleRoot() -> NSView {
-        let translateAvailable: Bool
-        if #available(macOS 15.0, *) { translateAvailable = true } else { translateAvailable = false }
 
         // ⚠️ ОДНА ПАНЕЛЬ, А НЕ ЧЕТЫРЕ ПОДЛОЖКИ (автор 15.08: «не делать отдельную подложку для каждой
         // опции, чтобы всё смотрелось как одна красивая панель»). В Pro карточки группируют настройки
@@ -1707,7 +1702,6 @@ final class DetailVC: NSViewController {
         // для русского, обрежет английский (или наоборот).
         let manualKey = HotkeyControl()
         let voiceKey = VoiceHotkeyControl()
-        let translateKey = TranslateHotkeyControl()
         var rows: [NSView] = [
             controlRow(L10n.t("root.manual"), manualKey, subtitle: L10n.t("root.manualSub"),
                        help: L10n.t("switch.manualHelp"), key: "switch.manual", wraps: true),
@@ -1716,25 +1710,18 @@ final class DetailVC: NSViewController {
                                                                           : "root.voiceKeySubHold"),
                        help: L10n.t("root.voiceKeyHelp"), key: "voice.hotkey", wraps: true)
         ]
-        rows.append(controlRow(L10n.t("root.tr"), translateKey, enabled: translateAvailable,
-                               subtitle: L10n.t("root.trSub"), help: L10n.t("root.trHelp"),
-                               key: "tr.hotkey", wraps: true))
-
         // ⚠️ МЕСТО ПОД ШАПКУ СЧИТАЕТСЯ, А НЕ ЗАДАЁТСЯ ЧИСЛОМ. Здесь стояла константа 58, замеренная
         // по живому окну. Появилась панель инструментов, `safeAreaInsets.top` вырос на её высоту, и
         // те же 58 превратились в дыру на пол-экрана: содержимое и так уже сдвинуто вниз. Число,
         // замеренное по окну, живёт ровно до следующей правки окна, поэтому его тут больше нет.
         var items: [NSView] = [group(headerRoom), card(rows, vPad: 8)]
-        if !translateAvailable { items += [group(6), hint(L10n.t("wel.trNeedOS"))] }
         items += [group(6), rootFooter()]
         let root = vstack(items)
 
         // ⚠️ СВЯЗЫВАЕМ ШИРИНЫ ТОЛЬКО ПОСЛЕ СБОРКИ ДЕРЕВА. Связь между двумя видами требует общего
         // предка НА МОМЕНТ ВКЛЮЧЕНИЯ: включённая раньше, она роняет приложение исключением
         // Auto Layout прямо на открытии настроек (поймано сборкой 21.08, приложение не поднималось).
-        for c in [voiceKey as NSView, translateKey as NSView] {
-            c.widthAnchor.constraint(equalTo: manualKey.widthAnchor).isActive = true
-        }
+        voiceKey.widthAnchor.constraint(equalTo: manualKey.widthAnchor).isActive = true
         return root
     }
 
@@ -1981,127 +1968,6 @@ final class DetailVC: NSViewController {
     }
     // Авто-переключение вкл/выкл влияет на доступность «несколько слов» → перерисовываем раздел.
     @objc private func toggleGroupConvert(_ s: NSSwitch) { settings.groupConvert = (s.state == .on) }
-
-    private weak var trPackLabel: NSTextField?
-    private weak var trDownloadBtn: NSButton?
-
-    private func buildTranslate() -> NSView {
-        // ⚠️ ЧЕСТНО ГОВОРИМ, ЕСЛИ ПЕРЕВОДА НЕТ (05.08.2026). Apple Translation это macOS 15+, наш пол
-        // macOS 13. Раньше на 13 и 14 раздел выглядел полностью рабочим: тумблер включён, хоткей
-        // назначен, а нажатие отвечало бипом. Хоткей мы там больше не перехватываем (EventTap), но
-        // показывать живую строку, которая ничего не делает, всё равно нельзя. Текст уже написан и
-        // до сегодня жил только в окне знакомства.
-        let translateAvailable: Bool
-        if #available(macOS 15.0, *) { translateAvailable = true } else { translateAvailable = false }
-        var items: [NSView] = [
-            blockTitle("tr.title"),
-            sub(L10n.t("tr.sub")),
-            group(8),
-        ]
-        if !translateAvailable { items.append(contentsOf: [hint(L10n.t("wel.trNeedOS")), group(6)]) }
-        items += [
-            card([
-                switchRow(L10n.t("tr.enabled"), L10n.t("tr.enabledSub"),
-                          translateAvailable && settings.translateEnabled, #selector(toggleTranslate),
-                          enabled: translateAvailable, key: "tr.enabled"),
-                controlRow(L10n.t("tr.hotkey"), TranslateHotkeyControl(), enabled: translateAvailable,
-                           key: "tr.hotkey")
-            ]),
-            group(6),
-            card([
-                switchRow(L10n.t("tr.sound"), nil, settings.translateSoundEnabled, #selector(toggleTranslateSound),
-                          key: "tr.sound"),
-                controlRow(L10n.t("switch.sound"), TranslateSoundPicker(), key: "switch.sound"),
-                controlRow(L10n.t("tr.soundVol"), translateVolumeSlider(), key: "tr.soundVol")
-            ])
-        ]
-        if #available(macOS 15.0, *) {
-            items.append(group(6))
-            items.append(sectionTitle(L10n.t("tr.packTitle")))
-            items.append(trPackCard())
-        }
-        items.append(group(6))
-        items.append(sub(L10n.t("tr.how")))
-        return vstack(items)
-    }
-
-    /// Карточка языкового пакета RU↔EN: статус + переход в системный менеджер языков (там
-    /// реальная загрузка с прогрессом). Своего окна докачки НЕ показываем — оно виснет.
-    @available(macOS 15.0, *)
-    private func trPackCard() -> NSView {
-        let name = NSTextField(labelWithString: L10n.t("tr.packName"))
-        name.font = .systemFont(ofSize: 13); name.textColor = .labelColor
-        name.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let meta = NSTextField(labelWithString: L10n.t("tr.checking"))
-        meta.font = .systemFont(ofSize: 11); meta.textColor = .secondaryLabelColor
-        trPackLabel = meta
-        let nameCol = NSStackView(views: [name, meta]); nameCol.orientation = .vertical
-        nameCol.alignment = .leading; nameCol.spacing = 1
-
-        // Главная кнопка — докачка ПРЯМО из приложения (акцентная). Появляется, только когда пакета нет.
-        let dl = NSButton(title: L10n.t("tr.download"), target: self, action: #selector(downloadTrPack))
-        dl.bezelStyle = .rounded; dl.controlSize = .regular
-        dl.bezelColor = DS.coral; dl.contentTintColor = .white
-        dl.setContentHuggingPriority(.required, for: .horizontal)
-        trDownloadBtn = dl
-
-        // Вторично — системный менеджер языков (фолбэк, если по кнопке что-то пошло не так).
-        let sys = NSButton(title: L10n.t("tr.openSys"), target: self, action: #selector(openLangSettings))
-        sys.bezelStyle = .rounded; sys.controlSize = .regular
-        sys.setContentHuggingPriority(.required, for: .horizontal)
-
-        let spacer = NSView(); spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let row = NSStackView(views: [nameCol, spacer, dl, sys])
-        row.orientation = .horizontal; row.spacing = 8; row.alignment = .centerY
-        row.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
-        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 46).isActive = true
-        refreshTrPackStatus()
-        return card([row])
-    }
-
-    /// `afterFailedDownload` — человек только что нажал «Скачать», а пакет так и не появился.
-    /// Отличать это состояние обязательно: молча вернуть прежнее «не установлен» значит сделать
-    /// вид, что ничего не произошло, и человек будет жать кнопку по кругу (ровно отзывы #102/#108).
-    private func refreshTrPackStatus(afterFailedDownload: Bool = false) {
-        guard #available(macOS 15.0, *) else { return }
-        Task { [weak self] in
-            let st = await TranslationEngine.shared.packStatus(from: "ru", to: "en")
-            await MainActor.run {
-                guard let self else { return }
-                switch st {
-                case .installed:
-                    self.trPackLabel?.stringValue = L10n.t("tr.installed")
-                    self.trPackLabel?.textColor = DS.coral
-                    self.trDownloadBtn?.isHidden = true       // установлен → кнопка «Скачать» не нужна
-                case .unsupported:
-                    // Кнопка тут врала бы: скачивать нечего, система эту пару не умеет.
-                    self.trPackLabel?.stringValue = L10n.t("tr.unsupported")
-                    self.trPackLabel?.textColor = .secondaryLabelColor
-                    self.trDownloadBtn?.isHidden = true
-                case .notDownloaded:
-                    self.trPackLabel?.stringValue = L10n.t(afterFailedDownload ? "tr.dlFailed" : "tr.notInstalled")
-                    self.trPackLabel?.textColor = .secondaryLabelColor
-                    self.trDownloadBtn?.isHidden = false
-                }
-            }
-        }
-    }
-
-    /// Скачать языковой пакет RU↔EN прямо из приложения (без ухода в Системные настройки).
-    /// Готовим оба направления сразу. Системный лист скачивания Apple покажется поверх нашего окна.
-    @objc private func downloadTrPack() {
-        guard #available(macOS 15.0, *) else { return }
-        TranslationEngine.shared.presentDownload(pairs: [("ru", "en"), ("en", "ru")]) { [weak self] ok in
-            self?.refreshTrPackStatus(afterFailedDownload: !ok)
-        }
-    }
-
-    /// Открыть Системные настройки → «Язык и регион» (там менеджер языков перевода с реальным прогрессом).
-    @objc private func openLangSettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.Localization-Settings.extension") {
-            NSWorkspace.shared.open(url)
-        }
-    }
 
     /// Маленькая «клавишная» плашка с моноширинным текстом — для показа хоткея.
     private func keycapLabel(_ text: String) -> NSView {
@@ -2655,58 +2521,6 @@ final class DetailVC: NSViewController {
             pickRows.append(controlRow(L10n.t("snip.pickCombo"), pickPop, key: "snip.pickCombo"))
         }
 
-        // ВСТАВКА БЕЗ ФОРМАТИРОВАНИЯ (задача 102). Живёт рядом со сниппетами: обе про то, что
-        // попадает в текст из буфера, а не про раскладку.
-        //
-        // ⚠️ Готовые сочетания списком, БЕЗ записи своего. Конечный автомат записи уже существует в
-        // трёх экземплярах (голос, перевод, сниппеты), и рядом с ним прямым текстом написано, что
-        // четвёртый был бы худшим решением. Трёх вариантов тут хватает: осмысленны только сочетания
-        // с ⌘V, других всё равно нет.
-        let plainPop = NSPopUpButton()
-        plainPop.addItems(withTitles: Self.plainPastePresets.map { $0.0 })
-        plainPop.selectItem(at: Self.plainPastePresets.firstIndex {
-            $0.1 == settings.plainPasteKeyCode && $0.2 == settings.plainPasteModifiers
-        } ?? 0)
-        plainPop.target = self; plainPop.action = #selector(plainPasteComboChanged(_:))
-
-        // ⚠️ СВОЙ БЛОК, А НЕ СТРОКА ВНУТРИ СНИППЕТОВ (автор 10.08). Сначала я положил её в карточку
-        // вставки по сочетанию, потому что обе про буфер. Это неверно: сниппеты вставляют НАШ
-        // заготовленный текст, а эта настройка меняет способ вставки ЧУЖОГО, скопированного человеком.
-        // Соседство по механике не делает функции одной темой, и в списке настроек это читалось как
-        // «одна из настроек сниппетов».
-        var plainRows: [NSView] = [
-            switchRow(L10n.t("paste.plain"), L10n.t("paste.plainSub"), settings.plainPaste,
-                      #selector(togglePlainPaste(_:)), help: L10n.t("paste.plainHelp"), key: "paste.plain")
-        ]
-        if settings.plainPaste {
-            plainRows.append(controlRow(L10n.t("paste.plainCombo"), plainPop, key: "paste.plainCombo"))
-        }
-
-        // Смена регистра выделенного (задача 122). Живёт в том же разделе, потому что это тоже
-        // работа с чужим текстом по сочетанию, а не с раскладкой.
-        let casePop = NSPopUpButton()
-        var caseTitles = Self.casePresets.map { $0.0 }
-        var caseSel = Self.casePresets.firstIndex {
-            $0.1 == settings.caseChangeKeyCode && $0.2 == settings.caseChangeModifiers
-        }
-        // Записанное своё сочетание в готовых не найдётся, а список обязан показывать ТО, что
-        // работает: иначе в строке стоит ⌃⌥U, а нажимается что-то другое, и это выглядит как
-        // поломка. Поэтому своя комбинация добавляется в список отдельным пунктом.
-        if caseSel == nil, settings.caseChangeEnabled, !settings.caseChangeKeyLabel.isEmpty {
-            caseTitles.append(settings.caseChangeKeyLabel)
-            caseSel = caseTitles.count - 1
-        }
-        casePop.addItems(withTitles: caseTitles + [L10n.t("snip.pickCustom")])
-        casePop.selectItem(at: caseSel ?? 0)
-        casePop.target = self; casePop.action = #selector(caseComboChanged(_:))
-        var caseRows: [NSView] = [
-            switchRow(L10n.t("case.title"), L10n.t("case.sub"), settings.caseChangeEnabled,
-                      #selector(toggleCaseChange(_:)), help: L10n.t("case.help"), key: "case.title")
-        ]
-        if settings.caseChangeEnabled {
-            caseRows.append(controlRow(L10n.t("case.assign"), casePop, key: "case.assign"))
-        }
-
         return vstack([
             blockTitle("snip.title"),
             sub(L10n.t("snip.sub")),
@@ -2717,13 +2531,6 @@ final class DetailVC: NSViewController {
             keys,                        // [Пробел] [Enter] [Tab]
             disabled,                    // «Автозамена отключена…» — видна, когда все галочки сняты
             hint(L10n.t("snip.hint")),   // раскладка/регистр не учитываются + пример
-            group(DS.itemGap),
-            // Между автозаменой и сниппетами: это отдельная функция, а не настройка соседей.
-            sectionTitle(L10n.t("paste.section")),
-            card(plainRows),
-            group(DS.itemGap),
-            sectionTitle(L10n.t("pq.section")),
-            card(pasteQueueRows()),
             group(DS.itemGap),
             // ПРАВКА ТЕКСТА (перенесено из «Переключения», автор 11.08). Обе настройки чинят не
             // раскладку, а сам набранный текст, и в разделе про конверсию читались как её часть —
@@ -2739,7 +2546,7 @@ final class DetailVC: NSViewController {
                           #selector(toggleTypoFix), help: L10n.t("switch.typoFixHelp"), key: "switch.typoFix"),
                 switchRow(L10n.t("switch.twoCaps"), L10n.t("switch.twoCapsSub"), settings.twoCapsFix,
                           #selector(toggleTwoCaps), help: L10n.t("switch.twoCapsHelp"), key: "switch.twoCaps")
-            ] + caseRows),
+            ]),
             group(8),
             card([SageSettingsControls()]),
             group(DS.itemGap),
@@ -2765,12 +2572,6 @@ final class DetailVC: NSViewController {
 
     private weak var typoModePopup: NSPopUpButton?
     private weak var typoRulesList: TypographyRuleCheckListView?
-
-    static let typoFormatPresets: [(String, Int, UInt64)] = [
-        ("⌃⌥T", 17, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
-        ("⌃⇧T", 17, CGEventFlags([.maskControl, .maskShift]).rawValue),
-        ("⌥⌘T", 17, CGEventFlags([.maskAlternate, .maskCommand]).rawValue),
-    ]
 
     static let typoUndoPresets: [(String, Int, UInt64)] = [
         ("⌃⌥Z", 6, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
@@ -2809,28 +2610,6 @@ final class DetailVC: NSViewController {
         }
         langPop.target = self
         langPop.action = #selector(typoLangChanged(_:))
-
-        let fmtPop = NSPopUpButton()
-        var fmtTitles = Self.typoFormatPresets.map(\.0)
-        var fmtSel = Self.typoFormatPresets.firstIndex {
-            $0.1 == store.formatKeyCode && $0.2 == store.formatModifiers
-        }
-        if fmtSel == nil, store.formatHotkeyEnabled, !store.formatKeyLabel.isEmpty {
-            fmtTitles.append(store.formatKeyLabel)
-            fmtSel = fmtTitles.count - 1
-        }
-        fmtPop.addItems(withTitles: fmtTitles + [L10n.t("snip.pickCustom")])
-        fmtPop.selectItem(at: fmtSel ?? 0)
-        fmtPop.target = self
-        fmtPop.action = #selector(typoFormatComboChanged(_:))
-
-        var fmtRows: [NSView] = [
-            switchRow(L10n.t("typo.hotkey.format"), L10n.t("typo.hotkey.formatSub"), store.formatHotkeyEnabled,
-                      #selector(toggleTypoFormatHotkey(_:)), key: "typo.hotkey.format"),
-        ]
-        if store.formatHotkeyEnabled {
-            fmtRows.append(controlRow(L10n.t("typo.hotkey.combo"), fmtPop, key: "typo.hotkey.combo"))
-        }
 
         let undoPop = NSPopUpButton()
         var undoTitles = Self.typoUndoPresets.map(\.0)
@@ -2886,12 +2665,10 @@ final class DetailVC: NSViewController {
                           #selector(toggleTypographyEnabled(_:)), key: "typo.enabled"),
                 controlRow(L10n.t("typo.mode"), modePop, subtitle: L10n.t("typo.modeSub"), key: "typo.mode"),
                 controlRow(L10n.t("typo.lang"), langPop, key: "typo.lang"),
-                switchRow(L10n.t("typo.preview"), L10n.t("typo.previewSub"), store.showSelectionPreview,
-                          #selector(toggleTypographyPreview(_:)), key: "typo.preview"),
             ]),
             group(DS.itemGap),
             sectionTitle(L10n.t("typo.sec.hotkeys")),
-            card(fmtRows + undoRows),
+            card(undoRows),
             group(DS.itemGap),
             sectionTitle(L10n.t("typo.sec.rules")),
             card([rulesBox], vPad: 2),
@@ -2909,10 +2686,6 @@ final class DetailVC: NSViewController {
         reshow()
     }
 
-    @objc private func toggleTypographyPreview(_ s: NSSwitch) {
-        TypographySettingsStore.shared.showSelectionPreview = (s.state == .on)
-    }
-
     @objc private func typoModeChanged(_ p: NSPopUpButton) {
         let modes: [TypographyMode] = [.minimal, .standard, .custom]
         let idx = max(0, min(modes.count - 1, p.indexOfSelectedItem))
@@ -2924,53 +2697,6 @@ final class DetailVC: NSViewController {
         let langs: [TypographyLanguageMode] = [.auto, .ru, .en]
         let idx = max(0, min(langs.count - 1, p.indexOfSelectedItem))
         TypographySettingsStore.shared.language = langs[idx]
-    }
-
-    @objc private func toggleTypoFormatHotkey(_ sw: NSSwitch) {
-        let store = TypographySettingsStore.shared
-        if sw.state == .on {
-            let free = Self.typoFormatPresets.first {
-                HotkeyGuard.ourBusy(mode: "key", keyCode: $0.1, mods: $0.2, excluding: .typographyFormat) == nil
-            }
-            guard let preset = free else {
-                sw.state = .off
-                HotkeyGuard.busyAlert(L10n.t("is.busy.snippetNoFree"))
-                return
-            }
-            store.formatKeyCode = preset.1
-            store.formatModifiers = preset.2
-            store.formatKeyLabel = preset.0
-        } else {
-            store.formatKeyCode = -1
-            store.formatModifiers = 0
-            store.formatKeyLabel = ""
-        }
-        NotificationCenter.default.post(name: .keyboopTypographySettingsChanged, object: store)
-        reshow()
-    }
-
-    @objc private func typoFormatComboChanged(_ p: NSPopUpButton) {
-        let i = p.indexOfSelectedItem
-        if i == p.numberOfItems - 1 {
-            startHotkeyRecording(what: L10n.t("hkrec.what.typoFormat"), slot: .typographyFormat) { code, mods, label in
-                let store = TypographySettingsStore.shared
-                store.formatKeyCode = code
-                store.formatModifiers = mods.rawValue
-                store.formatKeyLabel = label
-                NotificationCenter.default.post(name: .keyboopTypographySettingsChanged, object: store)
-            }
-            return
-        }
-        guard i >= 0, i < Self.typoFormatPresets.count else { return }
-        let preset = Self.typoFormatPresets[i]
-        if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: preset.1, mods: preset.2, excluding: .typographyFormat) {
-            HotkeyGuard.busyAlert(busy); reshow(); return
-        }
-        let store = TypographySettingsStore.shared
-        store.formatKeyCode = preset.1
-        store.formatModifiers = preset.2
-        store.formatKeyLabel = preset.0
-        NotificationCenter.default.post(name: .keyboopTypographySettingsChanged, object: store)
     }
 
     @objc private func toggleTypoUndoHotkey(_ sw: NSSwitch) {
@@ -3245,17 +2971,10 @@ final class DetailVC: NSViewController {
             card([ switchRow(L10n.t("gen.silent"), L10n.t("gen.silentSub"),
                              !settings.silentMode, #selector(toggleSoundsEnabled), key: "gen.silent") ]),
             group(6),
-            // Захват буфера в историю (задача 228). Стоит в «Общих», а не в голосовом наборе
-            // (решение автора 04.09.2026): буфер не имеет отношения к голосу, а общая история уже не
-            // только про диктовку. Зависит от «Хранить историю»: без неё строка гаснет и подсказка
-            // говорит, где включить. Остальные настройки истории остаются в голосовом наборе.
-            sectionTitle(L10n.t("gen.history")),
-            card([ switchRow(L10n.t("gen.clipHistory"),
-                             settings.voiceHistoryEnabled ? L10n.t("gen.clipHistorySub") : L10n.t("gen.clipHistoryNeedsHistory"),
-                             settings.voiceHistoryEnabled && settings.clipboardHistoryEnabled, #selector(toggleClipboardHistory),
-                             enabled: settings.voiceHistoryEnabled, help: L10n.t("gen.clipHistoryHelp"), key: "gen.clipHistory") ]),
-            group(2),
-            hint(L10n.t("gen.historyHint")),
+            sectionTitle("Данные / Data"),
+            card([ buttonRow([NSButton(title: "Экспортировать историю буфера…", target: self,
+                                        action: #selector(exportClipboardHistory))]) ]),
+            hint(L10n.t("gen.clipboardMigrationHint")),
             group(6),
             sectionTitle(L10n.t("gen.access")),
             card([ buttonRow([perm, mic]) ]),
@@ -3542,194 +3261,9 @@ final class DetailVC: NSViewController {
         }
     }
 
-    // MARK: - Очередь вставки (KB-022)
-
-    static let pasteQueuePresets: [(String, Int, UInt64)] = [
-        ("⌃⇧Q", 12, CGEventFlags([.maskControl, .maskShift]).rawValue),
-        ("⌃⌥Q", 12, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
-    ]
-
-    private func pasteQueueRows() -> [NSView] {
-        let q = PasteQueueSettingsStore.shared
-        let pop = NSPopUpButton()
-        var titles = Self.pasteQueuePresets.map { $0.0 }
-        var sel = Self.pasteQueuePresets.firstIndex {
-            $0.1 == q.hotkeyKeyCode && $0.2 == q.hotkeyModifiers
-        }
-        if sel == nil, q.hotkeyEnabled, !q.hotkeyLabel.isEmpty {
-            titles.append(q.hotkeyLabel)
-            sel = titles.count - 1
-        }
-        pop.addItems(withTitles: titles + [L10n.t("snip.pickCustom")])
-        pop.selectItem(at: sel ?? 0)
-        pop.target = self; pop.action = #selector(pasteQueueComboChanged(_:))
-
-        let compPop = NSPopUpButton()
-        compPop.addItems(withTitles: [
-            L10n.t("pq.set.keep"), L10n.t("pq.set.restart"), L10n.t("pq.set.clear")
-        ])
-        let compIndex = PasteQueueCompletionMode.allCases.firstIndex(of: q.completionMode) ?? 0
-        compPop.selectItem(at: compIndex)
-        compPop.target = self; compPop.action = #selector(pasteQueueCompletionChanged(_:))
-
-        var rows: [NSView] = [
-            switchRow(L10n.t("pq.set.hotkey"), L10n.t("pq.set.hotkeySub"), q.hotkeyEnabled,
-                      #selector(togglePasteQueueHotkey(_:)), help: L10n.t("pq.set.help"),
-                      key: "pq.set.hotkey")
-        ]
-        if q.hotkeyEnabled {
-            rows.append(controlRow(L10n.t("pq.set.assign"), pop, key: "pq.set.assign"))
-        }
-        rows.append(controlRow(L10n.t("pq.set.completion"), compPop, key: "pq.set.completion"))
-        rows.append(switchRow(L10n.t("pq.set.manual"), L10n.t("pq.set.manualSub"), q.manualPickAdvances,
-                              #selector(togglePasteQueueManualAdvances(_:)), key: "pq.set.manual"))
-        return rows
-    }
-
-    @objc private func togglePasteQueueHotkey(_ sw: NSSwitch) {
-        let q = PasteQueueSettingsStore.shared
-        if sw.state == .on {
-            let free = Self.pasteQueuePresets.first {
-                HotkeyGuard.ourBusy(mode: "key", keyCode: $0.1, mods: $0.2, excluding: .pasteQueueNext) == nil
-            }
-            guard let preset = free else {
-                startPasteQueueHotkeyRecording()
-                return
-            }
-            q.hotkeyKeyCode = preset.1
-            q.hotkeyModifiers = preset.2
-            q.hotkeyLabel = preset.0
-        } else {
-            q.hotkeyKeyCode = -1
-            q.hotkeyModifiers = 0
-            q.hotkeyLabel = ""
-        }
-        reshow()
-    }
-
-    @objc private func pasteQueueComboChanged(_ p: NSPopUpButton) {
-        let q = PasteQueueSettingsStore.shared
-        let i = p.indexOfSelectedItem
-        if i == p.numberOfItems - 1 {
-            startPasteQueueHotkeyRecording()
-            return
-        }
-        guard i >= 0, i < Self.pasteQueuePresets.count else { return }
-        let preset = Self.pasteQueuePresets[i]
-        if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: preset.1, mods: preset.2, excluding: .pasteQueueNext) {
-            HotkeyGuard.busyAlert(busy); reshow(); return
-        }
-        q.hotkeyKeyCode = preset.1
-        q.hotkeyModifiers = preset.2
-        q.hotkeyLabel = preset.0
-    }
-
-    @objc private func pasteQueueCompletionChanged(_ p: NSPopUpButton) {
-        let i = p.indexOfSelectedItem
-        guard i >= 0, i < PasteQueueCompletionMode.allCases.count else { return }
-        PasteQueueSettingsStore.shared.completionMode = PasteQueueCompletionMode.allCases[i]
-    }
-
-    @objc private func togglePasteQueueManualAdvances(_ sw: NSSwitch) {
-        PasteQueueSettingsStore.shared.manualPickAdvances = (sw.state == .on)
-    }
-
-    private func startPasteQueueHotkeyRecording() {
-        startHotkeyRecording(what: L10n.t("hkrec.what.pasteQueue"), slot: .pasteQueueNext) { code, mods, label in
-            let q = PasteQueueSettingsStore.shared
-            q.hotkeyKeyCode = code
-            q.hotkeyModifiers = mods.rawValue
-            q.hotkeyLabel = label
-        }
-    }
-
-    private func startCaseHotkeyRecording() {
-        startHotkeyRecording(what: L10n.t("case.title"), slot: .caseChange) { [weak self] code, mods, label in
-            self?.settings.caseChangeKeyCode = code
-            self?.settings.caseChangeModifiers = mods.rawValue
-            self?.settings.caseChangeKeyLabel = label
-        }
-    }
-
     @objc private func copyFromAutoreplace() {
         TextSnippetStore.shared.copyFromAutoreplace()
         reshow()
-    }
-
-    /// Сочетания для вставки без форматирования. ⇧⌘V первым: в программах, которые это умеют
-    /// сами, оно означает ровно то же самое, и человеку не придётся переучиваться.
-    /// Готовые сочетания для смены регистра. Выбраны те, которых нет ни в системе, ни в привычках
-    /// редакторов: ⇧F3 из Word занята Mission Control, а ⌃⇧Tab, которое предлагал автор просьбы,
-    /// в браузерах листает вкладки.
-    /// ⚠️ Своё сочетание здесь ЕСТЬ (автор 11.08): трёх готовых на всех не хватает, а третьей копии
-    /// автомата записи так и не появилось — она одна на окно, см. `startHotkeyRecording`.
-    static let casePresets: [(String, Int, UInt64)] = [
-        ("⌃⌥U", 32, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
-        ("⌃⇧U", 32, CGEventFlags([.maskControl, .maskShift]).rawValue),
-        ("⌃⌥K", 40, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
-    ]
-
-    static let plainPastePresets: [(String, Int, UInt64)] = [
-        ("⇧⌘V", 9, CGEventFlags([.maskShift, .maskCommand]).rawValue),
-        ("⌥⌘V", 9, CGEventFlags([.maskAlternate, .maskCommand]).rawValue),
-        ("⌃⌘V", 9, CGEventFlags([.maskControl, .maskCommand]).rawValue),
-    ]
-
-    @objc private func togglePlainPaste(_ s: NSSwitch) {
-        settings.plainPaste = (s.state == .on)
-        reshow()
-    }
-    @objc private func plainPasteComboChanged(_ p: NSPopUpButton) {
-        let i = p.indexOfSelectedItem
-        guard i >= 0, i < Self.plainPastePresets.count else { return }
-        let preset = Self.plainPastePresets[i]
-        if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: preset.1, mods: preset.2, excluding: .plainPaste) {
-            HotkeyGuard.busyAlert(busy); reshow(); return
-        }
-        settings.plainPasteKeyCode = preset.1
-        settings.plainPasteModifiers = preset.2
-        settings.plainPasteKeyLabel = preset.0
-    }
-
-    @objc private func toggleCaseChange(_ sw: NSSwitch) {
-        if sw.state == .on {
-            // Включили — ставим первое СВОБОДНОЕ готовое сочетание. Занятое своей же функцией
-            // означало бы тумблер «вкл» без работающей функции, а это выглядит как поломка.
-            let free = Self.casePresets.first {
-                HotkeyGuard.ourBusy(mode: "key", keyCode: $0.1, mods: $0.2, excluding: .caseChange) == nil
-            }
-            guard let preset = free else {
-                sw.state = .off
-                HotkeyGuard.busyAlert(L10n.t("is.busy.snippetNoFree"))
-                return
-            }
-            settings.caseChangeKeyCode = preset.1
-            settings.caseChangeModifiers = preset.2
-            settings.caseChangeKeyLabel = preset.0
-        } else {
-            settings.caseChangeKeyCode = -1
-            settings.caseChangeModifiers = 0
-            settings.caseChangeKeyLabel = ""
-        }
-        reshow()          // строка сочетания появляется и исчезает вместе с тумблером
-    }
-
-    @objc private func caseComboChanged(_ p: NSPopUpButton) {
-        let i = p.indexOfSelectedItem
-        if i == p.numberOfItems - 1 {            // последняя строка — «Назначить свою…»
-            startCaseHotkeyRecording()
-            return
-        }
-        // Между пресетами и «Назначить свою…» может стоять уже записанное своё сочетание: выбрали
-        // его — оно и так стоит, менять нечего.
-        guard i >= 0, i < Self.casePresets.count else { return }
-        let preset = Self.casePresets[i]
-        if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: preset.1, mods: preset.2, excluding: .caseChange) {
-            HotkeyGuard.busyAlert(busy); reshow(); return
-        }
-        settings.caseChangeKeyCode = preset.1
-        settings.caseChangeModifiers = preset.2
-        settings.caseChangeKeyLabel = preset.0
     }
 
     @objc private func snipPickToggled(_ sw: NSSwitch) {
@@ -3999,7 +3533,6 @@ final class DetailVC: NSViewController {
     /// Все ползунки громкости в одном месте: ключ запоминания → чтение/запись значения.
     private var volumeSliders: [(key: String, get: () -> Double, set: (Double) -> Void)] {
         [("switch",    { self.settings.soundVolume },          { self.settings.soundVolume = $0 }),
-         ("translate", { self.settings.translateSoundVolume }, { self.settings.translateSoundVolume = $0 }),
          ("voice",     { self.settings.voiceSoundVolume },     { self.settings.voiceSoundVolume = $0 })]
     }
 
@@ -5028,29 +4561,6 @@ final class DetailVC: NSViewController {
         volumeBox?.setVisible(on, in: contentStack)
     }
 
-    private func translateVolumeSlider() -> NSView {
-        let s = NSSlider(value: settings.translateSoundVolume, minValue: 0, maxValue: 1,
-                         target: self, action: #selector(translateVolChanged(_:)))
-        s.controlSize = .small
-        s.widthAnchor.constraint(equalToConstant: 130).isActive = true
-        return s
-    }
-    @objc private func toggleTranslateSound(_ s: NSSwitch) { settings.translateSoundEnabled = (s.state == .on) }
-    private var translateVolPreview: NSSound?   // удерживаем превью, иначе оборвётся
-    @objc private func translateVolChanged(_ s: NSSlider) {
-        noteVolumeTouchedWhileMuted("translate")
-        settings.translateSoundVolume = s.doubleValue
-        // Тот же случай, что у двух ползунков выше: превью один раз, на отпускании.
-        guard sliderDragEnded, settings.translateSoundEnabled else { return }
-        let vol = Float(settings.translateSoundVolume)
-        let name = settings.translateSoundName
-        if name == "keyboop" {
-            translateVolPreview?.stop()
-            translateVolPreview = Sounds.play(NSSound(data: CueSynth.translateData), volume: Double(vol))
-        } else if !name.isEmpty {
-            Sounds.play(NSSound(named: name), volume: Double(vol))
-        }
-    }
     @objc private func toggleEscCancel(_ s: NSSwitch) { settings.escCancelsDictation = (s.state == .on) }
     @objc private func toggleWarmWindow(_ s: NSSwitch) {
         let on = (s.state == .on)
@@ -6102,7 +5612,6 @@ final class DetailVC: NSViewController {
     }
     @objc private func toggleLive(_ s: NSSwitch) { settings.liveFixEnabled = (s.state == .on) }
     @objc private func togglePredictLayout(_ s: NSSwitch) { settings.predictLayoutEnabled = (s.state == .on) }
-    @objc private func toggleTranslate(_ s: NSSwitch) { settings.translateEnabled = (s.state == .on) }
     @objc private func toggleDev(_ s: NSSwitch) { settings.developerMode = (s.state == .on) }
     @objc private func toggleSound(_ s: NSSwitch) { settings.soundEnabled = (s.state == .on) }
     @objc private func toggleLogin(_ s: NSSwitch) { settings.launchAtLogin = (s.state == .on); s.state = settings.launchAtLogin ? .on : .off }
@@ -6205,33 +5714,63 @@ final class DetailVC: NSViewController {
     @objc private func voiceModeChanged(_ s: NSSegmentedControl) { settings.voiceHoldMode = s.selectedSegment == 1 ? "toggle" : "hold" }
     @objc private func toggleVoiceHistory(_ s: NSSwitch) {
         settings.voiceHistoryEnabled = (s.state == .on)
-        // Без истории буфер не пишем. Зависимая строка живёт в «Общих» и перестроится при показе
-        // раздела, поэтому перерисовывать текущий раздел (и сбрасывать прокрутку) незачем.
-        ClipboardWatcher.shared.apply()
     }
-    /// Захват буфера (задача 228). Выключение сразу останавливает новые записи; судьбу уже
-    /// собранных решает человек: тумблер не удаляет ничего молча, промах пальцем не стоит
-    /// истории, но и «выключил, а оно лежит» без вопроса не оставляем.
-    @objc private func toggleClipboardHistory(_ s: NSSwitch) {
-        settings.clipboardHistoryEnabled = (s.state == .on)
-        ClipboardWatcher.shared.apply()
-        guard s.state == .off else { return }
-        let n = VoiceHistory.shared.clipboardCount
-        guard n > 0 else { return }
-        let a = NSAlert()
-        a.messageText = String(format: L10n.t("gen.clipOff.title"), n)
-        a.informativeText = L10n.t("gen.clipOff.msg")
-        a.addButton(withTitle: L10n.t("gen.clipOff.keep"))
-        let del = a.addButton(withTitle: L10n.t("gen.clipOff.delete"))
-        del.hasDestructiveAction = true
-        if let w = view.window {
-            a.beginSheetModal(for: w) { r in
-                if r == .alertSecondButtonReturn { VoiceHistory.shared.removeClipboardEntries() }
+
+    @objc private func exportClipboardHistory() {
+        let perform = { [weak self] in self?.presentClipboardExport() }
+        if HistoryGate.enabled { HistoryGate.promptUnlock { if $0 { perform() } } }
+        else { perform() }
+    }
+
+    private func presentClipboardExport() {
+        let save = NSSavePanel()
+        save.nameFieldStringValue = "Keyboop-clipboard.kbclip"
+        save.message = "Файл будет зашифрован. Сохраните пароль для импорта в SelectionBar."
+        guard save.runModal() == .OK, let url = save.url,
+              url.pathExtension.lowercased() == "kbclip" else { return }
+        let historyDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Keyboop").resolvingSymlinksInPath().standardizedFileURL.path
+        let destination = url.resolvingSymlinksInPath().standardizedFileURL.path
+        guard !destination.hasPrefix(historyDirectory + "/") else {
+            let warning = NSAlert()
+            warning.messageText = "Выберите папку вне каталога данных Keyboop."
+            warning.runModal()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Пароль экспорта"
+        alert.informativeText = "Введите пароль не короче 12 байт UTF-8. Буфер будет экспортирован отдельно от истории диктовок."
+        let entry = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        alert.accessoryView = entry
+        alert.window.initialFirstResponder = entry
+        alert.addButton(withTitle: "Экспортировать")
+        alert.addButton(withTitle: "Отмена")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let password = entry.stringValue
+        entry.stringValue = ""
+        let snapshot = Result { try VoiceHistory.clipboardExport() }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let message: String
+            do {
+                let payload = try snapshot.get()
+                let encrypted = try ClipboardTransfer.seal(payload, password: password)
+                try encrypted.write(to: url, options: .atomic)
+                message = "Экспортировано записей: \(payload.entries.count)."
+            } catch VoiceHistory.ExportError.missingArchive { message = "Файл истории отсутствует." }
+            catch VoiceHistory.ExportError.keyUnavailable { message = "Ключ истории недоступен. Исходный архив сохранён." }
+            catch VoiceHistory.ExportError.damagedArchive { message = "Не удалось расшифровать исходный архив." }
+            catch VoiceHistory.ExportError.invalidArchive { message = "Не удалось прочитать формат исходного архива." }
+            catch ClipboardTransfer.Failure.password { message = "Пароль должен содержать от 12 до 1024 байт UTF-8." }
+            catch { message = "Не удалось создать защищённый экспорт." }
+            DispatchQueue.main.async {
+                let result = NSAlert()
+                result.messageText = message
+                result.runModal()
             }
-        } else if a.runModal() == .alertSecondButtonReturn {
-            VoiceHistory.shared.removeClipboardEntries()
         }
     }
+
     /// Включили — модель уходит из памяти сразу, не дожидаясь следующей диктовки. Выключили —
     /// греем её обратно, иначе первая диктовка после этого заплатила бы за загрузку зря.
     @objc private func toggleUnloadAfterDictation(_ s: NSSwitch) {
@@ -6244,11 +5783,14 @@ final class DetailVC: NSViewController {
     @objc private func toggleSaveAudio(_ s: NSSwitch) {
         settings.voiceSaveAudio = (s.state == .on)
         guard s.state == .off else { return }
-        let freed = VoiceClips.totalBytes()
-        VoiceClipPlayerView.stopAll()
-        VoiceClips.deleteAll()
-        VoiceHistory.shared.forgetAudio()
-        if freed > 0 { kbLog("аудио диктовки: выключено, удалено \(VoiceClips.humanSize(freed))") }
+        let result = VoiceHistory.shared.forgetAudio()
+        if result == .saved {
+            VoiceClipPlayerView.stopAll()
+        } else {
+            settings.voiceSaveAudio = true
+            s.state = .on
+            VoiceHistory.reportFailure(result)
+        }
     }
     /// Пароль на историю: включение — задать пароль, выключение — подтвердить текущим.
     /// Тумблер откатывается, если пользователь передумал в диалоге.
@@ -6287,8 +5829,9 @@ final class DetailVC: NSViewController {
         let old = settings.voiceHistoryMinutes
         let apply = { [weak self] in
             guard let self else { return }
-            self.settings.voiceHistoryMinutes = mins
-            VoiceHistory.shared.applyRetention()
+            let result = VoiceHistory.shared.applyRetention(minutes: mins)
+            if result == .saved { self.settings.voiceHistoryMinutes = mins }
+            else { VoiceHistory.reportFailure(result) }
             self.fillRetention(s)   // старый пункт «2 часа» исчезает, как только выбран другой
         }
         let shorter = mins > 0 && (old == 0 || mins < old)
@@ -6316,7 +5859,7 @@ final class DetailVC: NSViewController {
     @objc private func warmDurationChanged(_ s: NSPopUpButton) {
         settings.voiceWarmSeconds = warmSecondsOptions[s.indexOfSelectedItem]
     }
-    @objc private func clearVoiceHistory() { VoiceHistory.shared.clear() }
+    @objc private func clearVoiceHistory() { VoiceHistory.reportFailure(VoiceHistory.shared.clear()) }
     @objc private func showVoiceHistory() {
         if historyWC == nil { historyWC = VoiceHistoryWindowController() }
         historyWC?.show()

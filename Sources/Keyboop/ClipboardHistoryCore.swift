@@ -1,33 +1,5 @@
 import Foundation
 
-// ЕДИНАЯ ИСТОРИЯ: ДИКТОВКИ И ТЕКСТ ИЗ БУФЕРА ОБМЕНА (задача 228, 04.09.2026).
-//
-// Здесь лежит всё, что можно проверить без AppKit: тип записи, потолки по типам, поиск по обоим
-// источникам, решение «записывать ли этот буфер» и реестр наших собственных записей в буфер.
-// Файл компилируется стендом `run-clipboardhistory.sh` отдельно от приложения, поэтому в нём нет
-// ни NSPasteboard, ни настроек, ни истории на диске: только чистые данные и функции над ними.
-// Наблюдатель буфера с таймером живёт в `ClipboardWatcher.swift`, хранилище в `VoiceHistory.swift`.
-//
-// # Почему буфер вообще попал в историю диктовок
-//
-// Человеку всё равно, продиктовал он фразу или скопировал её из письма: через час он помнит только,
-// что «где-то это было». Две разные истории заставили бы вспоминать ещё и источник. Поэтому лента
-// одна, обратная по времени, а тип записи это подпись у строки, а не отдельное окно.
-//
-// # Границы первой версии (решение автора 04.09.2026)
-//
-//   • захват буфера это ОТДЕЛЬНЫЙ тумблер, выключенный по умолчанию; включённая история диктовок
-//     сама его не включает, а выключенная история выключает и его;
-//   • только обычный текст: без файлов, картинок и форматирования, с потолком длины и числа записей;
-//   • ничего не записывается, пока в системе поднят Secure Input (где-то открыто поле пароля);
-//   • не записываются буферы, помеченные менеджерами паролей и служебными маркерами;
-//   • не записываются наши собственные операции с буфером: чтение выделения через ⌘C, вставка без
-//     форматирования, «скопировать последнюю диктовку» и копирование из окна истории. Для этого у
-//     КАЖДОЙ нашей записи в буфер есть обязанность отметиться в `PasteboardOwnership`;
-//   • старые записи без поля `kind` читаются как диктовки: файл истории не мигрирует и не
-//     переписывается, потому что у нас уже был случай, когда неосторожное поле обнулило бы историю
-//     всем (см. `audio` в истории клипов).
-
 /// Тип записи в единой истории.
 enum HistoryKind: String, Codable {
     case dictation
@@ -93,7 +65,6 @@ enum HistoryPolicy {
     static let maxDictation = 3000
     /// Буфер копируют чаще, чем диктуют, и его записи короче. Отдельный потолок, чтобы сотня
     /// скопированных строк не вытеснила диктовки, ради которых история и заведена.
-    static let maxClipboard = 100
     /// Расшифровки файлов (задача 229) дорогие: час звонка это минуты работы движка. Свой потолок,
     /// чтобы их не вытесняли ни диктовки, ни буфер; по сроку хранения они тоже не удаляются.
     static let maxImported = 20
@@ -118,13 +89,13 @@ enum HistoryPolicy {
     /// Возвращает то, что осталось, и то, что выброшено (у выброшенных диктовок надо унести клипы).
     static func capped(_ entries: [HistoryEntry],
                        maxDictation: Int = maxDictation,
-                       maxClipboard: Int = maxClipboard,
                        maxImported: Int = maxImported) -> (kept: [HistoryEntry], dropped: [HistoryEntry]) {
-        var room: [HistoryKind: Int] = [.dictation: maxDictation, .clipboard: maxClipboard,
+        var room: [HistoryKind: Int] = [.dictation: maxDictation,
                                         .imported: maxImported, .call: maxImported]
         var keptReversed: [HistoryEntry] = [], droppedReversed: [HistoryEntry] = []
         for e in entries.reversed() {
             let k = e.resolvedKind
+            if e.isClipboard { keptReversed.append(e); continue }
             if (room[k] ?? 0) > 0 { room[k]! -= 1; keptReversed.append(e) } else { droppedReversed.append(e) }
         }
         return (Array(keptReversed.reversed()), Array(droppedReversed.reversed()))
@@ -138,9 +109,12 @@ enum HistoryPolicy {
         entries.last { $0.resolvedKind == .dictation }
     }
 
-    /// Последний текст, записанный из буфера, чтобы не плодить дубликаты подряд.
-    static func lastClipboardText(_ entries: [HistoryEntry]) -> String? {
-        entries.last { $0.isClipboard }?.text
+    static func isExpired(_ entry: HistoryEntry, before cutoff: Date) -> Bool {
+        !entry.isClipboard && !entry.isImported && entry.date < cutoff
+    }
+
+    static func visibleVoiceEntries(_ entries: [HistoryEntry]) -> [HistoryEntry] {
+        entries.filter { !$0.isClipboard }
     }
 
     /// Поиск по обоим типам сразу: по тексту и по имени программы, без учёта регистра.
@@ -154,74 +128,7 @@ enum HistoryPolicy {
     }
 }
 
-/// Решение «записывать ли содержимое буфера в историю». Чистая функция от снимка буфера и
-/// состояния системы; наблюдатель только собирает входные данные.
-enum ClipboardCapturePolicy {
-    /// Потолок длины одной записи. Скопированная книга в истории бесполезна и раздувает
-    /// зашифрованный файл, который переписывается целиком на каждую запись.
-    static let maxChars = 20_000
-
-    /// Маркеры, при которых буфер не записываем. `org.nspasteboard.*` это общепринятое соглашение
-    /// (nspasteboard.org): ConcealedType ставят менеджеры паролей на секреты, TransientType и
-    /// AutoGeneratedType ставят утилиты на служебные записи (мы сами ставим TransientType на
-    /// восстановление буфера). Остальные два — маркеры 1Password и Keyboard Maestro.
-    static let concealedTypes: Set<String> = [
-        "org.nspasteboard.ConcealedType",
-        "org.nspasteboard.TransientType",
-        "org.nspasteboard.AutoGeneratedType",
-        "com.agilebits.onepassword",
-        "de.petermaurer.TransientPasteboardType",
-    ]
-
-    struct Snapshot {
-        let changeCount: Int
-        let types: [String]
-        /// nil, если текста в буфере нет ИЛИ его сознательно не читали (Secure Input).
-        let text: String?
-    }
-
-    enum Reason: String {
-        case ours          // наша собственная операция с буфером
-        case secureInput   // где-то открыто поле пароля
-        case concealed     // помечено как секрет или служебная запись
-        case noText        // файл, картинка, что угодно без текста
-        case empty         // одни пробелы
-        case tooLong       // больше maxChars
-        case duplicate     // тот же текст, что и последняя запись буфера
-    }
-
-    enum Verdict: Equatable {
-        case store(String)
-        case skip(Reason)
-    }
-
-    static func verdict(_ s: Snapshot,
-                        ownChangeCounts: Set<Int>,
-                        inOwnedWindow: Bool,
-                        secureInput: Bool,
-                        lastStored: String?) -> Verdict {
-        if inOwnedWindow || ownChangeCounts.contains(s.changeCount) { return .skip(.ours) }
-        if secureInput { return .skip(.secureInput) }
-        if s.types.contains(where: { concealedTypes.contains($0) }) { return .skip(.concealed) }
-        guard let text = s.text else { return .skip(.noText) }
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .skip(.empty) }
-        if text.count > maxChars { return .skip(.tooLong) }
-        if text == lastStored { return .skip(.duplicate) }
-        return .store(text)
-    }
-}
-
-/// Реестр НАШИХ записей в буфер обмена.
-///
-/// У буфера нет понятия «кто записал»: `changeCount` растёт от любой записи, и наблюдатель истории
-/// не отличил бы наше восстановление буфера после ⌘C от копирования человеком. Поэтому правило:
-/// **каждая запись Keyboop в буфер регистрирует свой changeCount здесь** (`NSPasteboard.kbNoteOurs()`
-/// в `ClipboardWatcher.swift`), а длинные операции из нескольких шагов (⌘C → чтение → восстановление)
-/// заворачиваются в «окно владения», внутри которого наблюдатель не смотрит на буфер вовсе.
-///
-/// Окно нужно из-за гонки: пока `SelectionText` крутит runloop в ожидании ⌘C, таймер наблюдателя
-/// успевает сработать и увидел бы выделение человека как «скопированный текст» раньше, чем мы
-/// успели отметить его как своё.
+/// Tracks writes and multi-step clipboard operations owned by Keyboop.
 enum PasteboardOwnership {
     private static let lock = NSLock()
     private static var counts: [Int] = []

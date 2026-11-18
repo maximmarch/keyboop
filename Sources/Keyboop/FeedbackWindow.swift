@@ -478,28 +478,16 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         case .voicePostProcess:
             c = ("voiceAI", s.voiceEnabled && s.voicePostProcessHotkeyEnabled, "key",
                  s.voicePostProcessHotkeyKeyCode, s.voicePostProcessHotkeyModifiers, "")
-        case .translate:
-            c = ("translate", s.translateEnabled, "key", s.translateHotkeyKeyCode, s.translateHotkeyModifiers, "")
         case .instant:
             c = ("instant", s.instantSwitchEnabled, s.instantSwitchMode, s.instantSwitchKeyCode, s.instantSwitchMods, "")
         case .snippet:
             c = ("snippet", s.snippetPickEnabled, "key", s.snippetPickKeyCode, s.snippetPickModifiers, "")
-        case .plainPaste:
-            c = ("plainPaste", s.plainPaste, "key", s.plainPasteKeyCode, s.plainPasteModifiers, "")
-        case .caseChange:
-            c = ("caseChange", s.caseChangeEnabled, "key", s.caseChangeKeyCode, s.caseChangeModifiers, "")
         case .pasteDictation:
             c = ("pasteDictation", s.pasteDictationEnabled, "key", s.pasteDictationKeyCode,
                  s.pasteDictationModifiers, "")
-        case .typographyFormat:
-            let t = TypographySettingsStore.shared
-            c = ("typoFormat", t.formatHotkeyEnabled, "key", t.formatKeyCode, t.formatModifiers, "")
         case .typographyUndo:
             let t = TypographySettingsStore.shared
             c = ("typoUndo", t.undoHotkeyEnabled, "key", t.undoKeyCode, t.undoModifiers, "")
-        case .pasteQueueNext:
-            let q = PasteQueueSettingsStore.shared
-            c = ("pasteQueue", q.hotkeyEnabled, "key", q.hotkeyKeyCode, q.hotkeyModifiers, "")
         case .wordCompletion:
             c = ("wordSuggestions", s.wordSuggestionsEnabled, "key", s.wordCompletionKeyCode, s.wordCompletionModifiers, "")
         }

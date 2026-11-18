@@ -15,7 +15,6 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
     private weak var axBtn: NSButton?
     private weak var micStatus: NSTextField?
     private weak var micBtn: NSButton?
-    private weak var trPackStatus: NSTextField?   // статус языкового пакета перевода RU↔EN (async)
 
     convenience init() {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 640),
@@ -114,31 +113,12 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
         addWrap(stack, L10n.t("wel.histSafety"), size: 11.5, color: .tertiaryLabelColor)
         addGap(stack, 8)
 
-        // Перевод выделенного: третья фича по хоткею. Translation framework — macOS 15+, поэтому всё
-        // зависящее от движка (хоткей-контрол, карточка пакета, приглашение в песочницу) под #available.
-        addSection(stack, L10n.t("wel.trTitle"))
-        addWrap(stack, L10n.t("wel.trBody"), size: 12.5, color: .secondaryLabelColor)
-        if #available(macOS 15.0, *) {
-            addControlRow(stack, L10n.t("wel.trKeyShort"), TranslateHotkeyControl())
-            addWrap(stack, L10n.t("wel.trPackNote"), size: 11.5, color: .tertiaryLabelColor)
-            addTrPackRow(stack)                                   // статус пакета RU↔EN + переход в Системные настройки
-            addWrap(stack, String(format: L10n.t("wel.trSandbox"), translateHotkeyDisplayString()),
-                    size: 11.5, color: .tertiaryLabelColor)
-        } else {
-            addWrap(stack, L10n.t("wel.trNeedOS"), size: 12, color: .tertiaryLabelColor)
-        }
-        addGap(stack, 8)
-
         addSection(stack, L10n.t("wel.practiceTitle"))
         addWrap(stack, L10n.t("wel.practiceHint"), size: 12.5, color: .secondaryLabelColor)
         // В песочнице пробуется НЕ только автозамена раскладки — голос сюда же (просьба автора 21.07).
         // Показываем только когда голос реально доступен: иначе это приглашение в никуда.
         if AppSettings.shared.voiceEnabled, VoiceController.shared.hasUsableModel {
             addWrap(stack, String(format: L10n.t("wel.practiceVoice"), voiceHotkeyDisplayString()),
-                    size: 11.5, color: .tertiaryLabelColor)
-        }
-        if #available(macOS 15.0, *) {
-            addWrap(stack, String(format: L10n.t("wel.practiceTr"), translateHotkeyDisplayString()),
                     size: 11.5, color: .tertiaryLabelColor)
         }
         let field = NSTextField()
@@ -312,50 +292,6 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
 
     /// Карточка языкового пакета RU↔EN для онбординга: статус (async) + кнопка в системный менеджер
     /// языков (там реальная загрузка с прогрессом — своё окно докачки виснет, не делаем). Зеркало
-    /// SettingsWindow.trPackCard в стиле онбординга.
-    @available(macOS 15.0, *)
-    private func addTrPackRow(_ stack: NSStackView) {
-        let name = NSTextField(labelWithString: L10n.t("tr.packName"))
-        name.font = .systemFont(ofSize: 13); name.textColor = .labelColor
-        name.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let meta = NSTextField(labelWithString: L10n.t("tr.checking"))
-        meta.font = .systemFont(ofSize: 11); meta.textColor = .secondaryLabelColor
-        trPackStatus = meta
-        let nameCol = NSStackView(views: [name, meta])
-        nameCol.orientation = .vertical; nameCol.alignment = .leading; nameCol.spacing = 1
-        nameCol.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
-        let sys = NSButton(title: L10n.t("tr.openSys"), target: self, action: #selector(openLangSettings))
-        sys.bezelStyle = .rounded; sys.controlSize = .regular
-        sys.setContentHuggingPriority(.required, for: .horizontal)
-
-        let spacer = NSView(); spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let row = NSStackView(views: [nameCol, spacer, sys])
-        row.orientation = .horizontal; row.spacing = 10; row.alignment = .centerY
-        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
-        stack.addArrangedSubview(row); fullWidth.append(row)
-        refreshTrPackStatus()
-    }
-
-    /// Async-проверка наличия пакета RU↔EN (мирроr SettingsWindow.refreshTrPackStatus).
-    private func refreshTrPackStatus() {
-        guard #available(macOS 15.0, *) else { return }
-        Task { [weak self] in
-            let ok = await TranslationEngine.shared.isInstalled(from: "ru", to: "en")
-            await MainActor.run {
-                self?.trPackStatus?.stringValue = ok ? L10n.t("tr.installed") : L10n.t("tr.notInstalled")
-                self?.trPackStatus?.textColor = ok ? DS.coral : .secondaryLabelColor
-            }
-        }
-    }
-
-    /// Системные настройки → «Язык и регион» (менеджер языков перевода с реальным прогрессом).
-    @objc private func openLangSettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.Localization-Settings.extension") {
-            NSWorkspace.shared.open(url)
-        }
-    }
-
     /// Строка «подпись слева — контрол справа» (для хоткей-контролов в онбординге).
     private func addControlRow(_ s: NSStackView, _ label: String, _ control: NSView) {
         let l = NSTextField(labelWithString: label); l.font = .systemFont(ofSize: 13); l.textColor = .labelColor

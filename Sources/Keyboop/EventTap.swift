@@ -25,15 +25,11 @@ protocol EventTapHandler: AnyObject {
     func handleVoiceAIBegin()
     func handleVoiceEnd()
     func handleVoiceAbort()
-    func handleTranslateHotkey()
     /// Смена регистра выделенного текста (задача 122).
-    func handleCaseHotkey()
     /// Вставить текст последней диктовки туда, где сейчас каретка (задача 242).
     func handlePasteDictationHotkey()
     /// Вставить следующий элемент очереди вставки (KB-022). ⌘V этим путём не перехватывается.
-    func handlePasteQueueNextHotkey()
     /// Исправить типографику выделенного текста (KB-021 FR-07).
-    func handleTypographyFormatHotkey()
     /// Отменить последнее типографическое преобразование (KB-021 FR-09).
     func handleTypographyUndoHotkey()
 }
@@ -750,28 +746,6 @@ final class EventTap {
                     return swallowDown(keyCode)
                 }
             }
-            // Вставка без форматирования. Стоит ДО перевода и до общего хоткея: сочетание с ⌘V
-            // ни с чем из них не пересекается, а порядок делает поведение предсказуемым.
-            if s.plainPaste, keyMatches(keyCode, s.plainPasteKeyCode) {
-                let want = relevantMods(CGEventFlags(rawValue: s.plainPasteModifiers))
-                if !want.isEmpty, relevantMods(event.flags) == want {
-                    onMain { PlainPaste.paste() }
-                    return swallowDown(keyCode)
-                }
-            }
-            // Смена регистра выделенного. Стоит рядом со вставкой без форматирования и переводом:
-            // все трое работают с выделением/буфером и обязаны решаться ДО раскладочных веток.
-            if s.caseChangeEnabled, keyMatches(keyCode, s.caseChangeKeyCode) {
-                let want = relevantMods(CGEventFlags(rawValue: s.caseChangeModifiers))
-                if !want.isEmpty, relevantMods(event.flags) == want {
-                    // Автоповтор зажатого сочетания гонял бы регистр туда-сюда: ЗАГЛАВНЫЕ, строчные,
-                    // ЗАГЛАВНЫЕ. Реагируем на первое нажатие, как соседние ветки.
-                    if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
-                        onMain { [weak self] in self?.handler?.handleCaseHotkey() }
-                    }
-                    return swallowDown(keyCode)
-                }
-            }
             // Вставка последней диктовки. Стоит здесь же, среди «работы с чужим полем по сочетанию»,
             // и ДО раскладочных веток: клавиша с модификаторами не должна дойти до конверсии.
             if s.pasteDictationEnabled, keyMatches(keyCode, s.pasteDictationKeyCode) {
@@ -787,45 +761,14 @@ final class EventTap {
                     return swallowDown(keyCode)
                 }
             }
-            // Очередь вставки (KB-022): своё сочетание, по умолчанию не назначено. Голый ⌘V сюда
-            // не попадает: сочетание без модификаторов не принимается, а запись ⌘V запрещена
-            // общим вердиктом сочетаний (системная вставка).
-            let pq = PasteQueueSettingsStore.shared
-            if pq.hotkeyEnabled, keyMatches(keyCode, pq.hotkeyKeyCode) {
-                let want = relevantMods(CGEventFlags(rawValue: pq.hotkeyModifiers))
-                let isCmdV = keyCode == 9 && want == .maskCommand
-                if !want.isEmpty, !isCmdV, relevantMods(event.flags) == want {
-                    // Автоповтор зажатого сочетания вставил бы всю очередь подряд в одно поле.
-                    if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
-                        onMain { [weak self] in self?.handler?.handlePasteQueueNextHotkey() }
-                    }
-                    return swallowDown(keyCode)
-                }
-            }
-            // Умная типографика выделенного текста и отмена последнего автоформатирования (KB-021).
+            // Отмена последнего автоформатирования (KB-021).
             let ts = TypographySettingsStore.shared
-            if ts.formatHotkeyEnabled, keyMatches(keyCode, ts.formatKeyCode) {
-                let want = relevantMods(CGEventFlags(rawValue: ts.formatModifiers))
-                if !want.isEmpty, relevantMods(event.flags) == want {
-                    if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
-                        onMain { [weak self] in self?.handler?.handleTypographyFormatHotkey() }
-                    }
-                    return swallowDown(keyCode)
-                }
-            }
             if ts.undoHotkeyEnabled, keyMatches(keyCode, ts.undoKeyCode) {
                 let want = relevantMods(CGEventFlags(rawValue: ts.undoModifiers))
                 if !want.isEmpty, relevantMods(event.flags) == want {
                     if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
                         onMain { [weak self] in self?.handler?.handleTypographyUndoHotkey() }
                     }
-                    return swallowDown(keyCode)
-                }
-            }
-            if #available(macOS 15.0, *), s.translateEnabled, keyMatches(keyCode, s.translateHotkeyKeyCode) {
-                let want = relevantMods(CGEventFlags(rawValue: s.translateHotkeyModifiers))
-                if !want.isEmpty, relevantMods(event.flags) == want {
-                    onMain { [weak self] in self?.handler?.handleTranslateHotkey() }
                     return swallowDown(keyCode)
                 }
             }
