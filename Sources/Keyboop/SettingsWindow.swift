@@ -63,7 +63,7 @@ enum SettingsSection: Int, CaseIterable {
     /// функции, потом система, потом «про нас». Голосовой набор стоит третьим, а не пятым: это
     /// второй двигатель приложения и первая тема по числу отзывов (21 из 73 содержательных).
     /// `rawValue` нигде не сохраняется, поэтому переставлять здесь безопасно.
-    case switching, exceptions, sites, ambiguous, voice, snippets, typography, translate, general, updates, privacy, about
+    case switching, predictiveInput, exceptions, sites, ambiguous, voice, snippets, typography, translate, general, updates, privacy, about
 
     /// Что показываем в левом меню. «Спорные слова» — подстраница «Исключений» (кнопка внутри):
     /// в меню это был бы одиннадцатый пункт ради списка, который открывают раз в жизни.
@@ -76,9 +76,15 @@ enum SettingsSection: Int, CaseIterable {
     /// заголовки. Теперь простой режим это ОТДЕЛЬНЫЙ корневой экран без бокового меню, а сайдбар
     /// существует только в подробном, где показывается всё.
     static var sidebarCases: [SettingsSection] { allCases.filter { $0 != .ambiguous } }
+    static var sidebarMinimumWindowHeight: CGFloat {
+        let rows = CGFloat(sidebarCases.count) * (DS.rowHeight + DS.rowGap) - DS.rowGap
+        let footerAndGap: CGFloat = 56
+        return DS.titlebarHeight + DS.brandTopPad + DS.brandIconSize + DS.sidebarListGap + rows + footerAndGap
+    }
     var l10nKey: String {
         switch self {
         case .switching: return "sec.switching"
+        case .predictiveInput: return "sec.predictiveInput"
         case .exceptions: return "sec.exceptions"
         case .sites:      return "sec.sites"
         case .ambiguous:  return "sec.ambiguous"
@@ -95,6 +101,7 @@ enum SettingsSection: Int, CaseIterable {
     var symbol: String {
         switch self {
         case .switching: return "keyboard"
+        case .predictiveInput: return "text.cursor"
         case .exceptions: return "tag"
         case .sites:      return "globe"
         case .ambiguous:  return "arrow.left.arrow.right"
@@ -230,7 +237,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         // кончается на 406pt, ссылке нужно ещё 56 → сайдбару 462pt, а сам он на 40pt короче окна
         // (замерено: окно 1622 → сайдбар 1582). Переключатель режима сдвинул список на 40pt вниз,
         // так что прежних 420 не хватало и подавно.
-        window.minSize = NSSize(width: DS.minWindowWidth, height: 504)
+        window.minSize = NSSize(width: DS.minWindowWidth, height: SettingsSection.sidebarMinimumWindowHeight)
         self.init(window: window)
         window.delegate = self
 
@@ -270,7 +277,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         // Окно тянется ТОЛЬКО по высоте: ширина контента фиксирована (поля прижаты влево, тянуть
         // вширь незачем и некрасиво). minSize.width == maxSize.width → горизонтальный ресайз запрещён.
         let fixedW = window.frame.width
-        window.minSize = NSSize(width: fixedW, height: 504)   // высота — по боковому меню, см. выше
+        window.minSize = NSSize(width: fixedW, height: SettingsSection.sidebarMinimumWindowHeight)   // высота — по боковому меню, см. выше
         window.maxSize = NSSize(width: fixedW, height: 100_000)
         // ПОЛНОЭКРАННЫЙ РЕЖИМ ЗАПРЕЩЁН (просьба автора 30.07). Настройки на весь экран — это полоса
         // контента посередине и километры пустоты по бокам: ширина у окна фиксированная (строка выше),
@@ -423,7 +430,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             setBody(split)
             let w = proContentSize.width
             // Подробные настройки тянутся по высоте, и это правильно: список разделов длинный.
-            window.minSize = NSSize(width: w, height: 504)
+            window.minSize = NSSize(width: w, height: SettingsSection.sidebarMinimumWindowHeight)
             window.maxSize = NSSize(width: w, height: 100_000)
             setContent(proContentSize, animate: animate)
             detail.reshow()
@@ -1375,6 +1382,7 @@ final class DetailVC: NSViewController {
         let built: NSView
         switch section {
         case .switching:  built = buildSwitching()
+        case .predictiveInput: built = buildPredictiveInput()
         case .exceptions: built = buildExceptions()
         case .sites:      built = buildSites()
         case .ambiguous:  built = buildAmbiguous()
@@ -1845,6 +1853,68 @@ final class DetailVC: NSViewController {
             ])
         ])
         return vstack(items)
+    }
+
+    private func buildPredictiveInput() -> NSView {
+        return vstack([
+            card([
+                switchRow(L10n.t("completion.title"), L10n.t("completion.subtitle"),
+                          settings.wordCompletionEnabled, #selector(toggleWordCompletion), key: "completion.title"),
+                switchRow(L10n.t("completion.nextWord"), L10n.t("completion.nextWordSubtitle"),
+                          settings.nextWordEnabled, #selector(toggleNextWord), key: "completion.nextWord"),
+                controlRow(L10n.t("completion.shortcut"), wordCompletionShortcut(),
+                           help: L10n.t("completion.shortcutHelp"), key: "completion.shortcut")
+            ]),
+            group(6),
+            card([
+                switchRow(L10n.t("completion.localModel"), L10n.t("completion.localModelDetail"),
+                          settings.predictiveLocalModelEnabled, #selector(togglePredictiveLocalModel),
+                          key: "completion.localModel", wraps: true),
+                PredictionModelControls()
+            ]),
+            group(6),
+            sectionTitle(L10n.t("prediction.preview")),
+            card([PredictionPreviewView()])
+        ])
+    }
+
+    private func wordCompletionShortcut() -> NSButton {
+        let label = HotkeyRecorderPanel.parts(mods: CGEventFlags(rawValue: settings.wordCompletionModifiers),
+                                             keyLabel: KeyLabels.symbol(forKeyCode: settings.wordCompletionKeyCode)).joined()
+        return NSButton(title: label, target: self, action: #selector(recordWordCompletionShortcut))
+    }
+
+    @objc private func toggleWordCompletion(_ sender: NSSwitch) {
+        if canSetWordSuggestion(sender) { settings.wordCompletionEnabled = sender.state == .on }
+    }
+
+    @objc private func toggleNextWord(_ sender: NSSwitch) {
+        if canSetWordSuggestion(sender) { settings.nextWordEnabled = sender.state == .on }
+    }
+
+    @objc private func togglePredictiveLocalModel(_ sender: NSSwitch) {
+        let enabled = sender.state == .on
+        settings.predictiveLocalModelEnabled = enabled
+        PredictionRuntime.shared.setEnabled(enabled)
+    }
+
+    private func canSetWordSuggestion(_ sender: NSSwitch) -> Bool {
+        if sender.state == .on,
+           let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: settings.wordCompletionKeyCode,
+                                           mods: settings.wordCompletionModifiers, excluding: .wordCompletion) {
+            sender.state = .off
+            HotkeyGuard.busyAlert(busy)
+            return false
+        }
+        return true
+    }
+
+    @objc private func recordWordCompletionShortcut(_ sender: NSButton) {
+        startHotkeyRecording(what: L10n.t("completion.shortcut"), slot: .wordCompletion) { [weak self, weak sender] code, mods, label in
+            self?.settings.wordCompletionKeyCode = code
+            self?.settings.wordCompletionModifiers = mods.rawValue
+            sender?.title = label
+        }
     }
     // Авто-переключение вкл/выкл влияет на доступность «несколько слов» → перерисовываем раздел.
     @objc private func toggleGroupConvert(_ s: NSSwitch) { settings.groupConvert = (s.state == .on) }
@@ -2607,6 +2677,8 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("switch.twoCaps"), L10n.t("switch.twoCapsSub"), settings.twoCapsFix,
                           #selector(toggleTwoCaps), help: L10n.t("switch.twoCapsHelp"), key: "switch.twoCaps")
             ] + caseRows),
+            group(8),
+            card([SageSettingsControls()]),
             group(DS.itemGap),
             sectionTitle(L10n.t("snip.textsTitle")),
             sub(L10n.t("snip.textsSub")),
@@ -3220,24 +3292,25 @@ final class DetailVC: NSViewController {
             if e.type == .keyDown {
                 guard e.keyCode != 53 else { self.stopHotkeyRecording(); return nil }
                 self.hkRestartIfFrozen()
-                // Одиночная клавиша без модификаторов отобрала бы у человека обычный ввод.
-                guard !mods.isEmpty else {
+                let keyCode = Int(e.keyCode)
+                let allowedBareKey = HotkeyGuard.allowsBareKey(keyCode, for: slot) && !e.modifierFlags.contains(.function)
+                guard !mods.isEmpty || allowedBareKey else {
                     self.hkWarn(L10n.t("snip.needMods"), parts: HotkeyRecorderPanel.parts(mods: mods))
                     return nil
                 }
                 let parts = HotkeyRecorderPanel.parts(mods: mods,
-                                                      keyLabel: KeyLabels.symbol(forKeyCode: Int(e.keyCode)))
+                                                      keyLabel: KeyLabels.symbol(forKeyCode: keyCode))
                 // Общий вердикт, как у остальных контролов: жёсткое запрещаем, мягкое показываем и
                 // отдаём решение человеку. Своих правил здесь нет намеренно.
-                switch HotkeyGuard.verdict(keyCode: Int(e.keyCode), mods: mods) {
+                switch HotkeyGuard.verdict(keyCode: keyCode, mods: mods) {
                 case .blocked(let busy):
                     self.hkWarn(HotkeyGuard.busyMessage(busy), parts: parts)
                     return nil
                 case .warn(let who):
-                    self.armHotkey(keyCode: Int(e.keyCode), mods: mods, parts: parts, slot: slot,
+                    self.armHotkey(keyCode: keyCode, mods: mods, parts: parts, slot: slot,
                                    apply: apply, warning: HotkeyGuard.conflictMessage(who))
                 case .ok:
-                    self.armHotkey(keyCode: Int(e.keyCode), mods: mods, parts: parts, slot: slot,
+                    self.armHotkey(keyCode: keyCode, mods: mods, parts: parts, slot: slot,
                                    apply: apply, warning: nil)
                 }
                 return nil

@@ -289,6 +289,10 @@ enum HotkeyGuard {
         String(format: L10n.t("hkrec.warn.system"), what)
     }
 
+    static func allowsBareKey(_ keyCode: Int, for slot: Slot) -> Bool {
+        slot == .wordCompletion && keyCode == 48
+    }
+
     // MARK: - Наши собственные хоткеи
 
     /// Одно действие на одну комбинацию. Кто именно её занял, если занял.
@@ -312,6 +316,7 @@ enum HotkeyGuard {
     /// Добавляя СЛЕДУЮЩИЙ хоткей, добавь его сюда же. Это единственное место, где перечислены все.
     enum Slot: CaseIterable {
         case convert, voice, voicePostProcess, translate, instant, snippet, plainPaste, caseChange, pasteDictation, typographyFormat, typographyUndo, pasteQueueNext
+        case wordCompletion
 
         /// Как назвать функцию человеку в тексте «занято: %@».
         var name: String {
@@ -328,6 +333,7 @@ enum HotkeyGuard {
             case .typographyFormat: return L10n.t("is.busy.typoFormat")
             case .typographyUndo:   return L10n.t("is.busy.typoUndo")
             case .pasteQueueNext:   return L10n.t("is.busy.pasteQueue")
+            case .wordCompletion:  return L10n.t("completion.title")
             }
         }
 
@@ -341,6 +347,7 @@ enum HotkeyGuard {
         var settingsSection: SettingsSection {
             switch self {
             case .convert, .instant:                  return .switching
+            case .wordCompletion:                     return .predictiveInput
             case .voice, .voicePostProcess, .pasteDictation: return .voice
             case .translate:                          return .translate
             case .snippet, .plainPaste, .caseChange, .pasteQueueNext:  return .snippets
@@ -391,6 +398,9 @@ enum HotkeyGuard {
                 let q = PasteQueueSettingsStore.shared
                 guard q.hotkeyEnabled else { return nil }
                 return ("key", q.hotkeyKeyCode, q.hotkeyModifiers)
+            case .wordCompletion:
+                guard s.wordSuggestionsEnabled else { return nil }
+                return ("key", s.wordCompletionKeyCode, s.wordCompletionModifiers)
             }
         }
     }

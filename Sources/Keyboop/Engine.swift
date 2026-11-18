@@ -8,6 +8,7 @@ final class Engine: EventTapHandler {
     let layout = LayoutManager()
     private let buffer = KeystrokeBuffer()
     private let eventTap = EventTap()
+    let wordCompletion = WordCompletion()
 
     /// Переключить диктовку не с клавиатуры (быстрое действие в строке меню, задача 21).
     func toggleVoiceFromMenu() { eventTap.toggleVoiceExternally() }
@@ -264,6 +265,7 @@ final class Engine: EventTapHandler {
                 forName: NSWorkspace.didActivateApplicationNotification,
                 object: nil, queue: .main
             ) { [weak self] _ in
+                self?.wordCompletion.resetInferenceContext()
                 // Активация ДРУГОГО приложения (уведомление/баннер/мигание фокуса) — каретка НЕ
                 // двигалась. НЕ полный clear (он «сиротил» набираемое слово → «ть»→«nm», баг 29.06):
                 // мягкий сброс перед следующим нажатием — забываем завершённый контекст, но НЕ
@@ -294,11 +296,18 @@ final class Engine: EventTapHandler {
             ) { [weak self] _ in
                 self?.refreshContextSnapshot()
             }
+            var suggestionPreferences = settings.wordSuggestionPreferences
             NotificationCenter.default.addObserver(
                 forName: UserDefaults.didChangeNotification,
                 object: UserDefaults.standard, queue: .main
             ) { [weak self] _ in
-                self?.refreshContextSnapshot()
+                guard let self else { return }
+                let updated = self.settings.wordSuggestionPreferences
+                if updated != suggestionPreferences {
+                    suggestionPreferences = updated
+                    self.wordCompletion.resetInferenceContext()
+                }
+                self.refreshContextSnapshot()
             }
             NotificationCenter.default.addObserver(
                 forName: NSSpellChecker.didChangeAutomaticPeriodSubstitutionNotification,
@@ -327,6 +336,7 @@ final class Engine: EventTapHandler {
             // Открытие и закрытие Spotlight системой не объявляется, поэтому наблюдатель сообщает
             // об этом сам — и дальше всё идёт тем же путём, что и обычная смена программы.
             SpotlightWatch.onChange = { [weak self] in
+                self?.wordCompletion.resetInferenceContext()
                 self?.pendingSoftReset = true
                 self?.refreshFrontmostAppCache()
             }
@@ -370,7 +380,10 @@ final class Engine: EventTapHandler {
                 DistributedNotificationCenter.default().addObserver(
                     forName: NSNotification.Name(n as String), object: nil, queue: .main
                 ) { [weak self] _ in
-                    if isSelectedChange { self?.layout.noteSelectedSourceNotification() }
+                    if isSelectedChange {
+                        self?.wordCompletion.resetInferenceContext()
+                        self?.layout.noteSelectedSourceNotification()
+                    }
                     // Аудит C1 (24.07): уведомление прилетает и на НАШИ переключения — чуть позже
                     // по ранлупу, и его стейл-чтение «текущего» перезатирало только что
                     // детерминированно установленные кэш и мнение. В grace-окне своего select'а
@@ -520,6 +533,7 @@ final class Engine: EventTapHandler {
     }
 
     func handleContextReset(at eventTime: TimeInterval) {
+        wordCompletion.resetInferenceContext()
         contextResetAt = eventTime
         // Клик/навигация двигает курсор — групповая история недействительна даже под muted (G10):
         // нашу синтетику мы шлём только с клавиатуры, mouse-down — всегда намерение пользователя.
@@ -564,8 +578,14 @@ final class Engine: EventTapHandler {
     }
 
     // Голосовой ввод (hold-to-talk) — делегируем оркестратору.
-    func handleVoiceBegin() { VoiceController.shared.begin() }
-    func handleVoiceAIBegin() { VoiceController.shared.begin(forcePostProcess: true) }
+    func handleVoiceBegin() {
+        wordCompletion.invalidate()
+        VoiceController.shared.begin()
+    }
+    func handleVoiceAIBegin() {
+        wordCompletion.invalidate()
+        VoiceController.shared.begin(forcePostProcess: true)
+    }
     func handleVoiceEnd() { VoiceController.shared.end() }
     func handleVoiceAbort() { VoiceController.shared.abortHold() }
 
@@ -647,6 +667,7 @@ final class Engine: EventTapHandler {
                 UndoLearner.shared.observe(current: buffer.currentWord)   // U2: следим за стиранием нашего вывода
             }
         case 49, 48, 36: // Space, Tab, Return — граница слова
+            if keyCode == 48 { wordCompletion.resetInferenceContext() }
             liveFixLast = ""                          // слово завершено — якорь self-heal сброшен
             wordEdited = false                        // новое слово начинается свежим — live-fix снова активен
             let boundaryHandledAt = ProcessInfo.processInfo.systemUptime
@@ -801,7 +822,12 @@ final class Engine: EventTapHandler {
             if (keyCode == 48 || keyCode == 36) && !shortcutSpace {
                 FocusLayoutPredictor.shared.schedulePredict(reason: .focusKey, delay: 0.09)
             }
+            if keyCode == 49, !cmdOrCtrl, !optOrCmd,
+               flags.intersection([.maskShift, .maskSecondaryFn]).isEmpty {
+                scheduleWordSuggestion(.nextWord, typed: " ")
+            }
         case 123, 124, 125, 126: // стрелки
+            wordCompletion.resetInferenceContext()
             liveFixLast = ""                  // курсор сместился — якорь self-heal недействителен
             wordEdited = false                // курсор сместился — это уже другое слово/место
             buffer.invalidateGroupHistory()   // стрелка двигает курсор → группа печатала бы вслепую (G2)
@@ -820,6 +846,7 @@ final class Engine: EventTapHandler {
             }
         case 53, 117, 115, 116, 119, 121:
             // Esc, Fwd-Delete, Home/End/PageUp/PageDown → навигация, всегда сбрасываем контекст
+            wordCompletion.resetInferenceContext()
             liveFixLast = ""
             wordEdited = false
             buffer.clear()
@@ -827,6 +854,7 @@ final class Engine: EventTapHandler {
             UndoLearner.shared.resetContext()
         default:
             if cmdOrCtrl {
+                wordCompletion.resetInferenceContext()
                 liveFixLast = ""; wordEdited = false; buffer.clear()
                 TypographyCoordinator.shared.resetContext()
                 if flags.contains(.maskCommand) && Self.focusJumpKeyCodes.contains(keyCode) {
@@ -847,6 +875,10 @@ final class Engine: EventTapHandler {
                 buffer.append(characters)
                 TypographyCoordinator.shared.appendTypedText(characters)
                 UndoLearner.shared.observe(current: buffer.currentWord)   // U2: перенабор оригинала = откат
+                if !optOrCmd, characters.count == 1,
+                   characters.first?.isLetter == true {
+                    scheduleWordSuggestion(.completion(useContext: settings.nextWordEnabled), typed: characters)
+                }
                 // Умная типографика для завершающей пунктуации и закрывающих кавычек/скобок (KB-021).
                 if resolvedContext.effectiveTypography && !Pause.active && Self.shouldTriggerTypographyOnPrintable(characters) {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
@@ -866,6 +898,46 @@ final class Engine: EventTapHandler {
             }
         }
         return false   // по умолчанию клавишу НЕ глотаем (проглатываем только границу-раскрытие сниппета)
+    }
+
+    private func canSuggestWord(_ trigger: WordCompletion.Trigger) -> Bool {
+        let enabled: Bool
+        switch trigger {
+        case .completion(let useContext):
+            enabled = settings.wordCompletionEnabled && (!useContext || settings.nextWordEnabled)
+        case .nextWord: enabled = settings.nextWordEnabled
+        }
+        return enabled && !Pause.active
+            && !resolvedContext.appHardExcluded && resolvedContext.effectiveExceptionMode.isEmpty
+            && !muted && !VoiceGate.isActive && !SnippetPicker.shared.isOpen && !SnippetInsertionCoordinator.shared.isFormActive
+            && !IsSecureEventInputEnabled() && !HotkeyRecording.active
+    }
+
+    private func scheduleWordSuggestion(_ trigger: WordCompletion.Trigger, typed: String) {
+        if wordCompletion.continueTyping(typed, isEligible: { [weak self] in self?.canSuggestWord($0) ?? false }) { return }
+        guard canSuggestWord(trigger) else { return }
+        wordCompletion.schedule(trigger, useLocalModel: settings.predictiveLocalModelEnabled) { [weak self] in
+            self?.canSuggestWord(trigger) ?? false
+        }
+    }
+
+    func acceptWordCompletion() -> Bool {
+        wordCompletion.accept(isEligible: { [weak self] in self?.canSuggestWord($0) ?? false }) { [weak self] result in
+            guard let self else { return }
+            self.liveFixLast = ""
+            if case let .confirmed(prefix, suffix) = result {
+                if self.buffer.currentWord != prefix {
+                    self.buffer.clear()
+                    self.buffer.append(prefix)
+                    TypographyCoordinator.shared.resetContext()
+                }
+                self.buffer.appendSuggestedSuffix(suffix)
+                TypographyCoordinator.shared.appendTypedText(suffix)
+            } else {
+                self.buffer.clear()
+                TypographyCoordinator.shared.resetContext()
+            }
+        }
     }
 
     private var liveFixLast = ""
@@ -1287,6 +1359,7 @@ final class Engine: EventTapHandler {
         }
         if UndoLearner.shared.shouldSuppress(current: word) || UndoLearner.shared.isSessionProtected(word) { return }
         guard TextReplacer.replaceInline(deleteCount: word.count, with: converted, post: post) else { return }
+        wordCompletion.invalidate()
         buffer.applyConversion(converted: converted)
         liveFixLast = converted
         // Хвост — всё, что нельзя в колбэке (селект раскладки, звук, счётчики).

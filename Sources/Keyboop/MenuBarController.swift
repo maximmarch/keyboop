@@ -27,6 +27,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onShowPasteQueue: (() -> Void)?
     /// Старт диктовки из быстрого действия (задача 21).
     var onQuickDictate: (() -> Void)?
+    var onProofreadSelection: ((NSRunningApplication?) -> Void)?
+    private var appBeforeMenu: NSRunningApplication?
     var onToggleAuto: ((Bool) -> Void)?
     var onCheckUpdates: (() -> Void)?
     var onQuit: (() -> Void)?
@@ -535,6 +537,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     private func showMenu() {
         guard let button = statusItem.button else { return }
+        appBeforeMenu = NSWorkspace.shared.frontmostApplication
         statusItem.menu = menu          // содержимое соберёт menuNeedsUpdate, как и раньше
         button.performClick(nil)
         // ⚠️ Снимаем меню в `menuDidClose`, а НЕ строкой ниже. `performClick` блокирует, пока меню
@@ -808,6 +811,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(makePasteQueueMenu())
+        let proofreading = NSMenuItem(title: L10n.t("sage.command"), action: #selector(proofreadSelection), keyEquivalent: "")
+        proofreading.target = self
+        proofreading.image = icon("checkmark.bubble")
+        menu.addItem(proofreading)
+
 
         menu.addItem(.separator())
 
@@ -948,6 +956,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func selectMic(_ s: NSMenuItem) {
         if let uid = s.representedObject as? String { settings.voiceMicUID = uid; buildMenu() }
     }
+    @objc private func proofreadSelection() {
+        let app = appBeforeMenu
+        DispatchQueue.main.async { [weak self] in self?.onProofreadSelection?(app) }
+    }
+
     @objc private func openSettings() { onOpenSettings?() }
     @objc private func addCurrentSiteRule() {
         guard let site = pendingQuickSite ?? WebsiteContextProvider.shared.activeSiteForQuickAdd() else { return }

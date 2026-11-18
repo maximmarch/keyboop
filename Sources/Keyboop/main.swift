@@ -6,6 +6,7 @@ import AppKit
 // независимые аренды 🌐 и SPU всю жизнь родителя и переживает его crash/SIGKILL. Проверка первая,
 // чтобы helper не поднял UI.
 GlobeGuard.runIfRequested()
+PredictionRuntime.runSupervisorIfRequested()
 
 // The repair hook must first win the cross-build singleton and then complete an authenticated
 // helper transaction. AppDelegate consumes this flag before normal UI/resource startup.

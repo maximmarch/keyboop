@@ -1,11 +1,62 @@
 import ApplicationServices
 import AppKit
+import Carbon
 
 /// Чтение и замена ВЫДЕЛЕННОГО текста через Accessibility (нативные приложения:
 /// TextEdit, Notes, Mail, Pages, поля Safari и т.п.). Для Electron/web AX часто
 /// не отдаёт выделение → read() вернёт nil, и вызывающий просто не трогает выделение
 /// (буфер обмена НЕ задействуем — принцип №1; clipboard-fallback — отдельная задача).
 enum SelectionText {
+    /// Identity of a selection that will survive a background operation and a preview.
+    /// Revalidate the field, range and text before writing, even if the same app is still open.
+    struct CorrectionTarget {
+        let text: String
+        fileprivate let pid: pid_t
+        fileprivate let element: AXUIElement
+        fileprivate let range: CFTypeRef
+
+        func isCurrent() -> Bool {
+            guard !IsSecureEventInputEnabled(),
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                  let current = SelectionText.readAX(), CFEqual(element, current.element),
+                  text.utf16.elementsEqual(current.text.utf16),
+                  let selectedRange = SelectionText.selectionRange(in: current.element) else { return false }
+            return CFEqual(range, selectedRange)
+        }
+
+        func replace(with replacement: String) -> Bool {
+            guard isCurrent() else { return false }
+            return SelectionText.write(element, replacement, original: text)
+        }
+    }
+
+    static func correctionTarget(in pid: pid_t) -> CorrectionTarget? {
+        guard !IsSecureEventInputEnabled(),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              let (element, text) = readAX() else { return nil }
+        var actualPID: pid_t = 0
+        guard AXUIElementGetPid(element, &actualPID) == .success, actualPID == pid else { return nil }
+        var subrole: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
+        guard subrole as? String != kAXSecureTextFieldSubrole as String else { return nil }
+        let owner = ownerApp(of: element)
+        guard !isGecko(bundleID: owner.bid, bundleURL: owner.url) else { return nil }
+        var writable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &writable) == .success,
+              writable.boolValue, let range = selectionRange(in: element) else { return nil }
+        return CorrectionTarget(text: text, pid: pid, element: element, range: range)
+    }
+
+    private static func selectionRange(in element: AXUIElement) -> CFTypeRef? {
+        for attribute in [kAXSelectedTextRangeAttribute, "AXSelectedTextMarkerRange"] {
+            var range: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, attribute as CFString, &range) == .success, let range {
+                return range
+            }
+        }
+        return nil
+    }
+
     /// Прочитать выделенный текст из сфокусированного элемента. nil — если выделения
     /// нет или AX молчит. Возвращает сам элемент (чтобы записать обратно туда же).
     /// Прочитать выделение. Возвращает текст + опциональный AX-writeback (для нативных полей).

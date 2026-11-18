@@ -500,6 +500,8 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         case .pasteQueueNext:
             let q = PasteQueueSettingsStore.shared
             c = ("pasteQueue", q.hotkeyEnabled, "key", q.hotkeyKeyCode, q.hotkeyModifiers, "")
+        case .wordCompletion:
+            c = ("wordSuggestions", s.wordSuggestionsEnabled, "key", s.wordCompletionKeyCode, s.wordCompletionModifiers, "")
         }
         let combo = "\(c.mode)/\(c.keyCode)/\(c.mods)"
         return "\(c.key)=" + (c.on ? combo : "выкл(\(combo))") + c.tail

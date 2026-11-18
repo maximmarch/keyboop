@@ -146,6 +146,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !legacyGlobeReady {
             kbLog("globe migration: ordinary startup продолжает без глобальных мутаций до recovery")
         }
+        PredictionRuntime.shared.setEnabled(AppSettings.shared.predictiveLocalModelEnabled)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { _ in PredictionRuntime.shared.suspendForSleep() }
         _ = AppHealth.launchedAt   // ленивый static let: «потрогать» на старте, иначе аптайм в первом
                                    // багрепорте всегда «0с» и разбор уходит в ложную ветку
         installMainMenu()   // меню Edit (Cmd+V/C/X/A/Z) — иначе в текстовых полях не работает вставка
@@ -183,6 +187,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar.onShowVoiceHistory = { [weak self] in self?.openVoiceHistory() }
         menuBar.onShowPasteQueue = { [weak self] in self?.openPasteQueue() }
         menuBar.onQuickDictate = { [weak self] in self?.engine.toggleVoiceFromMenu() }
+        menuBar.onProofreadSelection = { [weak self] app in
+            SageCorrectionCoordinator.shared.checkSelection(
+                in: app,
+                openSettings: { self?.openSettings(section: .snippets) },
+                didApply: { self?.engine.handleContextReset(at: ProcessInfo.processInfo.systemUptime) }
+            )
+        }
         // Правду о доступах меню берёт в момент открытия, а не помнит с запуска (см.
         // MenuBarController.recheckPermissions). «Всё в порядке» здесь значит буквально то, ради
         // чего доступы и нужны: движок поднят И система отдаёт нам нажатия.
@@ -1362,6 +1373,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             src.setEventHandler {
                 kbLog("получен сигнал \(sig) — сторож останавливает SPU и возвращает 🌐, выхожу")
                 self.slapDetector?.shutdown()
+                PredictionRuntime.shared.shutdown()
+                SageRuntime.shared.shutdown()
                 CapsRemap.removeIfOurs()
                 CapsLED.shutdown(atExit: true)   // иначе лампочка останется гореть после нас
                 // One authenticated transaction preserves the global order: local HID close →
@@ -1392,6 +1405,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // второй: запуск из DMG обновления при живом старом снимал hidutil-ремап у него под ногами —
         // Caps молча переставал менять язык, тумблер оставался включённым. То же с ролью 🌐.
         guard !isSecondaryInstance else { return }
+        PredictionRuntime.shared.shutdown()
+        SageRuntime.shared.shutdown()
         WebsiteContextProvider.shared.stop()
         // Caps-remap снимаем локально. SPU + 🌐 принадлежат одной helper-транзакции: после закрытия
         // локального HID helper сначала доказывает OFF и лишь затем возвращает клавишу.

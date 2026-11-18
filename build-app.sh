@@ -31,6 +31,17 @@ fi
 # своей копии по обычному пути, пересборка туда же означала бы гасить приложение у него под руками,
 # а перенос копии в другое место ломает выданные доступы (TCC привязан к пути и подписи).
 APP="${KEYBOOP_BUILD_APP:-Keyboop.app}"
+FRESH_BUILD="${KEYBOOP_BUILD_FRESH:-0}"
+if [ "$FRESH_BUILD" = 1 ]; then
+  if [ -n "${KEYBOOP_BUILD_APP:-}" ] || [ "${KEYBOOP_RELEASE:-}" = 1 ]; then
+    echo "Fresh mode allocates its own path and supports development builds only." >&2
+    exit 2
+  fi
+  mkdir -p "$PROJECT_ROOT/build"
+  FRESH_ROOT="$(mktemp -d "$PROJECT_ROOT/build/keyboop.XXXXXXXX")"
+  APP="$FRESH_ROOT/Keyboop.app"
+  echo "Fresh development bundle: $APP"
+fi
 
 # Local admin tools share the exact process classifier. Source releases may omit Tools/, so keep a
 # minimal equivalent fallback here: v3 wins over the legacy flag it also carries.
@@ -120,32 +131,35 @@ EXECUTABLE="$APP_ABSOLUTE/Contents/MacOS/Keyboop"
 # Узкий legacy crash-scanner без `--resource-guard-v3` можно отличить по argv и не учитывать. Новый
 # persistent helper принципиально другой: он может жить после GUI, удерживая global lock/receipt и
 # повторяя OFF/restore. Перезаписывать его executable bundle до завершения cleanup нельзя.
-main_pids="$(keyboop_process_pids "$EXECUTABLE" application)"
-if [ -n "$main_pids" ]; then
-  echo "✗ Keyboop сейчас запущен из $APP_ABSOLUTE — собирать под ним нельзя."
-  # ⚠️ ГАСИМ ПО ПУТИ, А НЕ ПО ИМЕНИ. Здесь стояло `pkill -x Keyboop`, и эта подсказка обошлась
-  # дорого: она гасит ЛЮБОЙ процесс с именем Keyboop, то есть заодно и боевую копию из
-  # /Applications, которой человек в этот момент пользуется. У сборочной и у боевой копии общее
-  # имя процесса и разные пути — значит и различать их надо путём.
-  # И `-f`, а не `-9`: SIGKILL перехватить нельзя, а на выходе мы возвращаем системе роль клавиши
-  # 🌐, иначе она остаётся сломанной до перезапуска (задача 96).
-  echo "  Сначала:  pkill -f \"$EXECUTABLE\"        затем собери и:  open \"$APP\""
-  exit 1
-fi
-persistent_pids="$(keyboop_process_pids "$EXECUTABLE" persistent)"
-if [ -n "$persistent_pids" ]; then
-  echo "⏳ persistent resource helper завершает cleanup: $persistent_pids"
-  for _ in $(seq 1 40); do
-    persistent_pids="$(keyboop_process_pids "$EXECUTABLE" persistent)"
-    [ -z "$persistent_pids" ] && break
-    sleep 0.25
-  done
-  if [ -n "$persistent_pids" ]; then
-    echo "✗ resource helper всё ещё держит незавершённую сессию: $persistent_pids"
-    echo "  Bundle не перезаписываю; helper не посылаю сигналов. Проверь cleanup log/receipt."
+if [ "$FRESH_BUILD" != 1 ]; then
+  main_pids="$(keyboop_process_pids "$EXECUTABLE" application)"
+  if [ -n "$main_pids" ]; then
+    echo "✗ Keyboop сейчас запущен из $APP_ABSOLUTE — собирать под ним нельзя."
+    # ⚠️ ГАСИМ ПО ПУТИ, А НЕ ПО ИМЕНИ. Здесь стояло `pkill -x Keyboop`, и эта подсказка обошлась
+    # дорого: она гасит ЛЮБОЙ процесс с именем Keyboop, то есть заодно и боевую копию из
+    # /Applications, которой человек в этот момент пользуется. У сборочной и у боевой копии общее
+    # имя процесса и разные пути — значит и различать их надо путём.
+    # И `-f`, а не `-9`: SIGKILL перехватить нельзя, а на выходе мы возвращаем системе роль клавиши
+    # 🌐, иначе она остаётся сломанной до перезапуска (задача 96).
+    echo "  Сначала:  pkill -f \"$EXECUTABLE\"        затем собери и:  open \"$APP\""
     exit 1
   fi
+  persistent_pids="$(keyboop_process_pids "$EXECUTABLE" persistent)"
+  if [ -n "$persistent_pids" ]; then
+    echo "⏳ persistent resource helper завершает cleanup: $persistent_pids"
+    for _ in $(seq 1 40); do
+      persistent_pids="$(keyboop_process_pids "$EXECUTABLE" persistent)"
+      [ -z "$persistent_pids" ] && break
+      sleep 0.25
+    done
+    if [ -n "$persistent_pids" ]; then
+      echo "✗ resource helper всё ещё держит незавершённую сессию: $persistent_pids"
+      echo "  Bundle не перезаписываю; helper не посылаю сигналов. Проверь cleanup log/receipt."
+      exit 1
+    fi
+  fi
 fi
+
 # ПРОВЕРКА ДУБЛЕЙ В L10n (25.07): Swift-словарь-литерал с повторяющимся ключом компилируется молча,
 # но падает SIGTRAP при ПЕРВОМ обращении — то есть приложение не запускается вообще (Dictionary.init →
 # one-time initialization function for strings). Ловим на сборке, а не по краш-репорту.
@@ -165,13 +179,19 @@ fi
 echo "▸ swiftc compile…"
 # Close the bounded-wait race: a GUI may have launched while the old helper was finishing. Perform
 # one final exact-path check immediately before replacing any bundle contents.
-blocking_pids="$(keyboop_process_pids "$EXECUTABLE" blocking)"
-if [ -n "$blocking_pids" ]; then
-  echo "✗ перед записью bundle снова появился GUI/persistent helper: $blocking_pids"
-  echo "  Bundle оставляю без изменений."
-  exit 1
+if [ "$FRESH_BUILD" = 1 ]; then
+  # No executable has ever existed at this private, newly allocated path.
+  # mkdir must fail if anything has already appeared at the destination.
+  mkdir "$APP"
+else
+  blocking_pids="$(keyboop_process_pids "$EXECUTABLE" blocking)"
+  if [ -n "$blocking_pids" ]; then
+    echo "✗ перед записью bundle снова появился GUI/persistent helper: $blocking_pids"
+    echo "  Bundle оставляю без изменений."
+    exit 1
+  fi
+  rm -rf "$APP"
 fi
-rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 # ⚠️ КРИТИЧНО: arm64-сборка transcribe.cpp ДОЛЖНА быть с CMAKE_OSX_DEPLOYMENT_TARGET=14.0.
@@ -191,7 +211,11 @@ fi
 # Sparkle (автообновления): динамический фреймворк. Линкуем + rpath на Contents/Frameworks,
 # куда сам фреймворк копируется ниже (с переподписью вложенных бинарей нашим Developer ID).
 SPARKLE="vendor/sparkle"
-swiftc -O Sources/Keyboop/*.swift \
+swift_cache_args=()
+if [ "$FRESH_BUILD" = 1 ]; then
+  swift_cache_args=(-module-cache-path "${KEYBOOP_MODULE_CACHE:-$FRESH_ROOT/module-cache}")
+fi
+swiftc "${swift_cache_args[@]}" -O Sources/Keyboop/*.swift \
   -o "$APP/Contents/MacOS/Keyboop" \
   -swift-version 5 -target arm64-apple-macos14.0 \
   -import-objc-header Sources/Keyboop/transcribe-bridging.h \
@@ -221,7 +245,7 @@ if [ "${KEYBOOP_UNIVERSAL:-}" = "1" ]; then
   fi
   echo "▸ swiftc compile (x86_64 для universal)…"
   mv "$APP/Contents/MacOS/Keyboop" "$APP/Contents/MacOS/.Keyboop-arm64"
-  swiftc -O Sources/Keyboop/*.swift \
+  swiftc "${swift_cache_args[@]}" -O Sources/Keyboop/*.swift \
     -o "$APP/Contents/MacOS/.Keyboop-x86" \
     -swift-version 5 -target x86_64-apple-macos13.0 \
     -import-objc-header Sources/Keyboop/transcribe-bridging.h \
@@ -242,13 +266,13 @@ fi
 # Native Messaging Host для браузерного расширения (KB-001).
 if [ -f Sources/KeyboopNativeHost/main.swift ]; then
   mkdir -p "$APP/Contents/Helpers"
-  swiftc -O Sources/KeyboopNativeHost/main.swift \
+  swiftc "${swift_cache_args[@]}" -O Sources/KeyboopNativeHost/main.swift \
     -o "$APP/Contents/Helpers/KeyboopNativeHost" \
     -swift-version 5 -target arm64-apple-macos13.0 \
     -framework Foundation
   if [ "${KEYBOOP_UNIVERSAL:-}" = "1" ]; then
     mv "$APP/Contents/Helpers/KeyboopNativeHost" "$APP/Contents/Helpers/.KeyboopNativeHost-arm64"
-    swiftc -O Sources/KeyboopNativeHost/main.swift \
+    swiftc "${swift_cache_args[@]}" -O Sources/KeyboopNativeHost/main.swift \
       -o "$APP/Contents/Helpers/.KeyboopNativeHost-x86" \
       -swift-version 5 -target x86_64-apple-macos13.0 \
       -framework Foundation
@@ -267,6 +291,7 @@ if [ -d Extensions/chrome ]; then
 fi
 
 # Языковые данные (триграммы/словари) в bundle Resources
+cp THIRD_PARTY.md "$APP/Contents/Resources/THIRD_PARTY.md"
 cp Sources/Keyboop/Resources/*.json "$APP/Contents/Resources/" 2>/dev/null || echo "  (нет Resources/*.json — детектор будет без данных)"
 # Знак Keyboop (template) для waveform в строке меню
 cp Sources/Keyboop/Resources/menubar-mark.png "$APP/Contents/Resources/" 2>/dev/null || echo "  (нет menubar-mark.png — значок будет вектором-фолбэком)"
@@ -324,6 +349,16 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     </dict>
     <key>LSUIElement</key>             <true/>
     <key>NSAccentColorName</key>       <string>AccentColor</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>127.0.0.1</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+            </dict>
+        </dict>
+    </dict>
     <key>NSAudioCaptureUsageDescription</key> <string>Keyboop записывает системный звук и микрофон только по вашему ⌥-клику по значку, расшифровывает запись на этом Mac и никуда не отправляет.</string>
     <key>NSMicrophoneUsageDescription</key> <string>Keyboop распознаёт надиктованный текст локально, на вашем Mac. Аудио никуда не отправляется.</string>
     <!-- ⚠️ ЯВНЫЙ ОТКАЗ ОТ РЕЖИМА СОВМЕСТИМОСТИ С КОРПУСОМ КАМЕРЫ (13.08.2026).
@@ -387,15 +422,13 @@ if [ "${KEYBOOP_RELEASE:-}" = "1" ] && [ -n "${KEYBOOP_FEED_URL:-}" ]; then
     || /usr/libexec/PlistBuddy -c "Set :SUFeedURL $KEYBOOP_FEED_URL" "$APP/Contents/Info.plist"
 fi
 
-# M4 (фикс инцидента 14.06): dev-сборкам — ОТДЕЛЬНЫЙ bundle id и имя, чтобы они физически НЕ могли
+# M4 (фикс инцидента 14.06): dev-сборкам — ОТДЕЛЬНЫЙ bundle id, чтобы они физически НЕ могли
 # перехватить TCC/Accessibility у боевой ru.keyboop.app (две сборки с одним id, но разной подписью →
 # конфликт designated requirement → TCC-запись инвалидируется, доступ слетает). Меняем PlistBuddy'ем
 # ПОСЛЕ heredoc (он single-quoted, переменные не раскрывает) и ДО codesign (иначе порвём seal подписи).
 # Заодно у dev снимаем SUFeedURL — пусть dev-сборка вообще не ходит за боевым appcast.
 if [ "${KEYBOOP_RELEASE:-}" != "1" ]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ru.keyboop.app.dev" "$APP/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Set :CFBundleName Keyboop Dev" "$APP/Contents/Info.plist" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Keyboop Dev" "$APP/Contents/Info.plist" 2>/dev/null || true
   /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$APP/Contents/Info.plist" 2>/dev/null || true
   /usr/libexec/PlistBuddy -c "Delete :MDItemKeywords" "$APP/Contents/Info.plist" 2>/dev/null || true
   echo "  dev: bundle id → ru.keyboop.app.dev (TCC изолирован от боевой), SUFeedURL + Spotlight-ключи сняты"
@@ -414,6 +447,9 @@ else
   ENT="Keyboop-dev.entitlements"
   CS_OPTS="--timestamp=none"
 fi
+
+bash tools/package-llama.sh "$APP" "$SIGN_ID" $CS_OPTS
+bash tools/package-sage.sh "$APP" "$SIGN_ID" $CS_OPTS
 
 # Встраиваем Sparkle.framework в бандл (ditto сохраняет симлинки версий и права).
 mkdir -p "$APP/Contents/Frameworks"
@@ -457,6 +493,7 @@ if codesign --verify --deep --strict "$APP" 2>/dev/null; then
 else
   echo "  ⚠️  ОШИБКА: codesign --deep --strict НЕ прошёл — бандл битый, TCC будет слетать:"
   codesign --verify --deep --strict "$APP" 2>&1 | sed 's/^/      /'
+  exit 1
 fi
 
 echo "✓ Готово: $APP"

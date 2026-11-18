@@ -81,6 +81,11 @@ final class AppSettings {
             // вклиниваться в замену нечему — гонка закрыта по построению, а не по вероятности.
             // Кто выключал руками — у того останется выключено (register явные значения не трогает).
             "liveFixEnabled": true,
+            "wordCompletionEnabled": false,
+            "nextWordEnabled": false,
+            "predictiveLocalModelEnabled": false,
+            "wordCompletionKeyCode": 48,
+            "wordCompletionModifiers": Int(CGEventFlags.maskAlternate.rawValue),
             Key.sound: true,
             // Звук переключения — по умолчанию СИСТЕМНЫЙ Pop (решение автора 25.07: свой звук есть
             // в списке как опция, но дефолт остаётся привычным — он у людей уже «в руках»).
@@ -141,6 +146,31 @@ final class AppSettings {
     /// стейл-рассинхроны буфера с экраном до слышимых фантомов; подробности в
     /// register(defaults:)). Тумблер жив; явный выбор пользователя register не трогает.
     var liveFixEnabled: Bool { get { d.bool(forKey: "liveFixEnabled") } set { d.set(newValue, forKey: "liveFixEnabled") } }
+    var wordCompletionEnabled: Bool {
+        get { d.bool(forKey: "wordCompletionEnabled") }
+        set { d.set(newValue, forKey: "wordCompletionEnabled") }
+    }
+    var nextWordEnabled: Bool {
+        get { d.bool(forKey: "nextWordEnabled") }
+        set { d.set(newValue, forKey: "nextWordEnabled") }
+    }
+    var predictiveLocalModelEnabled: Bool {
+        get { d.bool(forKey: "predictiveLocalModelEnabled") }
+        set { d.set(newValue, forKey: "predictiveLocalModelEnabled") }
+    }
+    var wordSuggestionsEnabled: Bool { wordCompletionEnabled || nextWordEnabled }
+    var wordSuggestionPreferences: (Bool, Bool, Bool, Int, UInt64) {
+        (wordCompletionEnabled, nextWordEnabled, predictiveLocalModelEnabled,
+         wordCompletionKeyCode, wordCompletionModifiers)
+    }
+    var wordCompletionKeyCode: Int {
+        get { d.integer(forKey: "wordCompletionKeyCode") }
+        set { d.set(newValue, forKey: "wordCompletionKeyCode") }
+    }
+    var wordCompletionModifiers: UInt64 {
+        get { UInt64(truncatingIfNeeded: d.integer(forKey: "wordCompletionModifiers")) }
+        set { d.set(Int(truncatingIfNeeded: newValue), forKey: "wordCompletionModifiers") }
+    }
 
     /// Предиктивное переключение раскладки до первой буквы (по тексту у курсора, чату и памяти).
     /// По умолчанию ВКЛ (при всех защитах: пароли, off-программы, dev-режим и ручной выбор пользователя).

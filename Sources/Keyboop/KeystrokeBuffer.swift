@@ -101,6 +101,14 @@ final class KeystrokeBuffer {
         }
     }
 
+    func appendSuggestedSuffix(_ suffix: String) {
+        // A space inserted with a suggestion closes the word in the buffer as well.
+        for character in suffix {
+            if character.isWhitespace { boundary(String(character)) }
+            else { append(String(character)) }
+        }
+    }
+
     /// Завершение слова (пробел/таб/ввод).
     func boundary(_ whitespace: String,
                   at eventTime: TimeInterval = ProcessInfo.processInfo.systemUptime) {

@@ -349,7 +349,8 @@ final class TypographyCoordinator {
 final class TypographyPreviewPanelController: NSObject, NSWindowDelegate {
     private let originalText: String
     private let transformedText: String
-    private let appliedRules: [TypographyRuleID]
+    private let title: String
+    private let summary: String
     private let onApply: () -> Void
     private let onCancel: () -> Void
 
@@ -357,16 +358,30 @@ final class TypographyPreviewPanelController: NSObject, NSWindowDelegate {
     private var keyMonitor: Any?
     private var finished = false
 
-    init(
+    convenience init(
         originalText: String,
         transformedText: String,
         appliedRules: [TypographyRuleID],
         onApply: @escaping () -> Void,
         onCancel: @escaping () -> Void
     ) {
+        self.init(originalText: originalText, transformedText: transformedText,
+                  title: L10n.t("typo.preview.title"), summary: L10n.t("typo.preview.summary", appliedRules.count),
+                  onApply: onApply, onCancel: onCancel)
+    }
+
+    init(
+        originalText: String,
+        transformedText: String,
+        title: String,
+        summary: String,
+        onApply: @escaping () -> Void,
+        onCancel: @escaping () -> Void
+    ) {
         self.originalText = originalText
         self.transformedText = transformedText
-        self.appliedRules = appliedRules
+        self.title = title
+        self.summary = summary
         self.onApply = onApply
         self.onCancel = onCancel
         super.init()
@@ -392,7 +407,7 @@ final class TypographyPreviewPanelController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        p.title = L10n.t("typo.preview.title")
+        p.title = title
         p.isFloatingPanel = true
         p.level = .floating
         p.isReleasedWhenClosed = false
@@ -401,7 +416,7 @@ final class TypographyPreviewPanelController: NSObject, NSWindowDelegate {
         let root = NSView()
         root.translatesAutoresizingMaskIntoConstraints = false
 
-        let summary = NSTextField(labelWithString: L10n.t("typo.preview.summary", appliedRules.count))
+        let summary = NSTextField(labelWithString: self.summary)
         summary.font = .systemFont(ofSize: 12, weight: .semibold)
         summary.textColor = .secondaryLabelColor
 

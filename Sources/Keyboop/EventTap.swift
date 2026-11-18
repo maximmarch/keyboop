@@ -160,6 +160,7 @@ final class EventTap {
     /// Самоизлечение: обычное (непроглоченное) нажатие той же клавиши УБИРАЕТ её из набора — поэтому
     /// потерянный keyUp (переключились из приложения с зажатой клавишей) не отравляет следующий ввод.
     private var swallowedDownKeyCodes = Set<Int64>()
+    private var wordCompletionHeldKey: Int64?
 
     /// Проглотить keyDown, запомнив клавишу: её keyUp тоже нельзя пускать в приложение.
     /// keyCode цифр верхнего ряда 1…9 → индекс 0…8. Нампад намеренно НЕ поддержан: на ноутбуках
@@ -349,6 +350,8 @@ final class EventTap {
     /// съели бы keyUp у следующих честных нажатий.
     private func teardown() {
         swallowedDownKeyCodes.removeAll()
+        wordCompletionHeldKey = nil
+        (handler as? Engine)?.wordCompletion.invalidate()
         if let s = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), s, .commonModes) }
         runLoopSource = nil
         tap = nil
@@ -456,6 +459,8 @@ final class EventTap {
             // у следующих ЧЕСТНЫХ нажатий. Чистим здесь, а не только в teardown() — этот путь
             // оживления тапа его не зовёт.
             swallowedDownKeyCodes.removeAll()
+            wordCompletionHeldKey = nil
+            (handler as? Engine)?.wordCompletion.invalidate()
             // ⚠️ Проглоченный keyDown тоже сбрасываем: пока тап был мёртв, его keyUp прошёл мимо, и
             // метка «эту клавишу мы съели» пережила бы смерть тапа, съев чужое отпускание.
             inlineSwallowedKeyCodeReset()
@@ -508,12 +513,28 @@ final class EventTap {
             if type == .tapDisabledByTimeout { (handler as? Engine)?.disableInlineAfterTapTimeout() }
         case .keyDown:
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            if wordCompletionHeldKey == keyCode {
+                if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 { return nil }
+                wordCompletionHeldKey = nil // Tap may have missed the release.
+            }
             // ДРЕБЕЗГ КЛАВИШИ — ДО всего остального (T18). Фантомное нажатие не должно ни печататься,
             // ни попадать в буфер, ни сбивать взводы хоткеев: для нас его как будто не было.
             // Наша синтетика сюда не доходит, она отсеяна по маркеру выше.
             if s.dedupeChatter, isChatter(keyCode: keyCode, event: event) {
                 kbLog("дребезг: повтор клавиши \(keyCode) быстрее \(Int(chatterWindow * 1000)) мс — проглочен")
                 return swallowDown(keyCode)
+            }
+            let engine = handler as? Engine
+            let completionMods = s.wordCompletionModifiers
+            let completionKey = engine?.wordCompletion.hasSuggestion == true && s.wordSuggestionsEnabled
+                && keyMatches(keyCode, s.wordCompletionKeyCode)
+                && relevantMods(event.flags).rawValue == completionMods
+                && (completionMods != 0 || (HotkeyGuard.allowsBareKey(Int(keyCode), for: .wordCompletion)
+                                           && !event.flags.contains(.maskSecondaryFn)))
+            if !completionKey { engine?.wordCompletion.beginKeyDown() }
+            defer {
+                if completionKey, wordCompletionHeldKey != keyCode { engine?.wordCompletion.invalidate() }
+                if !completionKey { engine?.wordCompletion.endKeyDown() }
             }
             // Опрос Spotlight. Здесь выполняется одно чтение часов: сама проба (1.3 мс) уходит в
             // фоновую очередь и не чаще раза в 250 мс. Привязано к нажатиям намеренно — панель
@@ -808,6 +829,11 @@ final class EventTap {
                     return swallowDown(keyCode)   // глотаем: символ хоткея не должен печататься
                 }
             }
+            if completionKey, event.getIntegerValueField(.keyboardEventAutorepeat) == 0,
+               engine?.acceptWordCompletion() == true {
+                wordCompletionHeldKey = keyCode
+                return nil
+            }
             // (Учёт для модификаторных жестов перенесён в НАЧАЛО ветки — см. выше: ранние
             //  return'ы проглоченных клавиш не должны его пропускать.)
             // БЕЗ AppKit (см. KeyboardLayoutCache): NSEvent(cgEvent:).characters стоил ~74 мкс
@@ -873,6 +899,10 @@ final class EventTap {
             // приложение (нажали `` ` `` без ⌥), то и keyUp обязан пройти — иначе система считает
             // клавишу зажатой, и у человека умирает пробел (репорты #13/#22/#30).
             let upKey = event.getIntegerValueField(.keyboardEventKeycode)
+            if wordCompletionHeldKey == upKey {
+                wordCompletionHeldKey = nil
+                return nil
+            }
             if s.voiceEnabled, s.voiceHotkeyMode == "key", keyMatches(upKey, s.voiceHotkeyKeyCode) {
                 voiceKeyArmed = false
                 if s.voiceHoldMode != "toggle", voiceActive, !voiceActiveFromAI {
