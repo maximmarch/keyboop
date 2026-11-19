@@ -5,14 +5,14 @@ final class PredictionModelControls: NSStackView {
     private let runtime = PredictionRuntime.shared
     private let source = NSPopUpButton(frame: .zero, pullsDown: false)
     private let model = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let status = NSTextField(wrappingLabelWithString: "")
+    private let status = WrappingLabel(string: "")
     private let action = NSButton(title: "", target: nil, action: nil)
-    private let modelRow = NSStackView()
+    private lazy var modelRow = NSStackView.modelControlRow(model, action)
     private let testButton = NSButton(title: L10n.t("prediction.probe"), target: nil, action: nil)
     private let compareButton = NSButton(title: "", target: nil, action: nil)
     private let comparisonResults = NSStackView()
     private var comparison: PredictionComparison?
-    private let testResult = NSTextField(wrappingLabelWithString: "")
+    private let testResult = WrappingLabel(string: "")
     private lazy var testClient = PredictiveLocalModel()
     private var testRequest: WordCompletionRequest?
     private var firstWordMS: Int?
@@ -26,50 +26,50 @@ final class PredictionModelControls: NSStackView {
         orientation = .vertical
         alignment = .leading
         spacing = 8
-        edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
 
         source.addItems(withTitles: [L10n.t("prediction.source.managed"), L10n.t("prediction.source.external")])
         source.setAccessibilityLabel(L10n.t("prediction.source"))
         source.target = self
         source.action = #selector(changeSource)
-        let sourceRow = NSStackView(views: [NSTextField(labelWithString: L10n.t("prediction.source")), source])
-        addArrangedSubview(sourceRow)
+        let sourceLabel = NSTextField(labelWithString: L10n.t("prediction.source"))
+        sourceLabel.font = .systemFont(ofSize: 13)
+        addFullWidthRow(NSStackView.modelControlRow(sourceLabel, source))
 
         for item in PredictionRuntime.models {
             model.addItem(withTitle: "\(item.title) · \(L10n.size(item.sizeLabel))")
             model.lastItem?.representedObject = item.id
         }
         model.setAccessibilityLabel(L10n.t("prediction.weights"))
+        model.cell?.lineBreakMode = .byTruncatingTail
         model.target = self
         model.action = #selector(changeModel)
+        action.bezelStyle = .rounded
         action.target = self
         action.action = #selector(manageDownload)
-        modelRow.orientation = .horizontal
-        modelRow.spacing = 8
-        for control in [model, action] as [NSControl] {
-            modelRow.addArrangedSubview(control)
-        }
-        addArrangedSubview(modelRow)
+        addFullWidthRow(modelRow)
 
-        status.font = .systemFont(ofSize: 12)
+        status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
-        addArrangedSubview(status)
-        status.widthAnchor.constraint(equalTo: widthAnchor, constant: -28).isActive = true
+        addFullWidthRow(status)
+        testButton.bezelStyle = .rounded
         testButton.target = self
         testButton.action = #selector(testModel)
+        compareButton.bezelStyle = .rounded
         compareButton.target = self
         compareButton.action = #selector(compareModels)
-        addArrangedSubview(NSStackView(views: [testButton, compareButton]))
+        let testRow = NSStackView(views: [testButton, compareButton])
+        testRow.orientation = .horizontal
+        testRow.alignment = .centerY
+        testRow.spacing = 8
+        addArrangedSubview(testRow)
         testResult.font = .systemFont(ofSize: 12)
         testResult.isHidden = true
-        addArrangedSubview(testResult)
-        testResult.widthAnchor.constraint(equalTo: widthAnchor, constant: -28).isActive = true
+        addFullWidthRow(testResult)
         comparisonResults.orientation = .vertical
         comparisonResults.alignment = .leading
         comparisonResults.spacing = 8
         comparisonResults.isHidden = true
-        addArrangedSubview(comparisonResults)
-        comparisonResults.widthAnchor.constraint(equalTo: widthAnchor, constant: -28).isActive = true
+        addFullWidthRow(comparisonResults)
         NotificationCenter.default.addObserver(self, selector: #selector(windowWillClose(_:)),
                                               name: NSWindow.willCloseNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(refresh),
@@ -85,6 +85,7 @@ final class PredictionModelControls: NSStackView {
         source.isEnabled = !runtime.isDownloading
         modelRow.isHidden = external
         model.selectItem(at: model.indexOfItem(withRepresentedObject: runtime.selectedModelID))
+        model.toolTip = model.titleOfSelectedItem
         model.isEnabled = !runtime.isDownloading
         let key: String
         if runtime.isDownloading { key = "prediction.cancelDownload" }

@@ -3,7 +3,7 @@ import AppKit
 /// Shows download state in place, so a progress update never rebuilds the settings window.
 final class SageSettingsControls: NSStackView {
     private let runtime = SageRuntime.shared
-    private let status = NSTextField(wrappingLabelWithString: "")
+    private let status = WrappingLabel(string: "")
     private let enabledSwitch = NSSwitch()
     private let dictationSwitch = NSSwitch()
     private let mode = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -13,58 +13,50 @@ final class SageSettingsControls: NSStackView {
         super.init(frame: .zero)
         orientation = .vertical
         alignment = .leading
-        spacing = 6
-        edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+        spacing = 8
 
         let title = NSTextField(labelWithString: L10n.t("sage.title"))
         title.font = .systemFont(ofSize: 13, weight: .semibold)
-        addArrangedSubview(title)
+        enabledSwitch.setAccessibilityLabel(L10n.t("sage.enabled"))
+        enabledSwitch.target = self
+        enabledSwitch.action = #selector(changeEnabled)
+        let titleRow = NSStackView.modelControlRow(title, enabledSwitch)
+        addFullWidthRow(titleRow)
+        setCustomSpacing(4, after: titleRow)
 
-        let detail = NSTextField(wrappingLabelWithString: L10n.t("sage.detail"))
+        let detail = WrappingLabel(string: L10n.t("sage.detail"))
         detail.textColor = .secondaryLabelColor
-        status.textColor = .secondaryLabelColor
-        detail.font = .systemFont(ofSize: 12)
-        addArrangedSubview(detail)
-        detail.widthAnchor.constraint(equalTo: widthAnchor, constant: -28).isActive = true
+        detail.font = .systemFont(ofSize: 11)
+        addFullWidthRow(detail)
 
-        func addSwitch(_ toggle: NSSwitch, title: String, action: Selector) {
-            let label = NSTextField(labelWithString: L10n.t(title))
-            label.font = .systemFont(ofSize: 12)
-            toggle.setAccessibilityLabel(label.stringValue)
-            toggle.target = self
-            toggle.action = action
-            let row = NSStackView(views: [label, toggle])
-            row.alignment = .centerY
-            row.spacing = 8
-            addArrangedSubview(row)
-        }
-        addSwitch(enabledSwitch, title: "sage.enabled", action: #selector(changeEnabled))
-        addSwitch(dictationSwitch, title: "voice.sage.enable", action: #selector(changeDictation))
+        dictationSwitch.target = self
+        dictationSwitch.action = #selector(changeDictation)
+        addControl(dictationSwitch, key: "voice.sage.enable")
 
         mode.addItems(withTitles: SageTypingMode.allCases.map { L10n.t($0.localizationKey) })
         mode.target = self
         mode.action = #selector(changeTypingMode)
-        let modeLabel = NSTextField(labelWithString: L10n.t("sage.typing.mode"))
-        modeLabel.font = .systemFont(ofSize: 12)
-        mode.setAccessibilityLabel(modeLabel.stringValue)
-        let modeRow = NSStackView(views: [modeLabel, mode])
-        modeRow.orientation = .horizontal
-        modeRow.alignment = .centerY
-        modeRow.spacing = 8
-        addArrangedSubview(modeRow)
+        addControl(mode, key: "sage.typing.mode")
 
-        status.font = .systemFont(ofSize: 12)
-        addArrangedSubview(status)
-        status.widthAnchor.constraint(equalTo: widthAnchor, constant: -28).isActive = true
-
+        status.font = .systemFont(ofSize: 11)
+        status.textColor = .secondaryLabelColor
+        action.bezelStyle = .rounded
         action.target = self
         action.action = #selector(manageModel)
-        addArrangedSubview(action)
+        addFullWidthRow(NSStackView.modelControlRow(status, action))
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: SageRuntime.didChange, object: nil)
         refresh()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:)") }
+
+    private func addControl(_ control: NSControl, key: String) {
+        let label = NSTextField(labelWithString: L10n.t(key))
+        label.font = .systemFont(ofSize: 13)
+        label.lineBreakMode = .byTruncatingTail
+        control.setAccessibilityLabel(label.stringValue)
+        addFullWidthRow(NSStackView.modelControlRow(label, control))
+    }
 
     @objc private func refresh() {
         let settings = AppSettings.shared

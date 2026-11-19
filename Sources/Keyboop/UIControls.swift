@@ -1,4 +1,28 @@
 import AppKit
+
+extension NSStackView {
+    /// For a leading-aligned vertical stack without horizontal edge insets.
+    func addFullWidthRow(_ row: NSView) {
+        addArrangedSubview(row)
+        row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+    }
+
+    /// The leading view takes the available space, keeping the control on the trailing edge.
+    static func modelControlRow(_ leading: NSView, _ control: NSControl) -> NSStackView {
+        leading.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        leading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        control.setContentHuggingPriority(.required, for: .horizontal)
+        control.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let row = NSStackView(views: [leading, control])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill
+        row.spacing = 10
+        row.setClippingResistancePriority(.required, for: .vertical)
+        row.heightAnchor.constraint(greaterThanOrEqualTo: leading.heightAnchor).isActive = true
+        return row
+    }
+}
 import CoreGraphics
 
 /// Человекочитаемая запись текущего хоткея.

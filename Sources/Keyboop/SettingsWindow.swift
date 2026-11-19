@@ -3795,34 +3795,58 @@ final class DetailVC: NSViewController {
     }
 
     private func buildModels() -> NSView {
-        vstack([
+        let speech = speechModelRows()
+        let correction = card([modelCardContent(SageSettingsControls())], fillsWidth: true)
+        let prediction = card([
+            switchRow(L10n.t("completion.localModel"), L10n.t("completion.localModelDetail"),
+                      settings.predictiveLocalModelEnabled, #selector(togglePredictiveLocalModel),
+                      key: "completion.localModel", wraps: true, horizontalInset: 14),
+            modelCardContent(PredictionModelControls())
+        ], fillsWidth: true)
+        let postProcess = card([
+            switchRow(L10n.t("voice.postprocess.enable"), L10n.t("models.external"),
+                      settings.voicePostProcessEnabled, #selector(toggleVoicePostProcess(_:)),
+                      key: "voice.postprocess.enable", wraps: true, horizontalInset: 14),
+            modelCardContent(flatLink(L10n.t("models.voiceOptions"), action: #selector(openVoiceModelOptions), inset: 0))
+        ], fillsWidth: true)
+        let stack = vstack([
             sectionTitle(L10n.t("voice.modelsTitle")),
-            card([switchRow(L10n.t("voice.on"), nil, settings.voiceEnabled, #selector(toggleVoice), key: "voice.on")])
-        ] + speechModelRows() + [
-            group(8),
+            card([switchRow(L10n.t("voice.on"), nil, settings.voiceEnabled, #selector(toggleVoice), key: "voice.on")],
+                 fillsWidth: true)
+        ] + speech + [
             sectionTitle(L10n.t("models.correction")),
-            card([SageSettingsControls()]),
-            group(8),
+            correction,
             sectionTitle(L10n.t("sec.predictiveInput")),
-            card([
-                switchRow(L10n.t("completion.localModel"), L10n.t("completion.localModelDetail"),
-                          settings.predictiveLocalModelEnabled, #selector(togglePredictiveLocalModel),
-                          key: "completion.localModel", wraps: true),
-                PredictionModelControls()
-            ]),
-            group(8),
+            prediction,
             sectionTitle(L10n.t("voice.grpAI")),
-            card([
-                switchRow(L10n.t("voice.postprocess.enable"), nil, settings.voicePostProcessEnabled,
-                          #selector(toggleVoicePostProcess(_:)), key: "voice.postprocess.enable"),
-                hint(L10n.t("models.external")),
-                flatLink(L10n.t("models.voiceOptions"), action: #selector(openVoiceModelOptions))
-            ])
+            postProcess
         ])
+        if let notes = speech.last {
+            notes.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            stack.setCustomSpacing(22, after: notes)
+        }
+        stack.setCustomSpacing(22, after: correction)
+        stack.setCustomSpacing(22, after: prediction)
+        return stack
+    }
+
+    private func modelCardContent(_ content: NSView, verticalInset: CGFloat = 10) -> NSView {
+        let wrapper = NSView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        wrapper.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: 14),
+            content.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor, constant: -14),
+            content.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: verticalInset),
+            content.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor, constant: -verticalInset)
+        ])
+        return wrapper
     }
 
     private func speechModelRows() -> [NSView] {
         othersBox = nil
+        voiceModelStatus.removeAll()
+        voiceModelButton.removeAll()
         catalogRefreshButton = nil
         catalogRefreshLabel = nil
         // Раздел собран по ТЕКУЩЕМУ состоянию диска → запоминаем сигнатуру, чтобы ближайший
@@ -3840,39 +3864,21 @@ final class DetailVC: NSViewController {
         if voiceOthersExpanded == nil {
             voiceOthersExpanded = others.contains { isActiveModel($0.element) || $0.element.isInstalled() }
         }
-        let modelCard = card(recommended.map { unifiedModelRow($0.element, index: $0.offset) })
-
-        var views: [NSView] = [modelCard]
-        // «Другие модели» — СРАЗУ за двумя рекомендованными, до пояснений: это продолжение списка,
-        // а не сноска к нему. Пояснительный текст уходит ниже — под раскрывшийся список.
+        var views: [NSView] = []
+        if !recommended.isEmpty {
+            views.append(card(recommended.map { unifiedModelRow($0.element, index: $0.offset) }, fillsWidth: true))
+        }
         if !others.isEmpty {
-            // Без треугольника раскрытия (он автору разонравился) и БЕЗ reshow: список строится
-            // всегда и лежит в шторке, кнопка лишь меняет её isHidden. Отправитель клика при этом
-            // жив, поэтому обёртка в async здесь не нужна.
             let expanded = voiceOthersExpanded ?? false
-            let box = CollapsibleRow(row: card(others.map { unifiedModelRow($0.element, index: $0.offset) }),
-                                     separator: group(4), visible: expanded)
+            let otherModels = card(others.map { unifiedModelRow($0.element, index: $0.offset) }, fillsWidth: true)
+            let box = CollapsibleRow(row: otherModels, separator: group(0), visible: expanded)
+            box.alignment = .leading
+            otherModels.widthAnchor.constraint(equalTo: box.widthAnchor).isActive = true
             othersBox = box
-            views.append(contentsOf: [group(4),
-                                      flatLink(String(format: L10n.t("voice.othersN"), others.count),
-                                               action: #selector(toggleVoiceOthers)),
+            views.append(contentsOf: [flatLink(voiceOtherModelsTitle(expanded: expanded),
+                                               action: #selector(toggleVoiceOthers(_:)), inset: 12),
                                       box])
         }
-        views.append(contentsOf: [
-            group(4),
-            catalogRefreshRow(),
-            group(6),
-            hint(L10n.t("voice.modelsNote")),
-            group(2),
-            hint(L10n.t("voice.sizeNote")),          // чем крупнее модель, тем медленнее (и, вероятно, точнее)
-            group(6),
-        ])
-        #if !arch(arm64)
-        views.append(contentsOf: [hint(L10n.t("voice.intelNote")), group(6)])
-        #endif
-        // Выгрузка после каждой диктовки (просьба пользователей, автор 24.09.2026). Стоит в группе
-        // моделей, потому что это про модель, а не про саму диктовку. Подпись сразу говорит, кому
-        // она НЕ нужна: у большинства памяти хватает, и им галочка только добавит задержку.
         #if arch(arm64)
         let unloadSub = L10n.t("voice.unloadAfterSub")
         #else
@@ -3881,7 +3887,21 @@ final class DetailVC: NSViewController {
         views.append(card([
             switchRow(L10n.t("voice.unloadAfter"), unloadSub, settings.voiceUnloadAfterDictation,
                       #selector(toggleUnloadAfterDictation), help: L10n.t("voice.unloadAfterHelp"), key: "voice.unloadAfter"),
-        ]))
+        ], fillsWidth: true))
+        views.append(catalogRefreshRow())
+
+        var notes = ["voice.modelsNote", "voice.sizeNote"]
+        #if !arch(arm64)
+        notes.append("voice.intelNote")
+        #endif
+        let noteStack = NSStackView()
+        noteStack.orientation = .vertical
+        noteStack.alignment = .leading
+        noteStack.spacing = 4
+        for key in notes {
+            noteStack.addFullWidthRow(wrappingText(L10n.t(key), size: 11, color: .secondaryLabelColor))
+        }
+        views.append(modelCardContent(noteStack, verticalInset: 0))
         return views
     }
 
@@ -3890,8 +3910,6 @@ final class DetailVC: NSViewController {
     }
 
     private func buildVoice() -> NSView {
-        voiceModelStatus.removeAll()
-        voiceModelButton.removeAll()
         let histClear = NSButton(title: L10n.t("voice.histClear"), target: self, action: #selector(clearVoiceHistory))
         histClear.bezelStyle = .rounded; histClear.controlSize = .regular
         let histShow = NSButton(title: L10n.t("voice.showHistory"), target: self, action: #selector(showVoiceHistory))
@@ -4144,18 +4162,12 @@ final class DetailVC: NSViewController {
         btn.setContentHuggingPriority(.required, for: .horizontal)
         catalogRefreshButton = btn
 
-        let label = NSTextField(labelWithString: String(format: L10n.t("voice.catalogCount"), ModelDownloader.catalog.count))
-        label.font = .systemFont(ofSize: 11)
-        label.textColor = .secondaryLabelColor
-        label.lineBreakMode = .byTruncatingTail
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let count = L10n.t("voice.catalogCount", ModelDownloader.catalog.count)
+        let label = wrappingText(count, size: 11, color: .secondaryLabelColor)
         catalogRefreshLabel = label
 
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let row = NSStackView(views: [label, spacer, btn])
-        row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 8
-        row.edgeInsets = NSEdgeInsets(top: 2, left: 4, bottom: 2, right: 4)
+        let row = NSStackView.modelControlRow(label, btn)
+        row.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
         return row
     }
 
@@ -4262,9 +4274,14 @@ final class DetailVC: NSViewController {
     }
 
     private weak var othersBox: CollapsibleRow?
-    @objc private func toggleVoiceOthers() {
+    private func voiceOtherModelsTitle(expanded: Bool) -> String {
+        expanded ? L10n.t("voice.hideOthers") : L10n.t("voice.othersN", unifiedCatalog.count)
+    }
+
+    @objc private func toggleVoiceOthers(_ button: NSButton) {
         let on = !(voiceOthersExpanded ?? false)
         voiceOthersExpanded = on
+        button.attributedTitle = flatLinkTitle(voiceOtherModelsTitle(expanded: on))
         othersBox?.setVisible(on, in: contentStack)
     }
 
@@ -4293,8 +4310,9 @@ final class DetailVC: NSViewController {
         let name = NSTextField(labelWithString: m.display)
         name.font = .systemFont(ofSize: 13, weight: activeNow ? .semibold : .regular)
         name.textColor = activeNow ? DS.coral : .labelColor
-        name.setContentCompressionResistancePriority(.required, for: .horizontal)
-        name.setContentHuggingPriority(.required, for: .horizontal)
+        name.lineBreakMode = .byTruncatingTail
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        name.toolTip = m.display
 
         let metaText = "\(m.size)  ·  " + (installed ? (activeNow ? L10n.t("voice.active") : L10n.t("voice.installed")) : m.note)
         let status = NSTextField(labelWithString: metaText)
@@ -4335,10 +4353,8 @@ final class DetailVC: NSViewController {
 
         let spacer = NSView(); spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        // «i» перед кнопками действия: человек должен узнать цену ДО того, как нажмёт «Скачать»,
-        // а не после того, как увидит полтора гигабайта в мониторе (задача 69).
         let info = HelpButton(text: m.help, title: m.display)
-        let row = NSStackView(views: [nameCol, spacer, info] + right)
+        let row = NSStackView(views: [nameCol, spacer] + right + [info])
         row.orientation = .horizontal; row.spacing = 8; row.alignment = .centerY
         row.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
         row.heightAnchor.constraint(greaterThanOrEqualToConstant: 46).isActive = true
@@ -5306,17 +5322,20 @@ final class DetailVC: NSViewController {
     /// `vPad` — поля самой панели сверху и снизу. По умолчанию ноль: в разделах Pro строки прижаты
     /// к кромке карточки намеренно, там их много и лишний воздух растянул бы список. На корневом
     /// экране строк четыре, и без полей первая с последней липнут к краю.
-    private func card(_ rows: [NSView], vPad: CGFloat = 0) -> CardView {
+    private func card(_ rows: [NSView], vPad: CGFloat = 0, fillsWidth: Bool = false) -> CardView {
         let c = CardView()
         c.wantsLayer = true
         let v = NSStackView()
-        v.orientation = .vertical; v.alignment = .width; v.spacing = 0
+        v.orientation = .vertical; v.alignment = fillsWidth ? .leading : .width; v.spacing = 0
         v.translatesAutoresizingMaskIntoConstraints = false
         for (i, r) in rows.enumerated() {
             // Шторка несёт разделитель внутри себя (см. CollapsibleRow): если добавить ещё и здесь,
             // при схлопывании в карточке повиснет лишняя линия.
-            if i > 0, !(r is CollapsibleRow) { v.addArrangedSubview(hairline()) }
-            v.addArrangedSubview(r)
+            let views = i > 0 && !(r is CollapsibleRow) ? [hairline(), r] : [r]
+            for view in views {
+                if fillsWidth { v.addFullWidthRow(view) }
+                else { v.addArrangedSubview(view) }
+            }
         }
         c.addSubview(v)
         NSLayoutConstraint.activate([
@@ -5343,9 +5362,11 @@ final class DetailVC: NSViewController {
     }
     /// Строка-переключатель: заголовок (+подзаголовок) слева, NSSwitch справа (on = coral через accent).
     private func switchRow(_ title: String, _ subtitle: String?, _ on: Bool, _ action: Selector,
-                           help: String? = nil, key: String? = nil, wraps: Bool = false) -> NSView {
+                           help: String? = nil, key: String? = nil, wraps: Bool = false,
+                           horizontalInset: CGFloat? = nil) -> NSView {
         let sw = NSSwitch(); sw.state = on ? .on : .off; sw.target = self; sw.action = action
-        return settingRow(title, subtitle, trailing: sw, help: help, key: key, wraps: wraps)
+        return settingRow(title, subtitle, trailing: sw, help: help, key: key, wraps: wraps,
+                          horizontalInset: horizontalInset)
     }
     /// Вариант switchRow с возможностью приглушить (серый + недоступен) — для зависимых настроек.
     private func switchRow(_ title: String, _ subtitle: String?, _ on: Bool, _ action: Selector,
@@ -5430,13 +5451,14 @@ final class DetailVC: NSViewController {
     /// видит приложение впервые, и обрезанное «Переключит…» там хуже, чем лишние двадцать пунктов
     /// высоты. Высота строки задана как `>= 44`, поэтому она просто вырастет.
     private func settingRow(_ title: String, _ subtitle: String?, trailing: NSView,
-                            help: String? = nil, key: String? = nil, wraps: Bool = false) -> NSView {
+                            help: String? = nil, key: String? = nil, wraps: Bool = false,
+                            horizontalInset: CGFloat? = nil) -> NSView {
         // ⚠️ У ПЕРЕНОСИМОЙ ПОДПИСИ ШИРИНУ СЧИТАЕМ ПО ФАКТУ, А НЕ ПО КОНСТАНТЕ. `RowMetrics.wideControl`
         // это ЗАПАС под самый широкий контрол в проекте, и для узкой строки он съедал половину
         // колонки: текст переносился на пять строк рядом с пустым местом (снимок 15.08).
-        let reserve = wraps ? max(RowMetrics.nsSwitch, ceil(trailing.fittingSize.width))
-                            : ((trailing is NSSwitch) ? RowMetrics.nsSwitch : RowMetrics.wideControl)
-        let avail = contentW - 28 - reserve - 10 - (help == nil ? 0 : RowMetrics.helpSlot + 10)
+        let reserve = trailing is NSSwitch ? RowMetrics.nsSwitch
+            : (wraps ? max(RowMetrics.nsSwitch, ceil(trailing.fittingSize.width)) : RowMetrics.wideControl)
+        let avail = contentW - 2 * (horizontalInset ?? 14) - reserve - 10 - (help == nil ? 0 : RowMetrics.helpSlot + 10)
         let l = NSTextField(labelWithString: title)
         l.font = .systemFont(ofSize: 13); l.textColor = .labelColor
         l.lineBreakMode = .byTruncatingTail
@@ -5519,8 +5541,8 @@ final class DetailVC: NSViewController {
         let opticalPad: CGFloat = 16, boxTopSlack: CGFloat = 6.5
         let vTop: CGFloat = wraps ? opticalPad - boxTopSlack : 9
         let vBot = vTop
-        row.edgeInsets = NSEdgeInsets(top: vTop, left: wraps ? 16 : 14,
-                                      bottom: vBot, right: wraps ? 16 : 14)
+        let inset = horizontalInset ?? (wraps ? 16 : 14)
+        row.edgeInsets = NSEdgeInsets(top: vTop, left: inset, bottom: vBot, right: inset)
         // ⚠️ ВЫСОТУ СТРОКИ ПРИВЯЗЫВАЕМ К ТЕКСТУ ЯВНО, А НЕ ЖДЁМ ЭТОГО ОТ СТЕКА (автор 17.08: «текст
         // подсказки прилип к разделителю»). У строк с кнопкой «i» `NSStackView.fittingSize` отдавал
         // высоту 62 при текстовой колонке в 61 плюс поля 40: собственную высоту колонки он в расчёт
@@ -5568,7 +5590,7 @@ final class DetailVC: NSViewController {
         return row
     }
 
-    private func vstack(_ views: [NSView]) -> NSView {
+    private func vstack(_ views: [NSView]) -> NSStackView {
         let s = NSStackView(views: views)
         s.orientation = .vertical
         // research-канон (Apple docs NSStackView.alignment): .leading — X-якорь ВЛЕВО для всех subview.
@@ -5948,19 +5970,23 @@ final class DetailVC: NSViewController {
     /// Коралловая плоская подпись без треугольника: сама говорит, что произойдёт по клику.
     /// Пришла на смену disclosureLink там, где раскрытие анимируется шторкой (автор 28.07:
     /// «эти раскрывающиеся списки я придумал когда-то, но они мне уже не особо нравятся»).
-    private func flatLink(_ text: String, action: Selector) -> NSView {
+    private func flatLink(_ text: String, action: Selector, inset: CGFloat = 2) -> NSView {
         let b = NSButton(title: "", target: self, action: action)
         b.isBordered = false
         b.setButtonType(.momentaryChange)
-        b.attributedTitle = NSAttributedString(
-            string: text,
-            attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium),
-                         .foregroundColor: DS.coral])
+        b.attributedTitle = flatLinkTitle(text)
         b.setContentHuggingPriority(.required, for: .horizontal)
         let row = NSStackView(views: [b, NSView()])
         row.orientation = .horizontal; row.spacing = 0; row.alignment = .centerY
-        row.edgeInsets = NSEdgeInsets(top: 0, left: 2, bottom: 0, right: 0)
+        row.edgeInsets = NSEdgeInsets(top: 0, left: inset, bottom: 0, right: 0)
         return row
+    }
+
+    private func flatLinkTitle(_ text: String) -> NSAttributedString {
+        NSAttributedString(
+            string: text,
+            attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                         .foregroundColor: DS.coral])
     }
 
     private func disclosureLink(_ text: String, expanded: Bool, action: Selector) -> NSView {
