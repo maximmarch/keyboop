@@ -593,10 +593,9 @@ final class AppSettings {
         get { d.bool(forKey: "voicePostProcessEnabled") }
         set { d.set(newValue, forKey: "voicePostProcessEnabled") }
     }
-    /// Провайдер постобработки: "apple" (Apple Intelligence) или "local" (локальный OpenAI-совместимый сервер).
-    var voicePostProcessProvider: String {
-        get { d.string(forKey: "voicePostProcessProvider") ?? VoicePostProcessProvider.apple.rawValue }
-        set { d.set(newValue, forKey: "voicePostProcessProvider") }
+    var voicePostProcessProvider: VoicePostProcessProvider {
+        get { VoicePostProcessProvider(rawValue: d.string(forKey: "voicePostProcessProvider") ?? "") ?? .apple }
+        set { d.set(newValue.rawValue, forKey: "voicePostProcessProvider") }
     }
     var voicePostProcessBaseURL: String {
         get { d.string(forKey: "voicePostProcessBaseURL") ?? VoicePostProcessor.defaultBaseURL }

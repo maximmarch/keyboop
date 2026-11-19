@@ -3790,8 +3790,8 @@ final class DetailVC: NSViewController {
     @objc private func openModelSettings() { onSectionRequested?(.models) }
     @objc private func openVoiceModelOptions() { onSectionRequested?(.voice) }
 
-    private func modelSettingsLink() -> NSView {
-        flatLink(L10n.t("models.open"), action: #selector(openModelSettings))
+    private func modelSettingsLink(inset: CGFloat = 2) -> NSView {
+        flatLink(L10n.t("models.open"), action: #selector(openModelSettings), inset: inset)
     }
 
     private func buildModels() -> NSView {
@@ -3804,9 +3804,11 @@ final class DetailVC: NSViewController {
             modelCardContent(PredictionModelControls())
         ], fillsWidth: true)
         let postProcess = card([
-            switchRow(L10n.t("voice.postprocess.enable"), L10n.t("models.external"),
+            switchRow(L10n.t("voice.postprocess.enable"), nil,
                       settings.voicePostProcessEnabled, #selector(toggleVoicePostProcess(_:)),
-                      key: "voice.postprocess.enable", wraps: true, horizontalInset: 14),
+                      key: "voice.postprocess.enable"),
+            postProcessProviderRow()
+        ] + builtInPostProcessRows() + [
             modelCardContent(flatLink(L10n.t("models.voiceOptions"), action: #selector(openVoiceModelOptions), inset: 0))
         ], fillsWidth: true)
         let stack = vstack([
@@ -4016,12 +4018,12 @@ final class DetailVC: NSViewController {
             card([
                 switchRow(L10n.t("voice.sage.enable"), L10n.t("voice.sage.detail"), settings.voiceSageProofreading,
                           #selector(toggleVoiceSageCorrection(_:)), enabled: settings.sageEnabled,
-                          key: "voice.sage.enable", wraps: true),
-                modelSettingsLink()
-            ]),
+                          key: "voice.sage.enable", wraps: true, horizontalInset: 14),
+                modelCardContent(modelSettingsLink(inset: 0))
+            ], fillsWidth: true),
             group(6),
             sectionTitle(L10n.t("voice.grpAI")),
-            card(postProcessRows()),
+            card(postProcessRows(), fillsWidth: true),
         ]
         // ⚠️ РЕДАКТОР СЛОВАРЯ УБРАН ИЗ НАСТРОЕК (решение автора 13.08.2026: «словарь в голосовом
         // наборе не будем отображать, он будет под нашим контролем полностью»).
@@ -4678,10 +4680,9 @@ final class DetailVC: NSViewController {
                       help: L10n.t("voice.postprocess.help"), key: "voice.postprocess.enable"),
             controlRow(L10n.t("voice.postprocess.hotkey"), postProcessHotkeyControl(),
                        subtitle: L10n.t("voice.postprocess.hotkeySub"), key: "voice.postprocess.hotkey"),
-            controlRow(L10n.t("voice.postprocess.provider"), postProcessProviderControl(),
-                       subtitle: postProcessStatusText(), key: "voice.postprocess.provider"),
-        ]
-        if settings.voicePostProcessProvider == VoicePostProcessProvider.local.rawValue {
+            postProcessProviderRow()
+        ] + builtInPostProcessRows()
+        if settings.voicePostProcessProvider == .local {
             let urlField = makePostProcessInput(
                 value: settings.voicePostProcessBaseURL,
                 placeholder: VoicePostProcessor.defaultBaseURL,
@@ -4691,7 +4692,7 @@ final class DetailVC: NSViewController {
             let modelField = makePostProcessInput(
                 value: settings.voicePostProcessModel,
                 placeholder: VoicePostProcessor.defaultLocalModel,
-                width: 170
+                width: 210
             )
             ppModelField = modelField
             let keyField = NSSecureTextField()
@@ -4700,7 +4701,7 @@ final class DetailVC: NSViewController {
             keyField.controlSize = .small
             keyField.font = .systemFont(ofSize: 12)
             keyField.delegate = self
-            keyField.widthAnchor.constraint(equalToConstant: 170).isActive = true
+            keyField.widthAnchor.constraint(equalToConstant: 210).isActive = true
             ppKeyField = keyField
 
             rows.append(controlRow(L10n.t("voice.postprocess.baseURL"), urlField, key: "voice.postprocess.baseURL"))
@@ -4774,33 +4775,44 @@ final class DetailVC: NSViewController {
         reshow()
     }
 
-    private func postProcessProviderControl() -> NSView {
-        let seg = NSSegmentedControl(
-            labels: [L10n.t("voice.postprocess.apple"), L10n.t("voice.postprocess.local")],
-            trackingMode: .selectOne,
-            target: self,
-            action: #selector(postProcessProviderChanged(_:))
-        )
-        seg.controlSize = .small
-        seg.selectedSegment = settings.voicePostProcessProvider == VoicePostProcessProvider.local.rawValue ? 1 : 0
-        return seg
+    private func builtInPostProcessRows() -> [NSView] {
+        guard settings.voicePostProcessProvider == .builtIn else { return [] }
+        return [modelCardContent(VoicePostProcessModelControls())]
     }
 
-    @objc private func postProcessProviderChanged(_ seg: NSSegmentedControl) {
-        settings.voicePostProcessProvider = seg.selectedSegment == 1
-            ? VoicePostProcessProvider.local.rawValue
-            : VoicePostProcessProvider.apple.rawValue
-        reshow()
+    private func postProcessProviderRow() -> NSView {
+        let title = L10n.t("voice.postprocess.provider")
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        popup.addItems(withTitles: VoicePostProcessProvider.allCases.map { L10n.t($0.titleKey) })
+        if let index = VoicePostProcessProvider.allCases.firstIndex(of: settings.voicePostProcessProvider) {
+            popup.selectItem(at: index)
+        }
+        popup.setAccessibilityLabel(title)
+        popup.target = self
+        popup.action = #selector(postProcessProviderChanged(_:))
+        return controlRow(title, popup, subtitle: postProcessStatusText(), key: "voice.postprocess.provider")
+    }
+
+    @objc private func postProcessProviderChanged(_ popup: NSPopUpButton) {
+        let choices = VoicePostProcessProvider.allCases
+        guard choices.indices.contains(popup.indexOfSelectedItem) else { return }
+        let provider = choices[popup.indexOfSelectedItem]
+        if settings.voicePostProcessProvider == .builtIn && provider != .builtIn {
+            PredictionRuntime.dictation.suspend()
+        }
+        settings.voicePostProcessProvider = provider
+        DispatchQueue.main.async { [weak self] in self?.reshow() }
     }
 
     private func postProcessStatusText() -> String {
+        if settings.voicePostProcessProvider == .builtIn { return L10n.t("voice.postprocess.builtIn.detail") }
         switch VoicePostProcessor.availability(
             for: settings.voicePostProcessProvider,
             baseURL: settings.voicePostProcessBaseURL,
             model: settings.voicePostProcessModel
         ) {
         case .available:
-            if settings.voicePostProcessProvider == VoicePostProcessProvider.local.rawValue {
+            if settings.voicePostProcessProvider == .local {
                 return "\(settings.voicePostProcessModel) · \(settings.voicePostProcessBaseURL)"
             }
             return L10n.t("voice.postprocess.apple.ok")
@@ -5370,10 +5382,12 @@ final class DetailVC: NSViewController {
     }
     /// Вариант switchRow с возможностью приглушить (серый + недоступен) — для зависимых настроек.
     private func switchRow(_ title: String, _ subtitle: String?, _ on: Bool, _ action: Selector,
-                           enabled: Bool, help: String? = nil, key: String? = nil, wraps: Bool = false) -> NSView {
+                           enabled: Bool, help: String? = nil, key: String? = nil, wraps: Bool = false,
+                           horizontalInset: CGFloat? = nil) -> NSView {
         let sw = NSSwitch(); sw.state = on ? .on : .off; sw.target = self; sw.action = action
         sw.isEnabled = enabled
-        let row = settingRow(title, subtitle, trailing: sw, help: help, key: key, wraps: wraps)
+        let row = settingRow(title, subtitle, trailing: sw, help: help, key: key, wraps: wraps,
+                             horizontalInset: horizontalInset)
         row.alphaValue = enabled ? 1.0 : 0.5
         return row
     }

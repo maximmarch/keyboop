@@ -159,7 +159,7 @@ FrequencyWords из базового ресурса. Производный JSON
 ([CC BY 2.5](https://creativecommons.org/licenses/by/2.5/)). В эксперименте Leeds
 используется в исходном порядке. Способ проверки ранга вдохновлён Znak.
 
-## llama.cpp — локальный сервер предиктивного ввода
+## llama.cpp — локальный движок подсказок и постобработки
 
 Keyboop запускает [llama.cpp](https://github.com/ggml-org/llama.cpp) отдельным процессом.
 Сборка использует дистрибутивы llama.cpp b11490 для macOS с проверкой SHA-256.
@@ -167,6 +167,12 @@ Keyboop запускает [llama.cpp](https://github.com/ggml-org/llama.cpp) о
 Для автономной разработки на Apple Silicon скрипт также поддерживает закреплённый
 arm64-срез llama.cpp из Ollama 0.40.16 (ревизия 6c01da627), с лицензиями из того же пакета.
 Веса языковых моделей скачиваются отдельно.
+
+Для постобработки доступны официальные GGUF от Qwen по лицензии Apache-2.0.
+Keyboop загружает выбранную ревизию и проверяет SHA-256 перед установкой.
+
+- [Qwen2.5-1.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF)
+- [Qwen2.5-0.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF)
 
 ## SAGE Distilled 95M
 

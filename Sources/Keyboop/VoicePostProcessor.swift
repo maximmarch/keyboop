@@ -5,7 +5,16 @@ import FoundationModels
 
 enum VoicePostProcessProvider: String, CaseIterable {
     case apple
+    case builtIn
     case local
+
+    var titleKey: String {
+        switch self {
+        case .apple: return "voice.postprocess.apple"
+        case .builtIn: return "voice.postprocess.builtIn"
+        case .local: return "voice.postprocess.local"
+        }
+    }
 }
 
 enum VoicePostProcessAvailability: Equatable {
@@ -57,13 +66,19 @@ enum VoicePostProcessError: Error {
     }
 }
 
-/// On-device и локальная LLM-постобработка диктовки.
-/// Поддерживает Apple Intelligence (FoundationModels на macOS 26+) и любой локальный OpenAI-совместимый сервер (Ollama / LM Studio).
+/// Постобработка через Apple Intelligence, встроенный llama.cpp или выбранный сервер.
 final class VoicePostProcessor {
     static let shared = VoicePostProcessor()
 
     static let defaultBaseURL = "http://127.0.0.1:11434/v1"
     static let defaultLocalModel = "llama3.2"
+    private static let managedSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.connectionProxyDictionary = [:]
+        config.urlCache = nil
+        config.httpShouldSetCookies = false
+        return URLSession(configuration: config, delegate: LoopbackModelRequestDelegate(), delegateQueue: nil)
+    }()
 
     static let defaultPrompt = """
     Clean up this dictated transcript.
@@ -104,11 +119,18 @@ final class VoicePostProcessor {
     private init() {}
 
     /// Честная проверка доступности провайдера на текущем Mac.
-    static func availability(for providerRaw: String, baseURL: String, model: String) -> VoicePostProcessAvailability {
-        let provider = VoicePostProcessProvider(rawValue: providerRaw) ?? .apple
+    static func availability(for provider: VoicePostProcessProvider, baseURL: String, model: String) -> VoicePostProcessAvailability {
         switch provider {
         case .apple:
             return appleAvailability()
+        case .builtIn:
+            guard PredictionRuntime.hasBuiltInServer else {
+                return .unavailable(L10n.t("prediction.runtime.serverMissing"))
+            }
+            guard PredictionRuntime.dictation.hasSelectedModel else {
+                return .unavailable(L10n.t("prediction.runtime.missing"))
+            }
+            return .available
         case .local:
             let trimmedURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -145,7 +167,7 @@ final class VoicePostProcessor {
     /// Выполняет постобработку с безопасным возвратом ошибки (вызывающий код никогда не теряет исходную диктовку).
     func process(
         _ text: String,
-        provider: String? = nil,
+        provider: VoicePostProcessProvider? = nil,
         prompt: String? = nil,
         baseURL: String? = nil,
         model: String? = nil,
@@ -156,7 +178,7 @@ final class VoicePostProcessor {
         guard !trimmedInput.isEmpty else { return .failure(.emptyInput) }
 
         let s = AppSettings.shared
-        let activeProvider = VoicePostProcessProvider(rawValue: provider ?? s.voicePostProcessProvider) ?? .apple
+        let activeProvider = provider ?? s.voicePostProcessProvider
         let rawPrompt = (prompt ?? s.voicePostProcessPrompt).trimmingCharacters(in: .whitespacesAndNewlines)
         let activePrompt = rawPrompt.isEmpty ? Self.defaultPrompt : rawPrompt
 
@@ -172,6 +194,26 @@ final class VoicePostProcessor {
                     userContent: userContent,
                     timeoutSeconds: 12.0
                 )
+            case .builtIn:
+                let runtime = PredictionRuntime.dictation
+                guard PredictionRuntime.hasBuiltInServer else {
+                    throw VoicePostProcessError.unavailable(L10n.t("prediction.runtime.serverMissing"))
+                }
+                guard let connection = try await runtime.waitForChatConnection(),
+                      let alias = connection.modelAlias, let key = connection.apiKey else {
+                    throw VoicePostProcessError.unavailable(runtime.statusText)
+                }
+                rawOutput = try await withTimeout(seconds: 15) {
+                    try await self.runLocalOpenAI(
+                        baseURL: connection.baseURL.appendingPathComponent("v1").absoluteString,
+                        model: alias,
+                        apiKey: key,
+                        instructions: instructions,
+                        userContent: userContent,
+                        timeoutSeconds: 15,
+                        managed: true
+                    )
+                }
             case .local:
                 let url = baseURL ?? s.voicePostProcessBaseURL
                 let mdl = model ?? s.voicePostProcessModel
@@ -195,6 +237,8 @@ final class VoicePostProcessor {
             return .failure(err)
         } catch is CancellationError {
             return .failure(.cancelled)
+        } catch let error as URLError where error.code == .timedOut {
+            return .failure(.timedOut)
         } catch {
             return .failure(.failed(error.localizedDescription))
         }
@@ -309,7 +353,8 @@ final class VoicePostProcessor {
         apiKey: String,
         instructions: String,
         userContent: String,
-        timeoutSeconds: Double
+        timeoutSeconds: Double,
+        managed: Bool = false
     ) async throws -> String {
         guard let url = Self.makeChatCompletionsURL(from: baseURL) else {
             throw VoicePostProcessError.invalidEndpoint
@@ -327,7 +372,7 @@ final class VoicePostProcessor {
             request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
         }
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": trimmedModel,
             "temperature": 0.1,
             "stream": false,
@@ -336,9 +381,11 @@ final class VoicePostProcessor {
                 ["role": "user", "content": userContent],
             ],
         ]
+        if managed { payload["max_tokens"] = 1536 }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let session = managed ? Self.managedSession : URLSession.shared
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw VoicePostProcessError.invalidResponse
         }
@@ -352,6 +399,7 @@ final class VoicePostProcessor {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let first = choices.first,
+              !managed || first["finish_reason"] as? String == "stop",
               let message = first["message"] as? [String: Any],
               let content = message["content"] as? String else {
             throw VoicePostProcessError.invalidResponse

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Built-in llama.cpp for dictation post-processing with downloadable Qwen2.5 Instruct models. Apple Intelligence and custom OpenAI-compatible servers remain available.
+
+### Fixed
+
+- Aligned the model management link with the rest of the dictation proofreading card.
+
 ## 0.6.0 — 2026-11-19
 
 ### Added

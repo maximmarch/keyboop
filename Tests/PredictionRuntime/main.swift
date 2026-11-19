@@ -38,7 +38,9 @@ try file.close()
 precondition(manager.hasSelectedModel)
 manager.setEnabled(true)
 let timeout = Date().addingTimeInterval(5)
-while manager.statusText.contains("starting") && Date() < timeout { Thread.sleep(forTimeInterval: 0.05) }
+while manager.statusText.contains("starting") && Date() < timeout {
+    try await Task.sleep(nanoseconds: 50_000_000)
+}
 precondition(manager.connection() == nil)
 precondition(["startFailed", "exited", "serverMissing"].contains(where: manager.statusText.contains))
 manager.deleteSelected()
@@ -84,3 +86,31 @@ precondition(PredictionRuntime.infillProbeVerdict(.failed("prediction.unavailabl
 migrated.setInfillEnabled(true)
 precondition(migrated.infillConnection() == nil && migrated.infillStatus == .unavailable)
 print("Infill requires the bundled runner and a passing quality probe")
+
+let dictation = PredictionRuntime(purpose: .dictation, defaults: defaults, directory: temp)
+let chatModels = PredictionRuntime.dictationModels
+precondition(dictation.selectedModelID == chatModels[0].id && dictation.statusText.hasSuffix("missing"))
+dictation.usesExternalServer = true
+precondition(!dictation.usesExternalServer)
+dictation.selectedModelID = second.id
+precondition(dictation.selectedModelID == chatModels[0].id)
+dictation.selectedModelID = chatModels[1].id
+precondition(defaults.string(forKey: "voicePostProcessModelID") == chatModels[1].id)
+precondition(defaults.string(forKey: "predictionModelID") == second.id)
+let missingConnection = try await dictation.waitForChatConnection()
+precondition(missingConnection == nil)
+let chatFile = temp.appendingPathComponent(chatModels[1].filename)
+precondition(FileManager.default.createFile(atPath: chatFile.path, contents: nil))
+let weights = try FileHandle(forWritingTo: chatFile)
+try weights.truncate(atOffset: UInt64(chatModels[1].bytes))
+try weights.close()
+
+let installedDictation = PredictionRuntime(purpose: .dictation, defaults: defaults, directory: temp)
+precondition(installedDictation.selectedModelID == chatModels[1].id)
+precondition(installedDictation.installedModelIDs == [chatModels[1].id])
+precondition(installedDictation.statusText.hasSuffix("installed"))
+let unavailableConnection = try await installedDictation.waitForChatConnection()
+precondition(unavailableConnection == nil && installedDictation.statusText.hasSuffix("serverMissing"))
+installedDictation.deleteSelected()
+precondition(installedDictation.installedModelIDs.isEmpty && installedDictation.statusText.hasSuffix("missing"))
+print("Dictation runtime: independent model selection, local-only routing, readiness and deletion passed")

@@ -21,13 +21,15 @@ struct PredictionConnection: Equatable {
     let baseURL: URL
     let apiKey: String?
     let modelID: String?
+    var modelAlias: String? = nil
 }
 
 extension Notification.Name {
     static let predictionRuntimeChanged = Notification.Name("keyboop.predictionRuntimeChanged")
+    static let dictationModelRuntimeChanged = Notification.Name("keyboop.dictationModelRuntimeChanged")
 }
 
-private final class PredictionHealthDelegate: NSObject, URLSessionTaskDelegate {
+final class LoopbackModelRequestDelegate: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
@@ -35,6 +37,13 @@ private final class PredictionHealthDelegate: NSObject, URLSessionTaskDelegate {
 }
 
 final class PredictionRuntime {
+    enum Purpose {
+        case prediction, dictation
+
+        var modelKey: String { self == .prediction ? "predictionModelID" : "voicePostProcessModelID" }
+        var models: [PredictionModel] { self == .prediction ? PredictionRuntime.models : PredictionRuntime.dictationModels }
+    }
+
     enum InfillStatus: String {
         case waiting, checking, ready, unavailable, unsuitable
 
@@ -48,6 +57,7 @@ final class PredictionRuntime {
     ]
 
     static let shared = PredictionRuntime()
+    static let dictation = PredictionRuntime(purpose: .dictation, idleSeconds: 45)
     private static let defaultModel = PredictionModel(
         id: "qwen3-0.6b-base", title: "Qwen3-0.6B-Base · Q4_K_M",
         repository: "itlwas/Qwen3-0.6B-Base-Q4_K_M-GGUF",
@@ -63,11 +73,24 @@ final class PredictionRuntime {
                         filename: "Qwen3.5-0.8B-Base-Q4_K_M.gguf", bytes: 529_297_024,
                         sha256: "c736a47eded0b5af672caf5f2622b4edd6a378a78c6e30a97867ccc6f6d39537")
     ]
+    static let dictationModels = [
+        PredictionModel(id: "qwen2.5-1.5b-instruct", title: "Qwen2.5-1.5B-Instruct · Q4_K_M",
+                        repository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+                        revision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+                        filename: "qwen2.5-1.5b-instruct-q4_k_m.gguf", bytes: 1_117_320_736,
+                        sha256: "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"),
+        PredictionModel(id: "qwen2.5-0.5b-instruct", title: "Qwen2.5-0.5B-Instruct · Q4_K_M",
+                        repository: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+                        revision: "9217f5db79a29953eb74d5343926648285ec7e67",
+                        filename: "qwen2.5-0.5b-instruct-q4_k_m.gguf", bytes: 491_400_032,
+                        sha256: "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db")
+    ]
 
     // Process ownership, file promotion, status and pending callbacks share a serial queue.
     // Network IO and digest calculation run on URLSession's delegate queues.
     private let queue = DispatchQueue(label: "ru.keyboop.prediction-runtime", qos: .utility)
     private let defaults: UserDefaults
+    private let purpose: Purpose
     private let directory: URL
     private let health: URLSession
     private let downloads = URLSession(configuration: .ephemeral)
@@ -94,23 +117,24 @@ final class PredictionRuntime {
     private var healthRequest: URLSessionDataTask?
     private var retryAfter = DispatchTime.now()
 
-    init(defaults: UserDefaults = .standard, directory: URL? = nil,
+    init(purpose: Purpose = .prediction, defaults: UserDefaults = .standard, directory: URL? = nil,
          idleSeconds: TimeInterval = 120) {
+        self.purpose = purpose
         self.defaults = defaults
         self.directory = directory ?? Self.modelDirectory
         self.idleSeconds = idleSeconds
-        let selectedID = defaults.string(forKey: "predictionModelID")
-        selected = Self.models.first { $0.id == selectedID } ?? Self.defaultModel
+        let selectedID = defaults.string(forKey: purpose.modelKey)
+        selected = purpose.models.first { $0.id == selectedID } ?? purpose.models[0]
         // Before the managed backend the enabled switch meant an external server on port 18181.
-        if defaults.object(forKey: "predictionExternalServer") == nil {
+        if purpose == .prediction, defaults.object(forKey: "predictionExternalServer") == nil {
             defaults.set(defaults.bool(forKey: "predictiveLocalModelEnabled"), forKey: "predictionExternalServer")
         }
-        external = defaults.bool(forKey: "predictionExternalServer")
+        external = purpose == .prediction && defaults.bool(forKey: "predictionExternalServer")
         let configuration = URLSessionConfiguration.ephemeral
         configuration.connectionProxyDictionary = [:]
         configuration.urlCache = nil
         configuration.httpShouldSetCookies = false
-        health = URLSession(configuration: configuration, delegate: PredictionHealthDelegate(), delegateQueue: nil)
+        health = URLSession(configuration: configuration, delegate: LoopbackModelRequestDelegate(), delegateQueue: nil)
 
         let pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: queue)
         pressure.setEventHandler { [weak self] in
@@ -121,17 +145,21 @@ final class PredictionRuntime {
         }
         pressure.resume()
         memoryPressure = pressure
+        if purpose == .dictation {
+            enabled = true
+            state = isInstalled ? "installed" : "missing"
+        }
     }
 
     var selectedModelID: String {
         get { queue.sync { selected.id } }
         set {
             queue.sync {
-                guard let model = Self.models.first(where: { $0.id == newValue }), model.id != selected.id else { return }
+                guard let model = purpose.models.first(where: { $0.id == newValue }), model.id != selected.id else { return }
                 discardDownload()
                 stopServer()
                 selected = model
-                defaults.set(model.id, forKey: "predictionModelID")
+                defaults.set(model.id, forKey: purpose.modelKey)
                 reconfigure()
             }
         }
@@ -141,7 +169,7 @@ final class PredictionRuntime {
         get { queue.sync { external } }
         set {
             queue.sync {
-                guard external != newValue else { return }
+                guard purpose == .prediction, external != newValue else { return }
                 discardDownload()
                 stopServer()
                 external = newValue
@@ -157,6 +185,10 @@ final class PredictionRuntime {
 
     var isDownloading: Bool { queue.sync { download != nil } }
     var hasSelectedModel: Bool { queue.sync { isInstalled } }
+    var installedModelIDs: Set<String> {
+        queue.sync { Set(purpose.models.filter { size(file(for: $0)) == $0.bytes }.map(\.id)) }
+    }
+    static var hasBuiltInServer: Bool { bundledServer() != nil }
     var statusText: String {
         let (key, extra) = queue.sync { (state, detail) }
         return L10n.t("prediction.runtime." + key) + extra
@@ -179,6 +211,34 @@ final class PredictionRuntime {
             }
             return managedConnection()
         }
+    }
+
+    /// Give a cold start a bounded amount of time, and keep the requested model pinned during the wait.
+    func waitForChatConnection() async throws -> PredictionConnection? {
+        try Task.checkCancellation()
+        let modelID = queue.sync { () -> String? in
+            guard purpose == .dictation, enabled, isInstalled else { return nil }
+            _ = managedConnection()
+            return selected.id
+        }
+        guard let modelID else { return nil }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(8))
+        while clock.now < deadline {
+            try Task.checkCancellation()
+            let (connection, starting) = queue.sync { () -> (PredictionConnection?, Bool) in
+                guard selected.id == modelID else { return (nil, false) }
+                if let ready, process?.isRunning == true {
+                    armIdleTimer()
+                    return (ready, false)
+                }
+                return (nil, state == "starting")
+            }
+            if let connection { return connection }
+            if !starting { return nil }
+            try await Task.sleep(for: .milliseconds(150))
+        }
+        return nil
     }
 
     private func managedConnection() -> PredictionConnection? {
@@ -274,7 +334,8 @@ final class PredictionRuntime {
     }
 
     private func notifyObservers() {
-        DispatchQueue.main.async { NotificationCenter.default.post(name: .predictionRuntimeChanged, object: self) }
+        let name: Notification.Name = purpose == .prediction ? .predictionRuntimeChanged : .dictationModelRuntimeChanged
+        DispatchQueue.main.async { NotificationCenter.default.post(name: name, object: self) }
     }
 
     func downloadSelected() {
@@ -346,7 +407,7 @@ final class PredictionRuntime {
         }
     }
 
-    func suspendForSleep() {
+    func suspend() {
         queue.sync {
             guard process != nil || retiring != nil else { return }
             stopServer()
@@ -380,7 +441,7 @@ final class PredictionRuntime {
     private func reconfigure() {
         retryAfter = .now()
         guard download == nil else { return }
-        if enabled && !external && isInstalled { startServer() }
+        if purpose == .prediction && enabled && !external && isInstalled { startServer() }
         else { showStandby() }
     }
 
@@ -404,13 +465,14 @@ final class PredictionRuntime {
     private var isInstalled: Bool { size(file(for: selected)) == selected.bytes }
 
     private func startServer() {
-        guard process == nil else { return }
+        guard process == nil, enabled, !external, isInstalled else { return }
         if let retiring, retiring.isRunning {
             restartAfterRetirement = true
             update("starting")
             return
         }
-        guard Self.findServer() != nil, let host = Bundle.main.executableURL else {
+        let server = purpose == .dictation ? Self.bundledServer() : Self.findServer()
+        guard server != nil, let host = Bundle.main.executableURL else {
             retryAfter = .distantFuture
             update("serverMissing")
             return
@@ -420,7 +482,8 @@ final class PredictionRuntime {
         let alias = UUID().uuidString
         do {
             let port = try Self.availablePort()
-            let endpoint = PredictionConnection(baseURL: URL(string: "http://127.0.0.1:\(port)")!, apiKey: key, modelID: selected.id)
+            let endpoint = PredictionConnection(baseURL: URL(string: "http://127.0.0.1:\(port)")!,
+                                                apiKey: key, modelID: selected.id, modelAlias: alias)
             let pipe = Pipe()
             child.executableURL = host
             child.arguments = ["--prediction-server-supervisor", selected.id, String(port), alias]
@@ -437,7 +500,7 @@ final class PredictionRuntime {
                         self.retiring = nil
                         if self.restartAfterRetirement {
                             self.restartAfterRetirement = false
-                            self.reconfigure()
+                            self.startServer()
                         }
                         return
                     }
@@ -527,18 +590,20 @@ final class PredictionRuntime {
     static func runSupervisorIfRequested() {
         let arguments = CommandLine.arguments
         guard arguments.dropFirst().first == "--prediction-server-supervisor" else { return }
-        guard arguments.count == 5, let model = models.first(where: { $0.id == arguments[2] }),
+        guard arguments.count == 5, let model = (models + dictationModels).first(where: { $0.id == arguments[2] }),
               let port = UInt16(arguments[3]), port > 0, UUID(uuidString: arguments[4]) != nil,
-              let key = ProcessInfo.processInfo.environment["LLAMA_API_KEY"], UUID(uuidString: key) != nil,
-              let binary = findServer() else { exit(2) }
+              let key = ProcessInfo.processInfo.environment["LLAMA_API_KEY"], UUID(uuidString: key) != nil else { exit(2) }
+        let dictation = dictationModels.contains { $0.id == model.id }
+        guard let binary = dictation ? bundledServer() : findServer() else { exit(2) }
         let modelURL = modelDirectory.appendingPathComponent(model.filename)
         let server = Process()
         server.executableURL = binary
         server.arguments = ["-m", modelURL.path, "--host", "127.0.0.1", "--port", String(port),
-                            "--ctx-size", "512", "--parallel", "1", "--threads", "2", "--poll", "0",
+                            "--ctx-size", dictation ? "4096" : "512", "--parallel", "1", "--threads", "2", "--poll", "0",
                             "--cache-ram", "0",
                             "--n-gpu-layers", gpuLayers, "--alias", arguments[4],
                             "--offline", "--no-webui", "--log-disable"]
+        if dictation { server.arguments?.append("--no-context-shift") }
         server.standardInput = FileHandle.nullDevice
         server.standardOutput = FileHandle.nullDevice
         server.standardError = FileHandle.nullDevice

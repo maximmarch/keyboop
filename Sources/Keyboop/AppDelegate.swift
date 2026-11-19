@@ -149,7 +149,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         PredictionRuntime.shared.setEnabled(AppSettings.shared.predictiveLocalModelEnabled)
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
-        ) { _ in PredictionRuntime.shared.suspendForSleep() }
+        ) { _ in
+            PredictionRuntime.shared.suspend()
+            PredictionRuntime.dictation.suspend()
+        }
         _ = AppHealth.launchedAt   // ленивый static let: «потрогать» на старте, иначе аптайм в первом
                                    // багрепорте всегда «0с» и разбор уходит в ложную ветку
         installMainMenu()   // меню Edit (Cmd+V/C/X/A/Z) — иначе в текстовых полях не работает вставка
@@ -1363,6 +1366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 kbLog("получен сигнал \(sig) — сторож останавливает SPU и возвращает 🌐, выхожу")
                 self.slapDetector?.shutdown()
                 PredictionRuntime.shared.shutdown()
+                PredictionRuntime.dictation.shutdown()
                 SageRuntime.shared.shutdown()
                 CapsRemap.removeIfOurs()
                 CapsLED.shutdown(atExit: true)   // иначе лампочка останется гореть после нас
@@ -1395,6 +1399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Caps молча переставал менять язык, тумблер оставался включённым. То же с ролью 🌐.
         guard !isSecondaryInstance else { return }
         PredictionRuntime.shared.shutdown()
+        PredictionRuntime.dictation.shutdown()
         SageRuntime.shared.shutdown()
         WebsiteContextProvider.shared.stop()
         // Caps-remap снимаем локально. SPU + 🌐 принадлежат одной helper-транзакции: после закрытия
