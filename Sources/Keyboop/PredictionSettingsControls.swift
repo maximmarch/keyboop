@@ -340,7 +340,7 @@ enum PredictionGlossaryEditor {
 
 /// A regular editable text field exercises the global event tap, AX caret reader and real accept shortcut.
 final class PredictionPreviewView: NSStackView {
-    private let diagnostic = NSTextField(wrappingLabelWithString: "")
+    private let diagnostic = WrappingLabel(string: "")
     private var permissionKey: String?
 
     init() {
@@ -348,18 +348,14 @@ final class PredictionPreviewView: NSStackView {
         alignment = .leading
         orientation = .vertical
         spacing = 8
-        edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
         let field = NSTextField(string: "")
         field.placeholderString = L10n.t("prediction.preview.example")
         field.setAccessibilityLabel(L10n.t("prediction.preview"))
         field.setAccessibilityIdentifier("keyboop-prediction-preview")
-        addArrangedSubview(field)
+        addFullWidthRow(field)
         diagnostic.font = .systemFont(ofSize: 12)
         diagnostic.textColor = .secondaryLabelColor
-        addArrangedSubview(diagnostic)
-        for view in [field, diagnostic] {
-            view.widthAnchor.constraint(equalTo: widthAnchor, constant: -28).isActive = true
-        }
+        addFullWidthRow(diagnostic)
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(refresh), name: .predictionDiagnosticChanged, object: nil)
         center.addObserver(self, selector: #selector(refreshPermissions), name: NSApplication.didBecomeActiveNotification, object: NSApp)

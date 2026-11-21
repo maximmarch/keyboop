@@ -57,6 +57,19 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        Release(version: "0.6.1",
+            ru: [
+                "Выровнены карточки и отступы в «Типографике», «Сниппетах» и «Предиктивном вводе». Поле проверки подсказок занимает всю ширину карточки.",
+                "Во встроенной постобработке диктовки по умолчанию используется Gemma 4 E2B IT. Доступны готовые инструкции для вычитки, делового текста и списков.",
+                "Собственную модель GGUF можно импортировать один раз и выбрать для подсказок при наборе и постобработки диктовки.",
+                "SAGE начинает проверку после паузы 450 мс и возвращает каретку после исправления текста."
+            ],
+            en: [
+                "Aligned cards and spacing in Typography, Snippets, and Predictive Input. The suggestion preview now fills the card.",
+                "Built-in dictation post-processing defaults to Gemma 4 E2B IT, with presets for proofreading, formal writing, and lists.",
+                "Import a custom GGUF model once and select it for both typing suggestions and dictation post-processing.",
+                "SAGE starts proofreading after a 450 ms pause and restores the caret after applying a correction."
+            ]),
         Release(version: "0.6.0",
             ru: [
                 "SAGE Distilled 95M исправляет орфографию, пунктуацию и грамматику русской диктовки перед вставкой.",

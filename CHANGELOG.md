@@ -1,16 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 — 2026-11-21
 
 ### Added
 
 - Built-in llama.cpp for dictation post-processing with downloadable Qwen2.5 Instruct models. Apple Intelligence and custom OpenAI-compatible servers remain available.
-- Gemma 4 E2B IT as the default built-in dictation model, with Russian presets for proofreading, formal writing and lists. Verified GGUF import reuses a file already on disk.
-- Import custom single-file GGUF models in both typing and dictation settings. A model can be selected for both features using one copy of its weights.
+- Gemma 4 E2B IT as the default model for built-in dictation post-processing, with Russian presets for proofreading, formal writing, and lists.
+- Import single-file GGUF models from either settings section. Typing and dictation can select the same installed model and share one copy of its weights.
+
+### Changed
+
+- Updated Russian and English descriptions for typography, snippet expansion keys, proofreading, and dictation providers.
+- Documented when a custom post-processing server receives a transcript in the Privacy settings.
 
 ### Fixed
 
-- Aligned the model management link with the rest of the dictation proofreading card.
+- Aligned card content, controls, and model links in Typography, Snippets, Predictive Input, and dictation proofreading. The prediction preview uses the full card width.
 - SAGE restores the caret after typing corrections, including when the editor selects more text than requested. Proofreading now starts after a 450 ms pause.
 
 ## 0.6.0 — 2026-11-19

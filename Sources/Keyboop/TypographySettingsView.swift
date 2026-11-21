@@ -21,7 +21,7 @@ final class TypographyRuleCheckListView: NSView {
         let root = NSStackView()
         root.orientation = .vertical
         root.alignment = .leading
-        root.spacing = 10
+        root.spacing = 14
         root.translatesAutoresizingMaskIntoConstraints = false
         addSubview(root)
 
@@ -52,34 +52,40 @@ final class TypographyRuleCheckListView: NSView {
             let hdr = NSTextField(labelWithString: L10n.t(grp.titleKey))
             hdr.font = .systemFont(ofSize: 12, weight: .semibold)
             hdr.textColor = .secondaryLabelColor
-            root.addArrangedSubview(hdr)
-
             let grpStack = NSStackView()
             grpStack.orientation = .vertical
             grpStack.alignment = .leading
-            grpStack.spacing = 5
-            grpStack.edgeInsets = NSEdgeInsets(top: 0, left: 6, bottom: 4, right: 0)
+            grpStack.spacing = 6
+            grpStack.addArrangedSubview(hdr)
 
             for item in grp.rules {
                 let btn = NSButton(checkboxWithTitle: L10n.t(item.titleKey), target: self, action: #selector(ruleToggled(_:)))
                 btn.font = .systemFont(ofSize: 12.5)
                 btn.state = store.isRuleEnabled(item.id) ? .on : .off
                 btn.identifier = NSUserInterfaceItemIdentifier(item.id.rawValue)
+                btn.lineBreakMode = .byTruncatingTail
+                btn.toolTip = btn.title
                 checkboxes[item.id] = btn
-                grpStack.addArrangedSubview(btn)
 
                 if let hk = item.hintKey {
-                    let hintLbl = NSTextField(wrappingLabelWithString: L10n.t(hk))
+                    let hintLbl = WrappingLabel(string: L10n.t(hk))
                     hintLbl.font = .systemFont(ofSize: 11)
-                    hintLbl.textColor = .tertiaryLabelColor
-                    hintLbl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-                    let wrap = NSStackView(views: [hintLbl])
-                    wrap.orientation = .horizontal
-                    wrap.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 2, right: 0)
-                    grpStack.addArrangedSubview(wrap)
+                    hintLbl.textColor = .secondaryLabelColor
+                    let hintRow = NSStackView(views: [hintLbl])
+                    hintRow.orientation = .horizontal
+                    hintRow.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
+                    let row = NSStackView()
+                    row.orientation = .vertical
+                    row.alignment = .leading
+                    row.spacing = 2
+                    row.addFullWidthRow(btn)
+                    row.addFullWidthRow(hintRow)
+                    grpStack.addFullWidthRow(row)
+                } else {
+                    grpStack.addFullWidthRow(btn)
                 }
             }
-            root.addArrangedSubview(grpStack)
+            root.addFullWidthRow(grpStack)
         }
 
         // Карточка пояснения пробелов U+0020 vs U+00A0 vs U+202F (§4).
@@ -91,19 +97,19 @@ final class TypographyRuleCheckListView: NSView {
         nbspBox.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.4).cgColor
         nbspBox.translatesAutoresizingMaskIntoConstraints = false
 
-        let nbspTitle = NSTextField(labelWithString: L10n.t("typo.nbspInfo.title"))
+        let nbspTitle = WrappingLabel(string: L10n.t("typo.nbspInfo.title"))
         nbspTitle.font = .systemFont(ofSize: 11.5, weight: .semibold)
         nbspTitle.textColor = .labelColor
 
-        let nbspBody = NSTextField(wrappingLabelWithString: L10n.t("typo.nbspInfo.body"))
+        let nbspBody = WrappingLabel(string: L10n.t("typo.nbspInfo.body"))
         nbspBody.font = .systemFont(ofSize: 11)
         nbspBody.textColor = .secondaryLabelColor
-        nbspBody.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let infoStack = NSStackView(views: [nbspTitle, nbspBody])
+        let infoStack = NSStackView()
         infoStack.orientation = .vertical
         infoStack.alignment = .leading
         infoStack.spacing = 4
+        infoStack.addFullWidthRow(nbspTitle)
+        infoStack.addFullWidthRow(nbspBody)
         infoStack.translatesAutoresizingMaskIntoConstraints = false
         nbspBox.addSubview(infoStack)
 
@@ -113,14 +119,13 @@ final class TypographyRuleCheckListView: NSView {
             infoStack.leadingAnchor.constraint(equalTo: nbspBox.leadingAnchor, constant: 10),
             infoStack.trailingAnchor.constraint(equalTo: nbspBox.trailingAnchor, constant: -10),
         ])
-        root.addArrangedSubview(nbspBox)
+        root.addFullWidthRow(nbspBox)
 
         NSLayoutConstraint.activate([
             root.topAnchor.constraint(equalTo: topAnchor),
             root.bottomAnchor.constraint(equalTo: bottomAnchor),
             root.leadingAnchor.constraint(equalTo: leadingAnchor),
             root.trailingAnchor.constraint(equalTo: trailingAnchor),
-            nbspBox.widthAnchor.constraint(equalTo: root.widthAnchor),
         ])
     }
 
@@ -144,7 +149,7 @@ final class TypographyExcludedAppsView: NSView {
     var onChanged: (() -> Void)?
 
     private let listStack = NSStackView()
-    private let emptyLbl = NSTextField(labelWithString: L10n.t("typo.exc.empty"))
+    private let emptyLbl = WrappingLabel(string: L10n.t("typo.exc.empty"))
     private let runningPopup = NSPopUpButton()
     private var runningBundleIDs: [String] = []
 
@@ -165,7 +170,7 @@ final class TypographyExcludedAppsView: NSView {
         listStack.spacing = 6
 
         emptyLbl.font = .systemFont(ofSize: 12)
-        emptyLbl.textColor = .tertiaryLabelColor
+        emptyLbl.textColor = .secondaryLabelColor
 
         runningPopup.controlSize = .regular
         runningPopup.target = self
@@ -174,20 +179,22 @@ final class TypographyExcludedAppsView: NSView {
         let chooseBtn = NSButton(title: L10n.t("exc.addApp"), target: self, action: #selector(chooseAppClicked))
         chooseBtn.bezelStyle = .rounded
 
-        let buttonsRow = NSStackView(views: [runningPopup, chooseBtn, NSView()])
+        let buttonsRow = NSStackView(views: [runningPopup, chooseBtn])
         buttonsRow.orientation = .horizontal
         buttonsRow.spacing = 8
         buttonsRow.alignment = .centerY
 
-        let defaultHint = NSTextField(wrappingLabelWithString: L10n.t("typo.exc.defaultHint"))
+        let defaultHint = WrappingLabel(string: L10n.t("typo.exc.defaultHint"))
         defaultHint.font = .systemFont(ofSize: 11)
-        defaultHint.textColor = .tertiaryLabelColor
-        defaultHint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        defaultHint.textColor = .secondaryLabelColor
 
-        let root = NSStackView(views: [listStack, buttonsRow, defaultHint])
+        let root = NSStackView()
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 8
+        root.addFullWidthRow(listStack)
+        root.addArrangedSubview(buttonsRow)
+        root.addFullWidthRow(defaultHint)
         root.translatesAutoresizingMaskIntoConstraints = false
         addSubview(root)
 
@@ -196,8 +203,6 @@ final class TypographyExcludedAppsView: NSView {
             root.bottomAnchor.constraint(equalTo: bottomAnchor),
             root.leadingAnchor.constraint(equalTo: leadingAnchor),
             root.trailingAnchor.constraint(equalTo: trailingAnchor),
-            listStack.widthAnchor.constraint(equalTo: root.widthAnchor),
-            buttonsRow.widthAnchor.constraint(equalTo: root.widthAnchor),
         ])
     }
 
@@ -206,10 +211,10 @@ final class TypographyExcludedAppsView: NSView {
         let excluded = Array(TypographySettingsStore.shared.excludedBundleIDs).sorted()
 
         if excluded.isEmpty {
-            listStack.addArrangedSubview(emptyLbl)
+            listStack.addFullWidthRow(emptyLbl)
         } else {
             for bid in excluded {
-                listStack.addArrangedSubview(makeAppRow(bundleID: bid))
+                listStack.addFullWidthRow(makeAppRow(bundleID: bid))
             }
         }
 
@@ -247,6 +252,7 @@ final class TypographyExcludedAppsView: NSView {
         let nameLbl = NSTextField(labelWithString: "\(displayName)  (\(bundleID))")
         nameLbl.font = .systemFont(ofSize: 12.5)
         nameLbl.lineBreakMode = .byTruncatingMiddle
+        nameLbl.toolTip = nameLbl.stringValue
 
         let delBtn = NSButton(title: "", target: self, action: #selector(removeApp(_:)))
         delBtn.bezelStyle = .regularSquare
@@ -255,14 +261,11 @@ final class TypographyExcludedAppsView: NSView {
         delBtn.contentTintColor = .tertiaryLabelColor
         delBtn.identifier = NSUserInterfaceItemIdentifier(bundleID)
 
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
-        let row = NSStackView(views: [iconView, nameLbl, spacer, delBtn])
-        row.orientation = .horizontal
-        row.spacing = 8
-        row.alignment = .centerY
-        return row
+        let name = NSStackView(views: [iconView, nameLbl])
+        name.orientation = .horizontal
+        name.spacing = 8
+        name.alignment = .centerY
+        return NSStackView.modelControlRow(name, delBtn)
     }
 
     @objc private func removeApp(_ sender: NSButton) {
@@ -302,7 +305,7 @@ final class TypographyExcludedAppsView: NSView {
 /// и применяет правила напрямую через `TypographyEngine`.
 final class TypographySandboxView: NSView, NSTextViewDelegate {
     private let textView = NSTextView()
-    private let statusLabel = NSTextField(wrappingLabelWithString: "")
+    private let statusLabel = WrappingLabel(string: "")
     private let undoButton = NSButton(title: L10n.t("typo.sandbox.undo"), target: nil, action: nil)
 
     private var isMutatingInternally = false
@@ -319,10 +322,9 @@ final class TypographySandboxView: NSView, NSTextViewDelegate {
     }
 
     private func setupUI() {
-        let hintLbl = NSTextField(wrappingLabelWithString: L10n.t("typo.sandbox.desc"))
+        let hintLbl = WrappingLabel(string: L10n.t("typo.sandbox.desc"))
         hintLbl.font = .systemFont(ofSize: 11.5)
         hintLbl.textColor = .secondaryLabelColor
-        hintLbl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
@@ -336,6 +338,9 @@ final class TypographySandboxView: NSView, NSTextViewDelegate {
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.font = .systemFont(ofSize: 13)
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.delegate = self
         textView.string = L10n.t("typo.sandbox.initial")
@@ -368,13 +373,13 @@ final class TypographySandboxView: NSView, NSTextViewDelegate {
 
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
-        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusLabel.stringValue = L10n.t("typo.sandbox.ready")
 
-        let root = NSStackView(views: [hintLbl, scroll, actionsRow, statusLabel])
+        let root = NSStackView()
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 8
+        [hintLbl, scroll, actionsRow, statusLabel].forEach { root.addFullWidthRow($0) }
         root.translatesAutoresizingMaskIntoConstraints = false
         addSubview(root)
 
@@ -383,10 +388,7 @@ final class TypographySandboxView: NSView, NSTextViewDelegate {
             root.bottomAnchor.constraint(equalTo: bottomAnchor),
             root.leadingAnchor.constraint(equalTo: leadingAnchor),
             root.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroll.widthAnchor.constraint(equalTo: root.widthAnchor),
             scroll.heightAnchor.constraint(equalToConstant: 96),
-            actionsRow.widthAnchor.constraint(equalTo: root.widthAnchor),
-            statusLabel.widthAnchor.constraint(equalTo: root.widthAnchor),
         ])
     }
 
@@ -458,7 +460,7 @@ final class TypographySandboxView: NSView, NSTextViewDelegate {
         lastUndoSnapshot = nil
         undoButton.isEnabled = false
         isMutatingInternally = true
-        textView.string = "Он сказал \"Прочитай 'Войну и мир'\". Это -- очень важно, вес 10 кг и скидка 25 % (c)."
+        textView.string = L10n.t("typo.sandbox.prose")
         isMutatingInternally = false
         statusLabel.stringValue = L10n.t("typo.sandbox.sampleLoaded")
     }

@@ -26,6 +26,7 @@ enum DS {
     /// худшем реалистичном случае «крупный текст» 1280×800. Запас есть везде, где вообще идёт macOS 13.
     static let contentWidth: CGFloat = 600
     static let contentMargin: CGFloat = 24
+    static let cardInset: CGFloat = 14
     /// Отступ шапки от низа строки заголовка и её просвет до первой карточки.
     static let brandTopPad: CGFloat = 10
     /// Размер знака приложения в шапке. ОДИН на оба режима: шапка общая, и левый верхний угол при
@@ -1857,7 +1858,7 @@ final class DetailVC: NSViewController {
                           settings.nextWordEnabled, #selector(toggleNextWord), key: "completion.nextWord"),
                 controlRow(L10n.t("completion.shortcut"), wordCompletionShortcut(),
                            help: L10n.t("completion.shortcutHelp"), key: "completion.shortcut")
-            ]),
+            ], fillsWidth: true),
             group(6),
             card([
                 switchRow(L10n.t("completion.fieldWords"), L10n.t("completion.fieldWordsDetail"),
@@ -1877,16 +1878,16 @@ final class DetailVC: NSViewController {
                            NSButton(title: L10n.t("completion.personal.reset"), target: self,
                                     action: #selector(resetPersonalPrediction)),
                            key: "completion.personal.history")
-            ]),
+            ], fillsWidth: true),
             group(6),
             card([
                 switchRow(L10n.t("completion.infill"), L10n.t("completion.infill.detail"),
                           settings.predictionInfillEnabled, #selector(togglePredictionInfill), key: "completion.infill", wraps: true),
-                modelSettingsLink()
-            ]),
+                cardContent(modelSettingsLink(inset: 0))
+            ], fillsWidth: true),
             group(6),
             sectionTitle(L10n.t("prediction.preview")),
-            card([PredictionPreviewView()])
+            card([cardContent(PredictionPreviewView())], fillsWidth: true)
         ])
     }
 
@@ -2481,6 +2482,7 @@ final class DetailVC: NSViewController {
         let cTab   = check("key.tab",   settings.snippetExpandTab,   #selector(toggleSnipTab))
         let keys = NSStackView(views: [cSpace, cEnter, cTab])
         keys.orientation = .horizontal; keys.spacing = 12
+        keys.alignment = .centerY
 
         let disabled = hint(L10n.t("snip.disabled"))
         disabled.isHidden = !settings.snippetsDisabled
@@ -2533,7 +2535,7 @@ final class DetailVC: NSViewController {
             sectionTitle(L10n.t("snip.expandOn")),
             keys,                        // [Пробел] [Enter] [Tab]
             disabled,                    // «Автозамена отключена…» — видна, когда все галочки сняты
-            hint(L10n.t("snip.hint")),   // раскладка/регистр не учитываются + пример
+            wrappingText(L10n.t("snip.hint"), size: 11, color: .secondaryLabelColor),
             group(DS.itemGap),
             // ПРАВКА ТЕКСТА (перенесено из «Переключения», автор 11.08). Обе настройки чинят не
             // раскладку, а сам набранный текст, и в разделе про конверсию читались как её часть —
@@ -2548,17 +2550,16 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("switch.typoFix"), L10n.t("switch.typoFixSub"), settings.typoFix,
                           #selector(toggleTypoFix), help: L10n.t("switch.typoFixHelp"), key: "switch.typoFix"),
                 switchRow(L10n.t("switch.twoCaps"), L10n.t("switch.twoCapsSub"), settings.twoCapsFix,
-                          #selector(toggleTwoCaps), help: L10n.t("switch.twoCapsHelp"), key: "switch.twoCaps")
-            ]),
-            group(8),
-            card([modelSettingsLink()]),
+                          #selector(toggleTwoCaps), help: L10n.t("switch.twoCapsHelp"), key: "switch.twoCaps"),
+                cardContent(modelSettingsLink(inset: 0))
+            ], fillsWidth: true),
             group(DS.itemGap),
             sectionTitle(L10n.t("snip.textsTitle")),
             sub(L10n.t("snip.textsSub")),
             group(4),
             // ПОРЯДОК: сначала включаем функцию и назначаем сочетание, потом заполняем список
             // (автор 06.08). Список без включённой функции это ящик, который некуда открыть.
-            card(pickRows),
+            card(pickRows, fillsWidth: true),
             group(2),
             hint(L10n.t("snip.pickHint")),
             group(6),
@@ -2645,20 +2646,6 @@ final class DetailVC: NSViewController {
             case .custom:   self?.typoModePopup?.selectItem(at: 2)
             }
         }
-        let rulesBox = NSStackView(views: [rulesView])
-        rulesBox.orientation = .vertical
-        rulesBox.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
-
-        let excView = TypographyExcludedAppsView()
-        let excBox = NSStackView(views: [excView])
-        excBox.orientation = .vertical
-        excBox.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
-
-        let sandboxView = TypographySandboxView()
-        let sandboxBox = NSStackView(views: [sandboxView])
-        sandboxBox.orientation = .vertical
-        sandboxBox.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
-
         return vstack([
             blockTitle("typo.title"),
             sub(L10n.t("typo.sub")),
@@ -2668,19 +2655,19 @@ final class DetailVC: NSViewController {
                           #selector(toggleTypographyEnabled(_:)), key: "typo.enabled"),
                 controlRow(L10n.t("typo.mode"), modePop, subtitle: L10n.t("typo.modeSub"), key: "typo.mode"),
                 controlRow(L10n.t("typo.lang"), langPop, key: "typo.lang"),
-            ]),
+            ], fillsWidth: true),
             group(DS.itemGap),
             sectionTitle(L10n.t("typo.sec.hotkeys")),
-            card(undoRows),
+            card(undoRows, fillsWidth: true),
             group(DS.itemGap),
             sectionTitle(L10n.t("typo.sec.rules")),
-            card([rulesBox], vPad: 2),
+            card([cardContent(rulesView, verticalInset: 12)], fillsWidth: true),
             group(DS.itemGap),
             sectionTitle(L10n.t("typo.sec.exclusions")),
-            card([excBox], vPad: 2),
+            card([cardContent(TypographyExcludedAppsView(), verticalInset: 12)], fillsWidth: true),
             group(DS.itemGap),
             sectionTitle(L10n.t("typo.sec.sandbox")),
-            card([sandboxBox], vPad: 2),
+            card([cardContent(TypographySandboxView(), verticalInset: 12)], fillsWidth: true),
         ])
     }
 
@@ -2762,9 +2749,7 @@ final class DetailVC: NSViewController {
             // необъяснённый второй процесс у программы, которая читает клавиатуру, выглядит ровно
             // так, как выглядят вещи, из-за которых люди боятся ставить переключатели раскладки.
             globeGuardNote(),
-            secureInputNote(),
-            group(6),
-            hint(L10n.t("priv.foot"))
+            secureInputNote()
         ])
     }
 
@@ -3630,7 +3615,7 @@ final class DetailVC: NSViewController {
             sub(String(format: L10n.t("about.what"), hotkeyDisplayString())),
             group(8),
             sectionTitle(L10n.t("about.canTitle")),
-            sub(String(format: L10n.t("about.can"), hotkeyDisplayString())),
+            sub(L10n.t("about.can")),
             group(8),
             sectionTitle(L10n.t("about.nuanceTitle")),
             sub(L10n.t("about.nuance")),
@@ -3796,20 +3781,20 @@ final class DetailVC: NSViewController {
 
     private func buildModels() -> NSView {
         let speech = speechModelRows()
-        let correction = card([modelCardContent(SageSettingsControls())], fillsWidth: true)
+        let correction = card([cardContent(SageSettingsControls())], fillsWidth: true)
         let prediction = card([
             switchRow(L10n.t("completion.localModel"), L10n.t("completion.localModelDetail"),
                       settings.predictiveLocalModelEnabled, #selector(togglePredictiveLocalModel),
-                      key: "completion.localModel", wraps: true, horizontalInset: 14),
-            modelCardContent(PredictionModelControls())
+                      key: "completion.localModel", wraps: true),
+            cardContent(PredictionModelControls())
         ], fillsWidth: true)
         let postProcess = card([
-            switchRow(L10n.t("voice.postprocess.enable"), nil,
+            switchRow(L10n.t("voice.postprocess.enable"), L10n.t("voice.postprocess.enableSub"),
                       settings.voicePostProcessEnabled, #selector(toggleVoicePostProcess(_:)),
                       key: "voice.postprocess.enable"),
             postProcessProviderRow()
         ] + builtInPostProcessRows() + [
-            modelCardContent(flatLink(L10n.t("models.voiceOptions"), action: #selector(openVoiceModelOptions), inset: 0))
+            cardContent(flatLink(L10n.t("models.voiceOptions"), action: #selector(openVoiceModelOptions), inset: 0))
         ], fillsWidth: true)
         let stack = vstack([
             sectionTitle(L10n.t("voice.modelsTitle")),
@@ -3832,13 +3817,13 @@ final class DetailVC: NSViewController {
         return stack
     }
 
-    private func modelCardContent(_ content: NSView, verticalInset: CGFloat = 10) -> NSView {
+    private func cardContent(_ content: NSView, verticalInset: CGFloat = 10) -> NSView {
         let wrapper = NSView()
         content.translatesAutoresizingMaskIntoConstraints = false
         wrapper.addSubview(content)
         NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: 14),
-            content.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor, constant: -14),
+            content.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: DS.cardInset),
+            content.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor, constant: -DS.cardInset),
             content.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: verticalInset),
             content.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor, constant: -verticalInset)
         ])
@@ -3903,7 +3888,7 @@ final class DetailVC: NSViewController {
         for key in notes {
             noteStack.addFullWidthRow(wrappingText(L10n.t(key), size: 11, color: .secondaryLabelColor))
         }
-        views.append(modelCardContent(noteStack, verticalInset: 0))
+        views.append(cardContent(noteStack, verticalInset: 0))
         return views
     }
 
@@ -4018,8 +4003,8 @@ final class DetailVC: NSViewController {
             card([
                 switchRow(L10n.t("voice.sage.enable"), L10n.t("voice.sage.detail"), settings.voiceSageProofreading,
                           #selector(toggleVoiceSageCorrection(_:)), enabled: settings.sageEnabled,
-                          key: "voice.sage.enable", wraps: true, horizontalInset: 14),
-                modelCardContent(modelSettingsLink(inset: 0))
+                          key: "voice.sage.enable", wraps: true),
+                cardContent(modelSettingsLink(inset: 0))
             ], fillsWidth: true),
             group(6),
             sectionTitle(L10n.t("voice.grpAI")),
@@ -4777,7 +4762,7 @@ final class DetailVC: NSViewController {
 
     private func builtInPostProcessRows() -> [NSView] {
         guard settings.voicePostProcessProvider == .builtIn else { return [] }
-        return [modelCardContent(VoicePostProcessModelControls())]
+        return [cardContent(VoicePostProcessModelControls())]
     }
 
     private func postProcessProviderRow() -> NSView {
@@ -5365,7 +5350,7 @@ final class DetailVC: NSViewController {
         wrap.addSubview(line)
         NSLayoutConstraint.activate([
             wrap.heightAnchor.constraint(equalToConstant: 1),
-            line.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 14),  // hairline под текстом, как у Apple
+            line.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: DS.cardInset),
             line.trailingAnchor.constraint(equalTo: wrap.trailingAnchor),
             line.topAnchor.constraint(equalTo: wrap.topAnchor),
             line.bottomAnchor.constraint(equalTo: wrap.bottomAnchor)
@@ -5472,7 +5457,8 @@ final class DetailVC: NSViewController {
         // колонки: текст переносился на пять строк рядом с пустым местом (снимок 15.08).
         let reserve = trailing is NSSwitch ? RowMetrics.nsSwitch
             : (wraps ? max(RowMetrics.nsSwitch, ceil(trailing.fittingSize.width)) : RowMetrics.wideControl)
-        let avail = contentW - 2 * (horizontalInset ?? 14) - reserve - 10 - (help == nil ? 0 : RowMetrics.helpSlot + 10)
+        let inset = horizontalInset ?? DS.cardInset
+        let avail = contentW - 2 * inset - reserve - 10 - (help == nil ? 0 : RowMetrics.helpSlot + 10)
         let l = NSTextField(labelWithString: title)
         l.font = .systemFont(ofSize: 13); l.textColor = .labelColor
         l.lineBreakMode = .byTruncatingTail
@@ -5555,7 +5541,6 @@ final class DetailVC: NSViewController {
         let opticalPad: CGFloat = 16, boxTopSlack: CGFloat = 6.5
         let vTop: CGFloat = wraps ? opticalPad - boxTopSlack : 9
         let vBot = vTop
-        let inset = horizontalInset ?? (wraps ? 16 : 14)
         row.edgeInsets = NSEdgeInsets(top: vTop, left: inset, bottom: vBot, right: inset)
         // ⚠️ ВЫСОТУ СТРОКИ ПРИВЯЗЫВАЕМ К ТЕКСТУ ЯВНО, А НЕ ЖДЁМ ЭТОГО ОТ СТЕКА (автор 17.08: «текст
         // подсказки прилип к разделителю»). У строк с кнопкой «i» `NSStackView.fittingSize` отдавал

@@ -812,6 +812,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let proofreading = NSMenuItem(title: L10n.t("sage.command"), action: #selector(proofreadSelection), keyEquivalent: "")
         proofreading.target = self
         proofreading.image = icon("checkmark.bubble")
+        proofreading.toolTip = L10n.t("sage.command.help")
         menu.addItem(proofreading)
 
 
@@ -826,6 +827,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // Настройки — отдельной группой между двумя разделителями: системная шестерёнка не задевает соседей.
         let prefs = NSMenuItem(title: L10n.t("menu.settings"), action: #selector(openSettings), keyEquivalent: ",")
         prefs.target = self
+        prefs.toolTip = L10n.t("menu.settings.help")
         // Шестерёнку ставим САМИ, хотя macOS 26 рисует её пункту настроек и без нас (наблюдение 16.06):
         // на более старых системах она не появляется, и пункт остался бы единственным без иконки.
         // Слот у пункта один, так что двух шестерёнок не будет — в худшем случае наша совпадёт с системной.
