@@ -89,7 +89,16 @@ print("Infill requires the bundled runner and a passing quality probe")
 
 let dictation = PredictionRuntime(purpose: .dictation, defaults: defaults, directory: temp)
 let chatModels = PredictionRuntime.dictationModels
-precondition(dictation.selectedModelID == chatModels[0].id && dictation.statusText.hasSuffix("missing"))
+precondition(dictation.selectedModelID == "gemma-4-e2b-it" && dictation.statusText.hasSuffix("missing"))
+let wrongFile = temp.appendingPathComponent("wrong.gguf")
+try Data("invalid weights".utf8).write(to: wrongFile)
+dictation.importSelected(from: wrongFile, modelID: dictation.selectedModelID)
+let importDeadline = Date().addingTimeInterval(3)
+while dictation.isImporting && Date() < importDeadline {
+    try await Task.sleep(for: .milliseconds(20))
+}
+precondition(!dictation.isImporting && dictation.statusText.hasSuffix("integrity"))
+precondition(dictation.installedModelIDs.isEmpty && FileManager.default.fileExists(atPath: wrongFile.path))
 dictation.usesExternalServer = true
 precondition(!dictation.usesExternalServer)
 dictation.selectedModelID = second.id

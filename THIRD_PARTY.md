@@ -168,9 +168,10 @@ Keyboop запускает [llama.cpp](https://github.com/ggml-org/llama.cpp) о
 arm64-срез llama.cpp из Ollama 0.40.16 (ревизия 6c01da627), с лицензиями из того же пакета.
 Веса языковых моделей скачиваются отдельно.
 
-Для постобработки доступны официальные GGUF от Qwen по лицензии Apache-2.0.
-Keyboop загружает выбранную ревизию и проверяет SHA-256 перед установкой.
+Для постобработки доступны Gemma 4 от Google в GGUF от LM Studio и официальные GGUF от Qwen по лицензии Apache-2.0.
+Keyboop загружает закреплённую ревизию и проверяет SHA-256 при скачивании и импорте.
 
+- [Gemma 4 E2B IT GGUF](https://huggingface.co/lmstudio-community/gemma-4-E2B-it-GGUF)
 - [Qwen2.5-1.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF)
 - [Qwen2.5-0.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF)
 

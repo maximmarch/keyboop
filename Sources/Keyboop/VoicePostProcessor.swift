@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
@@ -32,6 +33,7 @@ struct VoicePostProcessPreset {
     let id: String
     let titleKey: String
     let prompt: String
+    let russianPrompt: String
 }
 
 enum VoicePostProcessError: Error {
@@ -92,7 +94,10 @@ final class VoicePostProcessor {
         VoicePostProcessPreset(
             id: "improve",
             titleKey: "voice.postprocess.preset.improve",
-            prompt: defaultPrompt
+            prompt: defaultPrompt,
+            russianPrompt: """
+            Отредактируй русскую расшифровку диктовки. Исправь пунктуацию, заглавные буквы, грамматику и явные ошибки распознавания. Сохрани русский язык, исходный тон и смысл, включая имена, цифры, даты и отрицания. Не пересказывай, не переводи и не добавляй сведения. Верни только исправленный текст без объяснений или кавычек вокруг ответа.
+            """
         ),
         VoicePostProcessPreset(
             id: "formal",
@@ -102,6 +107,9 @@ final class VoicePostProcessor {
             - Preserve the original language and every key detail.
             - Fix grammar, punctuation, and sentence flow.
             - Return only the rewritten text without commentary.
+            """,
+            russianPrompt: """
+            Перепиши русскую расшифровку ясным и вежливым деловым языком. Сохрани русский язык, смысл и все существенные детали, включая имена, цифры, даты и отрицания. Исправь грамматику, пунктуацию и связность. Верни только итоговый текст, без перевода и комментариев.
             """
         ),
         VoicePostProcessPreset(
@@ -112,6 +120,9 @@ final class VoicePostProcessor {
             - Keep the original language and preserve all facts and action items.
             - Fix grammar and punctuation, and remove spoken rambling.
             - Return only the formatted text with no intro or outro.
+            """,
+            russianPrompt: """
+            Оформи русскую расшифровку в виде краткого и понятного маркированного списка. Сохрани русский язык, все факты и действия, включая имена, цифры, даты и отрицания. Исправь грамматику, пунктуацию и убери слова-паразиты. Верни только список по-русски, без вступления и заключения.
             """
         ),
     ]
@@ -203,12 +214,21 @@ final class VoicePostProcessor {
                       let alias = connection.modelAlias, let key = connection.apiKey else {
                     throw VoicePostProcessError.unavailable(runtime.statusText)
                 }
+                let managedInstructions: String
+                if connection.modelID == PredictionRuntime.gemmaDictationModelID,
+                   let preset = Self.presets.first(where: { $0.prompt == activePrompt }),
+                   (VoiceTextCleaner.effectiveLanguage(for: languageHint)
+                    ?? NLLanguageRecognizer.dominantLanguage(for: trimmedInput)?.rawValue) == "ru" {
+                    managedInstructions = buildSystemInstructions(userPrompt: preset.russianPrompt, languageHint: "ru")
+                } else {
+                    managedInstructions = instructions
+                }
                 rawOutput = try await withTimeout(seconds: 15) {
                     try await self.runLocalOpenAI(
                         baseURL: connection.baseURL.appendingPathComponent("v1").absoluteString,
                         model: alias,
                         apiKey: key,
-                        instructions: instructions,
+                        instructions: managedInstructions,
                         userContent: userContent,
                         timeoutSeconds: 15,
                         managed: true

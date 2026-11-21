@@ -1,10 +1,12 @@
 import AppKit
+import UniformTypeIdentifiers
 
 /// Both settings sections reflect the same selection and download state.
 final class VoicePostProcessModelControls: NSStackView {
     private let runtime = PredictionRuntime.dictation
     private let model = NSPopUpButton(frame: .zero, pullsDown: false)
     private let action = NSButton(title: "", target: nil, action: nil)
+    private let importButton = NSButton(title: L10n.t("voice.postprocess.importGGUF"), target: nil, action: nil)
     private let status = WrappingLabel(string: "")
 
     init() {
@@ -33,7 +35,10 @@ final class VoicePostProcessModelControls: NSStackView {
 
         status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
-        addFullWidthRow(status)
+        importButton.bezelStyle = .rounded
+        importButton.target = self
+        importButton.action = #selector(importModel)
+        addFullWidthRow(NSStackView.modelControlRow(status, importButton))
         NotificationCenter.default.addObserver(self, selector: #selector(refresh),
                                                name: .dictationModelRuntimeChanged, object: nil)
         refresh()
@@ -52,12 +57,14 @@ final class VoicePostProcessModelControls: NSStackView {
         model.selectItem(at: model.indexOfItem(withRepresentedObject: selected))
         model.toolTip = model.titleOfSelectedItem
         let downloading = runtime.isDownloading
-        model.isEnabled = !downloading
+        let importing = runtime.isImporting
+        model.isEnabled = !downloading && !importing
         let key = downloading ? "prediction.cancelDownload"
             : (installed.contains(selected) ? "prediction.deleteDownload" : "prediction.download")
         action.title = L10n.t(key)
         let supported = PredictionRuntime.hasBuiltInServer
-        action.isEnabled = supported || installed.contains(selected) || downloading
+        action.isEnabled = !importing && (supported || installed.contains(selected) || downloading)
+        importButton.isHidden = !supported || downloading || importing || installed.contains(selected)
         status.stringValue = supported ? runtime.statusText : L10n.t("prediction.runtime.serverMissing")
     }
 
@@ -72,5 +79,19 @@ final class VoicePostProcessModelControls: NSStackView {
         else if runtime.hasSelectedModel { runtime.deleteSelected() }
         else { runtime.downloadSelected() }
         refresh()
+    }
+
+    @objc private func importModel() {
+        guard let window, let modelID = model.selectedItem?.representedObject as? String else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "gguf") ?? .data]
+        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        panel.message = L10n.t("voice.postprocess.importPrompt") + " " + (model.titleOfSelectedItem ?? "")
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let source = panel.url else { return }
+            self?.runtime.importSelected(from: source, modelID: modelID)
+            self?.refresh()
+        }
     }
 }

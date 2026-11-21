@@ -73,7 +73,13 @@ final class PredictionRuntime {
                         filename: "Qwen3.5-0.8B-Base-Q4_K_M.gguf", bytes: 529_297_024,
                         sha256: "c736a47eded0b5af672caf5f2622b4edd6a378a78c6e30a97867ccc6f6d39537")
     ]
+    static let gemmaDictationModelID = "gemma-4-e2b-it"
     static let dictationModels = [
+        PredictionModel(id: gemmaDictationModelID, title: "Gemma 4 E2B IT · Q4_K_M",
+                        repository: "lmstudio-community/gemma-4-E2B-it-GGUF",
+                        revision: "3d1d91fb148a495f70c9e36ae57bce21921fe8a3",
+                        filename: "gemma-4-E2B-it-Q4_K_M.gguf", bytes: 3_427_880_384,
+                        sha256: "71e6e8cb64a76da1a734fb8f6ba389d2784950d9902f5e87244fca0a15190c94"),
         PredictionModel(id: "qwen2.5-1.5b-instruct", title: "Qwen2.5-1.5B-Instruct · Q4_K_M",
                         repository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
                         revision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
@@ -87,7 +93,7 @@ final class PredictionRuntime {
     ]
 
     // Process ownership, file promotion, status and pending callbacks share a serial queue.
-    // Network IO and digest calculation run on URLSession's delegate queues.
+    // Network IO, imports and digest calculation run off this queue.
     private let queue = DispatchQueue(label: "ru.keyboop.prediction-runtime", qos: .utility)
     private let defaults: UserDefaults
     private let purpose: Purpose
@@ -101,6 +107,7 @@ final class PredictionRuntime {
     private var state = "disabled"
     private var detail = ""
     private var download: URLSessionDownloadTask?
+    private var importing = false
     private var progressObserver: NSKeyValueObservation?
     private var generation = UUID()
     private var process: Process?
@@ -184,6 +191,7 @@ final class PredictionRuntime {
     }
 
     var isDownloading: Bool { queue.sync { download != nil } }
+    var isImporting: Bool { queue.sync { importing } }
     var hasSelectedModel: Bool { queue.sync { isInstalled } }
     var installedModelIDs: Set<String> {
         queue.sync { Set(purpose.models.filter { size(file(for: $0)) == $0.bytes }.map(\.id)) }
@@ -340,7 +348,7 @@ final class PredictionRuntime {
 
     func downloadSelected() {
         queue.sync {
-            guard download == nil, !external, !isInstalled else { return }
+            guard download == nil, !importing, !external, !isInstalled else { return }
             let model = selected
             let id = UUID()
             generation = id
@@ -349,31 +357,11 @@ final class PredictionRuntime {
                 guard error == nil, let temp = temporary, let http = response as? HTTPURLResponse,
                       http.statusCode == 200 else {
                     let message = error?.localizedDescription ?? "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"
-                    self.queue.async { self.completeDownload(id, error: "badDownload", detail: message) }
-                    return
-                }
-                self.queue.sync { if self.generation == id { self.update("verifying") } }
-                guard self.size(temp) == model.bytes,
-                      ModelDownloader.sha256(ofFileAt: temp) == model.sha256 else {
-                    self.queue.async { self.completeDownload(id, error: "integrity") }
+                    self.queue.async { self.completeTransfer(id, error: "badDownload", detail: message) }
                     return
                 }
                 // URLSession retains the temporary file only for the duration of this callback.
-                self.queue.sync {
-                    guard self.generation == id else { return }
-                    do {
-                        try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
-                        let destination = self.file(for: model)
-                        if FileManager.default.fileExists(atPath: destination.path) {
-                            _ = try FileManager.default.replaceItemAt(destination, withItemAt: temp)
-                        } else {
-                            try FileManager.default.moveItem(at: temp, to: destination)
-                        }
-                        self.completeDownload(id)
-                    } catch {
-                        self.completeDownload(id, error: "ioError", detail: error.localizedDescription)
-                    }
-                }
+                self.verifyAndInstall(temp, model: model, id: id)
             }
             download = task
             update("downloading", " 0%")
@@ -385,6 +373,68 @@ final class PredictionRuntime {
                 }
             }
             task.resume()
+        }
+    }
+
+    func importSelected(from source: URL, modelID: String) {
+        queue.sync {
+            guard purpose == .dictation, source.isFileURL, selected.id == modelID,
+                  download == nil, !importing, !isInstalled else { return }
+            let model = selected
+            let id = UUID()
+            generation = id
+            importing = true
+            update("importing")
+            DispatchQueue.global(qos: .utility).async {
+                let scoped = source.startAccessingSecurityScopedResource()
+                defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+                let manager = FileManager.default
+                let temporary = self.directory.appendingPathComponent(".import-\(id.uuidString).gguf")
+                defer { try? manager.removeItem(at: temporary) }
+                do {
+                    let sourceInfo = try source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                    guard sourceInfo.isRegularFile == true, sourceInfo.fileSize.map(Int64.init) == model.bytes else {
+                        self.queue.sync { self.completeTransfer(id, error: "integrity") }
+                        return
+                    }
+                    try manager.createDirectory(at: self.directory, withIntermediateDirectories: true)
+                    try manager.copyItem(at: source, to: temporary)
+                    self.verifyAndInstall(temporary, model: model, id: id)
+                } catch {
+                    self.queue.sync { self.completeTransfer(id, error: "ioError", detail: error.localizedDescription) }
+                }
+            }
+        }
+    }
+
+    private func verifyAndInstall(_ temporary: URL, model: PredictionModel, id: UUID) {
+        let current = queue.sync {
+            guard generation == id else { return false }
+            update("verifying")
+            return true
+        }
+        guard current else { return }
+        let values = try? temporary.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values?.isRegularFile == true, values?.fileSize.map(Int64.init) == model.bytes,
+              ModelDownloader.sha256(ofFileAt: temporary) == model.sha256 else {
+            queue.sync { completeTransfer(id, error: "integrity") }
+            return
+        }
+        queue.sync {
+            guard generation == id else { return }
+            do {
+                let manager = FileManager.default
+                try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+                let destination = file(for: model)
+                if manager.fileExists(atPath: destination.path) {
+                    _ = try manager.replaceItemAt(destination, withItemAt: temporary)
+                } else {
+                    try manager.moveItem(at: temporary, to: destination)
+                }
+                completeTransfer(id)
+            } catch {
+                completeTransfer(id, error: "ioError", detail: error.localizedDescription)
+            }
         }
     }
 
@@ -423,10 +473,11 @@ final class PredictionRuntime {
         }
     }
 
-    private func completeDownload(_ id: UUID, error: String? = nil, detail: String = "") {
+    private func completeTransfer(_ id: UUID, error: String? = nil, detail: String = "") {
         guard id == generation else { return }
         progressObserver = nil
         download = nil
+        importing = false
         if let error { update(error, detail.isEmpty ? "" : " · " + detail) }
         else { reconfigure() }
     }
@@ -436,11 +487,12 @@ final class PredictionRuntime {
         progressObserver = nil
         download?.cancel()
         download = nil
+        importing = false
     }
 
     private func reconfigure() {
         retryAfter = .now()
-        guard download == nil else { return }
+        guard download == nil, !importing else { return }
         if purpose == .prediction && enabled && !external && isInstalled { startServer() }
         else { showStandby() }
     }
@@ -604,6 +656,9 @@ final class PredictionRuntime {
                             "--n-gpu-layers", gpuLayers, "--alias", arguments[4],
                             "--offline", "--no-webui", "--log-disable"]
         if dictation { server.arguments?.append("--no-context-shift") }
+        if model.id == gemmaDictationModelID {
+            server.arguments?.append(contentsOf: ["--reasoning", "off", "--chat-template-kwargs", #"{"enable_thinking":false}"#])
+        }
         server.standardInput = FileHandle.nullDevice
         server.standardOutput = FileHandle.nullDevice
         server.standardError = FileHandle.nullDevice
