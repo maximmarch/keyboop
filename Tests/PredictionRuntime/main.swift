@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // The state-machine suite runs as a separate executable without the AppKit app or a network.
 // Its child provides the normal early-exit failure instead of loading weights.
@@ -6,7 +7,9 @@ if CommandLine.arguments.dropFirst().first == "--prediction-server-supervisor" {
 
 enum L10n { static func t(_ key: String) -> String { key } }
 enum ModelDownloader {
-    static func sha256(ofFileAt url: URL) -> String? { nil } // no remote downloads in this suite
+    static func sha256(ofFileAt url: URL) -> String? {
+        (try? Data(contentsOf: url)).map { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() }
+    }
 }
 
 let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -92,12 +95,12 @@ let chatModels = PredictionRuntime.dictationModels
 precondition(dictation.selectedModelID == "gemma-4-e2b-it" && dictation.statusText.hasSuffix("missing"))
 let wrongFile = temp.appendingPathComponent("wrong.gguf")
 try Data("invalid weights".utf8).write(to: wrongFile)
-dictation.importSelected(from: wrongFile, modelID: dictation.selectedModelID)
+dictation.importModel(from: wrongFile)
 let importDeadline = Date().addingTimeInterval(3)
 while dictation.isImporting && Date() < importDeadline {
     try await Task.sleep(for: .milliseconds(20))
 }
-precondition(!dictation.isImporting && dictation.statusText.hasSuffix("integrity"))
+precondition(!dictation.isImporting && dictation.statusText.hasSuffix("invalidGGUF"))
 precondition(dictation.installedModelIDs.isEmpty && FileManager.default.fileExists(atPath: wrongFile.path))
 dictation.usesExternalServer = true
 precondition(!dictation.usesExternalServer)
@@ -113,6 +116,7 @@ precondition(FileManager.default.createFile(atPath: chatFile.path, contents: nil
 let weights = try FileHandle(forWritingTo: chatFile)
 try weights.truncate(atOffset: UInt64(chatModels[1].bytes))
 try weights.close()
+precondition(reopened.availableModels.contains { $0.id == chatModels[1].id })
 
 let installedDictation = PredictionRuntime(purpose: .dictation, defaults: defaults, directory: temp)
 precondition(installedDictation.selectedModelID == chatModels[1].id)
@@ -123,3 +127,35 @@ precondition(unavailableConnection == nil && installedDictation.statusText.hasSu
 installedDictation.deleteSelected()
 precondition(installedDictation.installedModelIDs.isEmpty && installedDictation.statusText.hasSuffix("missing"))
 print("Dictation runtime: independent model selection, local-only routing, readiness and deletion passed")
+
+let example = temp.appendingPathComponent("Example.gguf")
+let rename = temp.appendingPathComponent("Same weights.gguf")
+// Container metadata for catalog testing. Model loading is covered by the real-weight smoke test.
+let header = Data([0x47, 0x47, 0x55, 0x46, 3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+try header.write(to: example)
+try header.write(to: rename)
+func waitForImport(_ runtime: PredictionRuntime) async throws {
+    let end = ContinuousClock.now + .seconds(3)
+    while runtime.isImporting && ContinuousClock.now < end {
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    precondition(!runtime.isImporting && runtime.hasSelectedModel, runtime.statusText)
+}
+reopened.importModel(from: example)
+try await waitForImport(reopened)
+let sharedID = reopened.selectedModelID
+precondition(sharedID.hasPrefix("gguf-") && sharedID != second.id)
+precondition(installedDictation.selectedModelID == chatModels[1].id)
+precondition(installedDictation.availableModels.contains { $0.id == sharedID && $0.title == "Example" })
+installedDictation.importModel(from: rename)
+try await waitForImport(installedDictation)
+precondition(installedDictation.selectedModelID == sharedID)
+precondition(installedDictation.availableModels.filter { $0.repository == nil }.count == 1)
+let restored = PredictionRuntime(purpose: .dictation, defaults: defaults, directory: temp)
+precondition(restored.selectedModelID == sharedID && restored.hasSelectedModel)
+restored.deleteSelected()
+precondition(reopened.availableModels.allSatisfy { $0.id != sharedID })
+precondition(reopened.selectedModelID == PredictionRuntime.models[0].id)
+precondition(restored.selectedModelID == chatModels[0].id)
+precondition(FileManager.default.fileExists(atPath: example.path) && FileManager.default.fileExists(atPath: rename.path))
+print("Custom model import: shared catalog, deduplication, saved selection and deletion passed")

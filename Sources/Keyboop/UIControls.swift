@@ -1,4 +1,38 @@
 import AppKit
+import UniformTypeIdentifiers
+
+extension NSOpenPanel {
+    static func chooseGGUF(for window: NSWindow, completion: @escaping (URL) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "gguf") ?? .data]
+        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        panel.message = L10n.t("prediction.importPrompt")
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            completion(url)
+        }
+    }
+}
+
+extension NSPopUpButton {
+    func showModelChoices(_ models: [PredictionModel], selected: String, installed: Set<String>) {
+        if itemArray.compactMap({ $0.representedObject as? String }) != models.map(\.id) {
+            removeAllItems()
+            for model in models {
+                addItem(withTitle: model.id)
+                lastItem?.representedObject = model.id
+            }
+        }
+        for (index, model) in models.enumerated() {
+            let marker = installed.contains(model.id) ? " · " + L10n.t("voice.installed") : ""
+            let displayTitle = "\(model.title) · \(L10n.size(model.sizeLabel))\(marker)"
+            if item(at: index)?.title != displayTitle { item(at: index)?.title = displayTitle }
+        }
+        selectItem(at: indexOfItem(withRepresentedObject: selected))
+        toolTip = titleOfSelectedItem
+    }
+}
 
 extension NSStackView {
     /// For a leading-aligned vertical stack without horizontal edge insets.

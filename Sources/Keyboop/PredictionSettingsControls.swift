@@ -7,6 +7,7 @@ final class PredictionModelControls: NSStackView {
     private let model = NSPopUpButton(frame: .zero, pullsDown: false)
     private let status = WrappingLabel(string: "")
     private let action = NSButton(title: "", target: nil, action: nil)
+    private let importButton = NSButton(title: L10n.t("prediction.importGGUF"), target: nil, action: nil)
     private lazy var modelRow = NSStackView.modelControlRow(model, action)
     private let testButton = NSButton(title: L10n.t("prediction.probe"), target: nil, action: nil)
     private let compareButton = NSButton(title: "", target: nil, action: nil)
@@ -35,10 +36,6 @@ final class PredictionModelControls: NSStackView {
         sourceLabel.font = .systemFont(ofSize: 13)
         addFullWidthRow(NSStackView.modelControlRow(sourceLabel, source))
 
-        for item in PredictionRuntime.models {
-            model.addItem(withTitle: "\(item.title) · \(L10n.size(item.sizeLabel))")
-            model.lastItem?.representedObject = item.id
-        }
         model.setAccessibilityLabel(L10n.t("prediction.weights"))
         model.cell?.lineBreakMode = .byTruncatingTail
         model.target = self
@@ -50,7 +47,10 @@ final class PredictionModelControls: NSStackView {
 
         status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
-        addFullWidthRow(status)
+        importButton.bezelStyle = .rounded
+        importButton.target = self
+        importButton.action = #selector(importModel)
+        addFullWidthRow(NSStackView.modelControlRow(status, importButton))
         testButton.bezelStyle = .rounded
         testButton.target = self
         testButton.action = #selector(testModel)
@@ -81,17 +81,22 @@ final class PredictionModelControls: NSStackView {
 
     @objc private func refresh() {
         let external = runtime.usesExternalServer
+        let downloading = runtime.isDownloading
+        let importing = runtime.isImporting
+        let installed = runtime.hasSelectedModel
         source.selectItem(at: external ? 1 : 0)
-        source.isEnabled = !runtime.isDownloading
+        source.isEnabled = !downloading && !importing
         modelRow.isHidden = external
-        model.selectItem(at: model.indexOfItem(withRepresentedObject: runtime.selectedModelID))
-        model.toolTip = model.titleOfSelectedItem
-        model.isEnabled = !runtime.isDownloading
+        model.showModelChoices(runtime.availableModels, selected: runtime.selectedModelID, installed: runtime.installedModelIDs)
+        model.isEnabled = !downloading && !importing
         let key: String
-        if runtime.isDownloading { key = "prediction.cancelDownload" }
-        else if runtime.hasSelectedModel { key = "prediction.deleteDownload" }
+        if downloading { key = "prediction.cancelDownload" }
+        else if installed { key = "prediction.deleteDownload" }
         else { key = "prediction.download" }
         action.title = L10n.t(key)
+        action.isEnabled = !importing
+        importButton.isHidden = external
+        importButton.isEnabled = !downloading && !importing
         let infillMessage = AppSettings.shared.predictionInfillEnabled
             ? "\n" + L10n.t(runtime.infillStatus.messageKey) : ""
         status.stringValue = runtime.statusText + infillMessage
@@ -198,7 +203,7 @@ final class PredictionModelControls: NSStackView {
         let external = runtime.usesExternalServer
         let id = external ? "external" : runtime.selectedModelID
         let title = external ? L10n.t("prediction.source.external")
-            : PredictionRuntime.models.first(where: { $0.id == id })?.title ?? id
+            : runtime.availableModels.first(where: { $0.id == id })?.title ?? id
         let key = NSUserInterfaceItemIdentifier(id)
         comparisonResults.arrangedSubviews.first(where: { $0.identifier == key })?.removeFromSuperview()
         let heading = NSTextField(labelWithString: title)
@@ -283,6 +288,16 @@ final class PredictionModelControls: NSStackView {
         else if runtime.hasSelectedModel { runtime.deleteSelected() }
         else { runtime.downloadSelected() }
         refresh()
+    }
+
+    @objc private func importModel() {
+        guard let window else { return }
+        NSOpenPanel.chooseGGUF(for: window) { [weak self] source in
+            guard let self else { return }
+            self.clearTest()
+            self.runtime.importModel(from: source)
+            self.refresh()
+        }
     }
 }
 

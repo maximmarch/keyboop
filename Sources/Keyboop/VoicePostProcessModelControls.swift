@@ -1,12 +1,11 @@
 import AppKit
-import UniformTypeIdentifiers
 
 /// Both settings sections reflect the same selection and download state.
 final class VoicePostProcessModelControls: NSStackView {
     private let runtime = PredictionRuntime.dictation
     private let model = NSPopUpButton(frame: .zero, pullsDown: false)
     private let action = NSButton(title: "", target: nil, action: nil)
-    private let importButton = NSButton(title: L10n.t("voice.postprocess.importGGUF"), target: nil, action: nil)
+    private let importButton = NSButton(title: L10n.t("prediction.importGGUF"), target: nil, action: nil)
     private let status = WrappingLabel(string: "")
 
     init() {
@@ -23,10 +22,6 @@ final class VoicePostProcessModelControls: NSStackView {
         model.cell?.lineBreakMode = .byTruncatingTail
         model.target = self
         model.action = #selector(selectModel)
-        for item in PredictionRuntime.dictationModels {
-            model.addItem(withTitle: item.title)
-            model.lastItem?.representedObject = item.id
-        }
 
         action.bezelStyle = .rounded
         action.target = self
@@ -49,13 +44,7 @@ final class VoicePostProcessModelControls: NSStackView {
     @objc private func refresh() {
         let installed = runtime.installedModelIDs
         let selected = runtime.selectedModelID
-        for (index, item) in PredictionRuntime.dictationModels.enumerated() {
-            let size = L10n.size(item.sizeLabel)
-            let marker = installed.contains(item.id) ? " · " + L10n.t("voice.installed") : ""
-            model.item(at: index)?.title = "\(item.title) · \(size)\(marker)"
-        }
-        model.selectItem(at: model.indexOfItem(withRepresentedObject: selected))
-        model.toolTip = model.titleOfSelectedItem
+        model.showModelChoices(runtime.availableModels, selected: selected, installed: installed)
         let downloading = runtime.isDownloading
         let importing = runtime.isImporting
         model.isEnabled = !downloading && !importing
@@ -64,8 +53,8 @@ final class VoicePostProcessModelControls: NSStackView {
         action.title = L10n.t(key)
         let supported = PredictionRuntime.hasBuiltInServer
         action.isEnabled = !importing && (supported || installed.contains(selected) || downloading)
-        importButton.isHidden = !supported || downloading || importing || installed.contains(selected)
-        status.stringValue = supported ? runtime.statusText : L10n.t("prediction.runtime.serverMissing")
+        importButton.isEnabled = !downloading && !importing
+        status.stringValue = supported || importing ? runtime.statusText : L10n.t("prediction.runtime.serverMissing")
     }
 
     @objc private func selectModel() {
@@ -82,15 +71,9 @@ final class VoicePostProcessModelControls: NSStackView {
     }
 
     @objc private func importModel() {
-        guard let window, let modelID = model.selectedItem?.representedObject as? String else { return }
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.allowedContentTypes = [UTType(filenameExtension: "gguf") ?? .data]
-        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-        panel.message = L10n.t("voice.postprocess.importPrompt") + " " + (model.titleOfSelectedItem ?? "")
-        panel.beginSheetModal(for: window) { [weak self] response in
-            guard response == .OK, let source = panel.url else { return }
-            self?.runtime.importSelected(from: source, modelID: modelID)
+        guard let window else { return }
+        NSOpenPanel.chooseGGUF(for: window) { [weak self] source in
+            self?.runtime.importModel(from: source)
             self?.refresh()
         }
     }

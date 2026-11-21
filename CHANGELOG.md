@@ -6,6 +6,7 @@
 
 - Built-in llama.cpp for dictation post-processing with downloadable Qwen2.5 Instruct models. Apple Intelligence and custom OpenAI-compatible servers remain available.
 - Gemma 4 E2B IT as the default built-in dictation model, with Russian presets for proofreading, formal writing and lists. Verified GGUF import reuses a file already on disk.
+- Import custom single-file GGUF models in both typing and dictation settings. A model can be selected for both features using one copy of its weights.
 
 ### Fixed
 

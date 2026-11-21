@@ -5,15 +5,16 @@ import Foundation
 struct PredictionModel {
     let id: String
     let title: String
-    let repository: String
-    let revision: String
+    let repository: String?
+    let revision: String?
     let filename: String
     let bytes: Int64
     let sha256: String
 
     var sizeLabel: String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
-    var downloadURL: URL {
-        URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(filename)")!
+    var downloadURL: URL? {
+        guard let repository, let revision else { return nil }
+        return URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(filename)")
     }
 }
 
@@ -37,7 +38,7 @@ final class LoopbackModelRequestDelegate: NSObject, URLSessionTaskDelegate {
 }
 
 final class PredictionRuntime {
-    enum Purpose {
+    enum Purpose: String {
         case prediction, dictation
 
         var modelKey: String { self == .prediction ? "predictionModelID" : "voicePostProcessModelID" }
@@ -94,7 +95,9 @@ final class PredictionRuntime {
 
     // Process ownership, file promotion, status and pending callbacks share a serial queue.
     // Network IO, imports and digest calculation run off this queue.
-    private let queue = DispatchQueue(label: "ru.keyboop.prediction-runtime", qos: .utility)
+    private static let libraryQueue = DispatchQueue(label: "ru.keyboop.prediction-runtime", qos: .utility)
+    private static let libraryChanged = Notification.Name("keyboop.modelLibraryChanged")
+    private let queue = PredictionRuntime.libraryQueue
     private let defaults: UserDefaults
     private let purpose: Purpose
     private let directory: URL
@@ -107,7 +110,8 @@ final class PredictionRuntime {
     private var state = "disabled"
     private var detail = ""
     private var download: URLSessionDownloadTask?
-    private var importing = false
+    private var importStatus: String?
+    private var libraryObserver: NSObjectProtocol?
     private var progressObserver: NSKeyValueObservation?
     private var generation = UUID()
     private var process: Process?
@@ -128,10 +132,11 @@ final class PredictionRuntime {
          idleSeconds: TimeInterval = 120) {
         self.purpose = purpose
         self.defaults = defaults
-        self.directory = directory ?? Self.modelDirectory
+        let directory = directory ?? Self.modelDirectory
+        self.directory = directory
         self.idleSeconds = idleSeconds
         let selectedID = defaults.string(forKey: purpose.modelKey)
-        selected = purpose.models.first { $0.id == selectedID } ?? purpose.models[0]
+        selected = Self.catalog(for: purpose, in: directory).first { $0.id == selectedID } ?? purpose.models[0]
         // Before the managed backend the enabled switch meant an external server on port 18181.
         if purpose == .prediction, defaults.object(forKey: "predictionExternalServer") == nil {
             defaults.set(defaults.bool(forKey: "predictiveLocalModelEnabled"), forKey: "predictionExternalServer")
@@ -156,17 +161,25 @@ final class PredictionRuntime {
             enabled = true
             state = isInstalled ? "installed" : "missing"
         }
+        libraryObserver = NotificationCenter.default.addObserver(forName: Self.libraryChanged, object: nil, queue: nil) { [weak self] note in
+            guard let self, let origin = note.object as? PredictionRuntime, origin !== self,
+                  origin.directory == self.directory, let id = note.userInfo?["id"] as? String else { return }
+            self.queue.async { self.refreshLibrary(changedID: id) }
+        }
+    }
+
+    deinit {
+        if let libraryObserver { NotificationCenter.default.removeObserver(libraryObserver) }
     }
 
     var selectedModelID: String {
         get { queue.sync { selected.id } }
         set {
             queue.sync {
-                guard let model = purpose.models.first(where: { $0.id == newValue }), model.id != selected.id else { return }
+                guard let model = Self.catalog(for: purpose, in: directory).first(where: { $0.id == newValue }),
+                      model.id != selected.id else { return }
                 discardDownload()
-                stopServer()
-                selected = model
-                defaults.set(model.id, forKey: purpose.modelKey)
+                select(model)
                 reconfigure()
             }
         }
@@ -187,18 +200,19 @@ final class PredictionRuntime {
     }
 
     var canTestModel: Bool {
-        queue.sync { enabled && (external || (isInstalled && (ready != nil || state == "installed"))) }
+        queue.sync { importStatus == nil && enabled && (external || (isInstalled && (ready != nil || state == "installed"))) }
     }
 
     var isDownloading: Bool { queue.sync { download != nil } }
-    var isImporting: Bool { queue.sync { importing } }
+    var isImporting: Bool { queue.sync { importStatus != nil } }
     var hasSelectedModel: Bool { queue.sync { isInstalled } }
+    var availableModels: [PredictionModel] { queue.sync { Self.catalog(for: purpose, in: directory) } }
     var installedModelIDs: Set<String> {
-        queue.sync { Set(purpose.models.filter { size(file(for: $0)) == $0.bytes }.map(\.id)) }
+        queue.sync { Set(Self.catalog(for: purpose, in: directory).filter { Self.isInstalled($0, in: directory) }.map(\.id)) }
     }
     static var hasBuiltInServer: Bool { bundledServer() != nil }
     var statusText: String {
-        let (key, extra) = queue.sync { (state, detail) }
+        let (key, extra) = queue.sync { importStatus.map { ($0, "") } ?? (state, detail) }
         return L10n.t("prediction.runtime." + key) + extra
     }
 
@@ -348,11 +362,12 @@ final class PredictionRuntime {
 
     func downloadSelected() {
         queue.sync {
-            guard download == nil, !importing, !external, !isInstalled else { return }
+            guard download == nil, importStatus == nil, !external, !isInstalled,
+                  let url = selected.downloadURL else { return }
             let model = selected
             let id = UUID()
             generation = id
-            let task = downloads.downloadTask(with: model.downloadURL) { [weak self] temporary, response, error in
+            let task = downloads.downloadTask(with: url) { [weak self] temporary, response, error in
                 guard let self, self.queue.sync(execute: { self.generation == id }) else { return }
                 guard error == nil, let temp = temporary, let http = response as? HTTPURLResponse,
                       http.statusCode == 200 else {
@@ -376,30 +391,61 @@ final class PredictionRuntime {
         }
     }
 
-    func importSelected(from source: URL, modelID: String) {
+    func importModel(from source: URL) {
         queue.sync {
-            guard purpose == .dictation, source.isFileURL, selected.id == modelID,
-                  download == nil, !importing, !isInstalled else { return }
-            let model = selected
+            guard !external, source.isFileURL, download == nil, importStatus == nil else { return }
             let id = UUID()
             generation = id
-            importing = true
-            update("importing")
+            importStatus = "importing"
+            notifyObservers()
             DispatchQueue.global(qos: .utility).async {
                 let scoped = source.startAccessingSecurityScopedResource()
                 defer { if scoped { source.stopAccessingSecurityScopedResource() } }
                 let manager = FileManager.default
-                let temporary = self.directory.appendingPathComponent(".import-\(id.uuidString).gguf")
-                defer { try? manager.removeItem(at: temporary) }
+                let staging = self.directory.appendingPathComponent(".import-\(id.uuidString)", isDirectory: true)
+                let temporary = staging.appendingPathComponent(source.lastPathComponent)
+                defer { try? manager.removeItem(at: staging) }
                 do {
-                    let sourceInfo = try source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-                    guard sourceInfo.isRegularFile == true, sourceInfo.fileSize.map(Int64.init) == model.bytes else {
-                        self.queue.sync { self.completeTransfer(id, error: "integrity") }
+                    guard try Self.ggufSize(source) != nil else {
+                        self.queue.sync { self.completeTransfer(id, error: "invalidGGUF") }
                         return
                     }
-                    try manager.createDirectory(at: self.directory, withIntermediateDirectories: true)
+                    try manager.createDirectory(at: staging, withIntermediateDirectories: true)
                     try manager.copyItem(at: source, to: temporary)
-                    self.verifyAndInstall(temporary, model: model, id: id)
+                    let current = self.queue.sync {
+                        guard self.generation == id else { return false }
+                        self.importStatus = "verifying"
+                        self.notifyObservers()
+                        return true
+                    }
+                    guard current else { return }
+                    guard let bytes = try Self.ggufSize(temporary),
+                          let hash = ModelDownloader.sha256(ofFileAt: temporary) else {
+                        self.queue.sync { self.completeTransfer(id, error: "invalidGGUF") }
+                        return
+                    }
+                    try self.queue.sync {
+                        guard self.generation == id else { return }
+                        let model: PredictionModel
+                        if let known = Self.builtInModels.first(where: { $0.bytes == bytes && $0.sha256 == hash }) {
+                            model = known
+                            try self.installFile(temporary, as: model)
+                        } else {
+                            let modelID = Self.customPrefix + hash
+                            let customDirectory = Self.customDirectory(in: self.directory)
+                            let destination = customDirectory.appendingPathComponent(modelID, isDirectory: true)
+                            if let existing = Self.customModel(id: modelID, in: self.directory) {
+                                model = existing
+                            } else {
+                                try manager.createDirectory(at: customDirectory, withIntermediateDirectories: true)
+                                try manager.moveItem(at: staging, to: destination)
+                                model = Self.customModel(id: modelID, file: destination.appendingPathComponent(source.lastPathComponent), bytes: bytes)
+                            }
+                        }
+                        self.select(model)
+                        self.completeTransfer(id)
+                        self.modelFilesChanged(model.id)
+                    }
                 } catch {
                     self.queue.sync { self.completeTransfer(id, error: "ioError", detail: error.localizedDescription) }
                 }
@@ -423,15 +469,9 @@ final class PredictionRuntime {
         queue.sync {
             guard generation == id else { return }
             do {
-                let manager = FileManager.default
-                try manager.createDirectory(at: directory, withIntermediateDirectories: true)
-                let destination = file(for: model)
-                if manager.fileExists(atPath: destination.path) {
-                    _ = try manager.replaceItemAt(destination, withItemAt: temporary)
-                } else {
-                    try manager.moveItem(at: temporary, to: destination)
-                }
+                try installFile(temporary, as: model)
                 completeTransfer(id)
+                modelFilesChanged(model.id)
             } catch {
                 completeTransfer(id, error: "ioError", detail: error.localizedDescription)
             }
@@ -449,10 +489,12 @@ final class PredictionRuntime {
         queue.sync {
             discardDownload()
             stopServer()
-            let url = file(for: selected)
+            let model = selected
+            let url = model.repository != nil ? file(for: model) : file(for: model).deletingLastPathComponent()
             do {
                 if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
-                showStandby()
+                refreshLibrary(changedID: model.id)
+                modelFilesChanged(model.id)
             } catch { update("ioError", " · " + error.localizedDescription) }
         }
     }
@@ -477,9 +519,10 @@ final class PredictionRuntime {
         guard id == generation else { return }
         progressObserver = nil
         download = nil
-        importing = false
+        importStatus = nil
         if let error { update(error, detail.isEmpty ? "" : " · " + detail) }
         else { reconfigure() }
+        notifyObservers()
     }
 
     private func discardDownload() {
@@ -487,12 +530,13 @@ final class PredictionRuntime {
         progressObserver = nil
         download?.cancel()
         download = nil
-        importing = false
+        importStatus = nil
     }
 
     private func reconfigure() {
         retryAfter = .now()
-        guard download == nil, !importing else { return }
+        guard download == nil, importStatus == nil else { return }
+        if process?.isRunning == true { update(ready == nil ? "starting" : "ready"); return }
         if purpose == .prediction && enabled && !external && isInstalled { startServer() }
         else { showStandby() }
     }
@@ -511,10 +555,102 @@ final class PredictionRuntime {
     }
 
     private func file(for model: PredictionModel) -> URL { directory.appendingPathComponent(model.filename) }
-    private func size(_ url: URL) -> Int64? {
-        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init)
+    private var isInstalled: Bool { Self.isInstalled(selected, in: directory) }
+
+    private func select(_ model: PredictionModel) {
+        guard selected.id != model.id else { return }
+        stopServer()
+        selected = model
+        defaults.set(model.id, forKey: purpose.modelKey)
     }
-    private var isInstalled: Bool { size(file(for: selected)) == selected.bytes }
+
+    private func modelFilesChanged(_ id: String) {
+        NotificationCenter.default.post(name: Self.libraryChanged, object: self, userInfo: ["id": id])
+        notifyObservers()
+    }
+
+    private func refreshLibrary(changedID: String) {
+        if selected.id == changedID {
+            if !isInstalled {
+                stopServer()
+                if !purpose.models.contains(where: { $0.id == selected.id }) { select(purpose.models[0]) }
+            }
+            reconfigure()
+        }
+        notifyObservers()
+    }
+
+    private func installFile(_ temporary: URL, as model: PredictionModel) throws {
+        let manager = FileManager.default
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = file(for: model)
+        if manager.fileExists(atPath: destination.path) {
+            _ = try manager.replaceItemAt(destination, withItemAt: temporary)
+        } else {
+            try manager.moveItem(at: temporary, to: destination)
+        }
+    }
+
+    private static var builtInModels: [PredictionModel] { models + dictationModels }
+    private static let customPrefix = "gguf-"
+
+    private static func customDirectory(in directory: URL) -> URL {
+        directory.appendingPathComponent("custom-models", isDirectory: true)
+    }
+
+    private static func catalog(for purpose: Purpose, in directory: URL) -> [PredictionModel] {
+        let other = purpose == .prediction ? dictationModels : models
+        let installed = other.filter { isInstalled($0, in: directory) }
+        let entries = (try? FileManager.default.contentsOfDirectory(at: customDirectory(in: directory),
+                                                                    includingPropertiesForKeys: nil)) ?? []
+        let custom = entries.compactMap { customModel(id: $0.lastPathComponent, in: directory) }
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        return purpose.models + installed + custom
+    }
+
+    private static func customModel(id: String, in directory: URL) -> PredictionModel? {
+        guard id.hasPrefix(customPrefix) else { return nil }
+        let hash = id.dropFirst(customPrefix.count)
+        guard hash.utf8.count == 64, hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
+        let folder = customDirectory(in: directory).appendingPathComponent(id, isDirectory: true)
+        guard let info = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              info.isDirectory == true, info.isSymbolicLink == false,
+              let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil),
+              let file = files.first(where: { $0.pathExtension.lowercased() == "gguf" }),
+              let bytes = (try? ggufSize(file)) else { return nil }
+        return customModel(id: id, file: file, bytes: bytes)
+    }
+
+    private static func customModel(id: String, file: URL, bytes: Int64) -> PredictionModel {
+        PredictionModel(id: id, title: file.deletingPathExtension().lastPathComponent,
+                        repository: nil, revision: nil, filename: "custom-models/\(id)/\(file.lastPathComponent)",
+                        bytes: bytes, sha256: String(id.dropFirst(customPrefix.count)))
+    }
+
+    private static func isInstalled(_ model: PredictionModel, in directory: URL) -> Bool {
+        let url = directory.appendingPathComponent(model.filename)
+        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        return values?.isRegularFile == true && values?.fileSize.map(Int64.init) == model.bytes
+    }
+
+    // This checks the single-file container. llama.cpp checks that it can load the weights.
+    private static func ggufSize(_ file: URL) throws -> Int64? {
+        guard file.pathExtension.lowercased() == "gguf",
+              file.deletingPathExtension().lastPathComponent.range(of: #"-\d{5}-of-\d{5}$"#,
+                                                                  options: .regularExpression) == nil else { return nil }
+        let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true, let bytes = values.fileSize, bytes > 24 else { return nil }
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        guard let header = try handle.read(upToCount: 24), header.count == 24,
+              header.starts(with: [0x47, 0x47, 0x55, 0x46]) else { return nil }
+        let (version, tensors) = header.withUnsafeBytes { raw in
+            (UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: 4, as: UInt32.self)),
+             UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self)))
+        }
+        guard (2...3).contains(version), tensors > 0 else { return nil }
+        return Int64(bytes)
+    }
 
     private func startServer() {
         guard process == nil, enabled, !external, isInstalled else { return }
@@ -538,7 +674,7 @@ final class PredictionRuntime {
                                                 apiKey: key, modelID: selected.id, modelAlias: alias)
             let pipe = Pipe()
             child.executableURL = host
-            child.arguments = ["--prediction-server-supervisor", selected.id, String(port), alias]
+            child.arguments = ["--prediction-server-supervisor", purpose.rawValue, selected.id, String(port), alias]
             var environment = ProcessInfo.processInfo.environment
             environment["LLAMA_API_KEY"] = key
             child.environment = environment
@@ -642,21 +778,25 @@ final class PredictionRuntime {
     static func runSupervisorIfRequested() {
         let arguments = CommandLine.arguments
         guard arguments.dropFirst().first == "--prediction-server-supervisor" else { return }
-        guard arguments.count == 5, let model = (models + dictationModels).first(where: { $0.id == arguments[2] }),
-              let port = UInt16(arguments[3]), port > 0, UUID(uuidString: arguments[4]) != nil,
+        guard arguments.count == 6, let purpose = Purpose(rawValue: arguments[2]),
+              let port = UInt16(arguments[4]), port > 0, UUID(uuidString: arguments[5]) != nil,
               let key = ProcessInfo.processInfo.environment["LLAMA_API_KEY"], UUID(uuidString: key) != nil else { exit(2) }
-        let dictation = dictationModels.contains { $0.id == model.id }
+        let id = arguments[3]
+        let directory = modelDirectory
+        guard let model = builtInModels.first(where: { $0.id == id }) ?? customModel(id: id, in: directory),
+              isInstalled(model, in: directory) else { exit(2) }
+        let dictation = purpose == .dictation
         guard let binary = dictation ? bundledServer() : findServer() else { exit(2) }
-        let modelURL = modelDirectory.appendingPathComponent(model.filename)
+        let modelURL = directory.appendingPathComponent(model.filename)
         let server = Process()
         server.executableURL = binary
         server.arguments = ["-m", modelURL.path, "--host", "127.0.0.1", "--port", String(port),
                             "--ctx-size", dictation ? "4096" : "512", "--parallel", "1", "--threads", "2", "--poll", "0",
                             "--cache-ram", "0",
-                            "--n-gpu-layers", gpuLayers, "--alias", arguments[4],
+                            "--n-gpu-layers", gpuLayers, "--alias", arguments[5],
                             "--offline", "--no-webui", "--log-disable"]
         if dictation { server.arguments?.append("--no-context-shift") }
-        if model.id == gemmaDictationModelID {
+        if model.id == gemmaDictationModelID || (dictation && model.repository == nil) {
             server.arguments?.append(contentsOf: ["--reasoning", "off", "--chat-template-kwargs", #"{"enable_thinking":false}"#])
         }
         server.standardInput = FileHandle.nullDevice
