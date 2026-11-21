@@ -9,6 +9,7 @@
 ### Fixed
 
 - Aligned the model management link with the rest of the dictation proofreading card.
+- SAGE restores the caret after typing corrections, including when the editor selects more text than requested. Proofreading now starts after a 450 ms pause.
 
 ## 0.6.0 — 2026-11-19
 

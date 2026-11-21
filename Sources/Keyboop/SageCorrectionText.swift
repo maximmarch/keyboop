@@ -6,6 +6,15 @@ enum SageTypingMode: String, CaseIterable {
     var localizationKey: String { "sage.typing." + rawValue }
 }
 
+protocol SageTypingEditor {
+    var isFocused: Bool { get }
+    var selection: NSRange? { get }
+    func select(_ range: NSRange) -> Bool
+    func text(in range: NSRange) -> String?
+    func replaceSelection(with text: String) -> Bool
+    func collapseSelection()
+}
+
 enum SageCorrectionText {
     static let typingWindowLength = 384
 
@@ -29,6 +38,41 @@ enum SageCorrectionText {
     struct TypingEdit {
         let range: NSRange
         let replacement: String
+
+        func apply(to original: String, startingAt start: Int, in editor: SageTypingEditor) -> Bool {
+            guard editor.isFocused else { return false }
+            let source = original as NSString
+            let change = NSRange(location: start + range.location, length: range.length)
+            var caret = NSRange(location: start + source.length, length: 0)
+            defer {
+                // A setter can expand the selection or change it even when it reports failure.
+                if editor.isFocused || (change.length > 0 && editor.selection == change) {
+                    restoreCaret(caret, in: editor)
+                }
+            }
+
+            guard editor.select(change), editor.selection == change, editor.isFocused else { return false }
+            let expected = source.substring(with: range)
+            guard range.length == 0 || editor.text(in: change)?.utf16.elementsEqual(expected.utf16) == true else {
+                return false
+            }
+
+            let wrote = editor.replaceSelection(with: replacement)
+            let corrected = source.replacingCharacters(in: range, with: replacement)
+            let updated = NSRange(location: start, length: corrected.utf16.count)
+            let verified = editor.text(in: updated)?.utf16.elementsEqual(corrected.utf16) == true
+            if verified { caret.location = NSMaxRange(updated) }
+            return verified || wrote
+        }
+
+        private func restoreCaret(_ caret: NSRange, in editor: SageTypingEditor) {
+            _ = editor.select(caret)
+            guard editor.selection != caret else { return }
+            _ = editor.select(caret)
+            if let selection = editor.selection, selection.length > 0, editor.isFocused {
+                editor.collapseSelection()
+            }
+        }
     }
 
     static func typingEdit(from original: String, to answer: String) -> TypingEdit? {

@@ -53,7 +53,7 @@ final class SageCorrectionCoordinator {
             }
         }
         typingDebounce = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(850), execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(450), execute: work)
     }
 
     private func proofread(_ target: SelectionText.TypingTarget, id: UUID, mode: SageTypingMode,

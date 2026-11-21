@@ -202,40 +202,40 @@ extension SelectionText {
 
         func replace(_ edit: SageCorrectionText.TypingEdit) -> Bool {
             guard isCurrent() else { return false }
-            let element = field.element
-            let change = NSRange(location: range.location + edit.range.location, length: edit.range.length)
-            var applied = false
-            var caret = field.position
-            defer {
-                if SelectionText.focusedTypingElement(in: field.pid).map({ CFEqual($0, element) }) == true,
-                   applied || SelectionText.typingSelection(in: element) == change {
-                    _ = SelectionText.setTypingSelection(NSRange(location: caret, length: 0), in: element)
-                }
-            }
-            guard SelectionText.setTypingSelection(change, in: element),
-                  SelectionText.typingSelection(in: element) == change,
-                  SelectionText.focusedTypingElement(in: field.pid).map({ CFEqual($0, element) }) == true else { return false }
-            let expected = (text as NSString).substring(with: edit.range)
-            let original = expected.isEmpty ? "" : SelectionText.typingText(in: element, range: change)
-            guard original?.utf16.elementsEqual(expected.utf16) == true else { return false }
-
-            let result = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString,
-                                                      edit.replacement as CFTypeRef)
-            let corrected = (text as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
-            let updatedRange = NSRange(location: range.location, length: corrected.utf16.count)
-            applied = SelectionText.typingText(in: element, range: updatedRange)?.utf16.elementsEqual(corrected.utf16) == true
-            if applied { caret = NSMaxRange(updatedRange) }
-            return applied || result == .success
+            return edit.apply(to: text, startingAt: range.location, in: field)
         }
     }
 
-    fileprivate struct TypingField {
+    fileprivate struct TypingField: SageTypingEditor {
         let pid: pid_t
         let element: AXUIElement
         let position: Int
         let length: Int
         let before: String
         let after: String
+
+        var isFocused: Bool {
+            SelectionText.focusedTypingElement(in: pid).map { CFEqual($0, element) } == true
+        }
+
+        var selection: NSRange? { SelectionText.typingSelection(in: element) }
+
+        func select(_ range: NSRange) -> Bool {
+            SelectionText.setTypingSelection(range, in: element)
+        }
+
+        func text(in range: NSRange) -> String? {
+            SelectionText.typingText(in: element, range: range)
+        }
+
+        func replaceSelection(with text: String) -> Bool {
+            AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString,
+                                         text as CFTypeRef) == .success
+        }
+
+        func collapseSelection() {
+            _ = TextReplacer.postSuggestionRightArrow(to: pid)
+        }
     }
 
     static func typingTarget(in pid: pid_t, afterTyping key: Character) -> TypingTarget? {
