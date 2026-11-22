@@ -42,6 +42,7 @@ final class WordCompletion {
         let inputSource: String
         var displayedSuffix = ""
         var typedRevision = ""
+        var usageLanguage: PredictionUsage.Language?
     }
 
     enum Insertion {
@@ -74,6 +75,18 @@ final class WordCompletion {
     private var typingTrigger: Trigger?
     private var keyLookup: WordCompletionRequest?
     private var preparedNextWord: String?
+    private var lastUsageKeyTime: TimeInterval?
+    private struct UndoObservation {
+        let id = UUID()
+        let original: Field
+        let rightLimit: Int
+        let language: PredictionUsage.Language
+        let saved: Int
+        let acceptedAt: TimeInterval
+    }
+    private var pendingUndo: UndoObservation?
+    private var undoAtKeyDown: UndoObservation?
+    private var undoRead: WordCompletionRequest?
     private struct TypedTail {
         let original: Suggestion
         var typed: String
@@ -103,6 +116,9 @@ final class WordCompletion {
     }
 
     func resetInferenceContext() {
+        lastUsageKeyTime = nil
+        pendingUndo = nil
+        undoRead?.cancel()
         invalidate()
         cancelPersonalLearningContext()
         worker.async { [weak self] in self?.inferenceContext = nil }
@@ -145,7 +161,18 @@ final class WordCompletion {
 
     // The event tap calls these around a physical key. Only input that survives all hotkeys,
     // layout fixes and snippet handling reaches continueTyping.
+    func beginUsageAcceptance() {
+        lastUsageKeyTime = ProcessInfo.processInfo.systemUptime
+        pendingUndo = nil
+        undoRead?.cancel()
+    }
+
     func beginKeyDown() {
+        lastUsageKeyTime = nil
+        undoRead?.cancel()
+        undoRead = nil
+        undoAtKeyDown = pendingUndo
+        pendingUndo = nil
         didPassPersonalKey = false
         keySeed = pendingTail ?? suggestion.map { TypedTail(original: $0, typed: "") }
         if typingTrigger != nil, keySeed == nil {
@@ -156,6 +183,7 @@ final class WordCompletion {
     }
 
     func endKeyDown() {
+        undoAtKeyDown = nil
         // A shortcut, edit or navigation key never advances a pending text lookup.
         if let keyLookup, request === keyLookup { invalidate() }
         if personalLearningEnabled && !didPassPersonalKey { cancelPersonalLearningContext() }
@@ -245,7 +273,9 @@ final class WordCompletion {
         request = current
         let expected = tail
         worker.asyncAfter(deadline: .now() + .milliseconds(15)) { [weak self] in
-            let next = Self.readAdvanced(expected.original, inserted: expected.typed, remainder: remainder, request: current)
+            var advanced = Self.readAdvanced(expected.original, inserted: expected.typed, remainder: remainder, request: current)
+            advanced?.usageLanguage = expected.original.usageLanguage
+            let next = advanced
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.request === current else { return }
                 self.pendingTail = nil
@@ -273,11 +303,66 @@ final class WordCompletion {
             PredictionDiagnostic.shared.record("prediction.noRoom")
             return false
         }
+        if displayed.field.pid != ProcessInfo.processInfo.processIdentifier {
+            displayed.usageLanguage = displayed.usageLanguage ?? suggestion?.usageLanguage
+            let visibleText = displayed.trigger.isInfill ? displayed.suffix : displayed.displayedSuffix
+            if displayed.usageLanguage == nil,
+               let language = PredictionUsage.Language.infer(from: displayed.prefix + visibleText, after: displayed.field.before) {
+                displayed.usageLanguage = language
+                let shownAt = ProcessInfo.processInfo.systemUptime
+                PredictionUsageStore.shared.record(.shown(latencyMS: lastUsageKeyTime.map { (shownAt - $0) * 1000 }),
+                                                   language: language)
+            }
+        }
         suggestion = displayed
         typingTrigger = nil
         prepareFollowingWord(for: displayed, request: request)
         if first { watch(candidate, request: request, until: .now() + .seconds(6), isEligible: isEligible) }
         return true
+    }
+
+    private func recordAcceptance(_ candidate: Suggestion, insertion: String) {
+        guard let language = candidate.usageLanguage else { return }
+        let saved = PredictionUsage.savedKeys(for: insertion)
+        PredictionUsageStore.shared.record(.accepted(saved: saved), language: language)
+        let observation = UndoObservation(original: candidate.field,
+            rightLimit: candidate.trigger.isInfill ? PredictionPhrase.InfillContext.rightLimit : 12,
+            language: language, saved: saved, acceptedAt: ProcessInfo.processInfo.systemUptime)
+        pendingUndo = observation
+        let id = observation.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + PredictionUsage.undoWindow) { [weak self] in
+            if self?.pendingUndo?.id == id { self?.pendingUndo = nil }
+        }
+    }
+
+    // Called after the engine has handled this physical key, including its navigation resets.
+    func observeUsageKey(keyCode: Int64, characters: String, flags: CGEventFlags, at time: TimeInterval) {
+        lastUsageKeyTime = time
+        guard let observation = undoAtKeyDown,
+              (0...PredictionUsage.undoWindow).contains(time - observation.acceptedAt) else { return }
+        let modifiers = flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift])
+        let undo = modifiers == .maskCommand && (keyCode == 6 || characters.lowercased() == "z")
+        let delete = keyCode == 51 && !modifiers.contains(.maskControl)
+        guard undo || delete else { return }
+        // A series of backspaces may take more than one press to remove the entire insertion.
+        if delete { pendingUndo = observation }
+        let check = WordCompletionRequest()
+        undoRead = check
+        worker.asyncAfter(deadline: .now() + .milliseconds(25)) { [weak self] in
+            for attempt in 0..<3 {
+                if attempt > 0 { Thread.sleep(forTimeInterval: 0.025) }
+                guard !check.isCancelled, let current = Self.readField(pid: observation.original.pid,
+                      rightLimit: observation.rightLimit), CFEqual(current.element, observation.original.element) else { return }
+                guard observation.original.matchesInfill(current) else { continue }
+                DispatchQueue.main.async {
+                    guard let self, self.undoRead === check, !check.isCancelled else { return }
+                    self.pendingUndo = nil
+                    self.undoRead = nil
+                    PredictionUsageStore.shared.record(.undone(saved: observation.saved), language: observation.language)
+                }
+                return
+            }
+        }
     }
 
     private func prepareFollowingWord(for visible: Suggestion, request: WordCompletionRequest) {
@@ -402,6 +487,9 @@ final class WordCompletion {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 let valid = self.request === current && isEligible(candidate.trigger)
+                if valid, case .confirmed = result?.insertion {
+                    self.recordAcceptance(candidate, insertion: accepted.insertion)
+                }
                 if self.learningEpoch == epoch, learn {
                     if valid, let observation, let session, let newField = result?.field,
                        PersonalPredictionStore.shared.session == session {
@@ -538,6 +626,7 @@ final class WordCompletion {
                 guard let self, self.request === current else { return }
                 self.invalidate()
                 self.cancelPersonalLearningContext()
+                if case .confirmedInfill = result { self.recordAcceptance(candidate, insertion: edit.insertion) }
                 finished(result)
             }
         }

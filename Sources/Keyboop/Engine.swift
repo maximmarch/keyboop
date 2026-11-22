@@ -659,6 +659,8 @@ final class Engine: EventTapHandler {
             return false
         }
 
+        defer { wordCompletion.observeUsageKey(keyCode: keyCode, characters: characters, flags: flags, at: eventTime) }
+
         // Ленивая очистка после context-события (клик/Spotlight — каретка сдвинулась): делаем СИНХРОННО
         // здесь, прямо перед обработкой нажатия → первый символ записывается в уже чистый буфер (без гонки).
         if applyPendingContextClear() {
@@ -998,7 +1000,8 @@ final class Engine: EventTapHandler {
     }
 
     func acceptWordCompletion() -> Bool {
-        wordCompletion.accept(isEligible: { [weak self] in self?.canSuggestWord($0) ?? false }) { [weak self] result in
+        wordCompletion.beginUsageAcceptance()
+        return wordCompletion.accept(isEligible: { [weak self] in self?.canSuggestWord($0) ?? false }) { [weak self] result in
             guard let self else { return }
             self.liveFixLast = ""
             if case let .confirmed(prefix, suffix) = result {

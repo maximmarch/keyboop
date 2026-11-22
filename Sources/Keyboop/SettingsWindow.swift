@@ -1887,7 +1887,10 @@ final class DetailVC: NSViewController {
             ], fillsWidth: true),
             group(6),
             sectionTitle(L10n.t("prediction.preview")),
-            card([cardContent(PredictionPreviewView())], fillsWidth: true)
+            card([cardContent(PredictionPreviewView())], fillsWidth: true),
+            group(6),
+            sectionTitle(L10n.t("usage.title")),
+            card([cardContent(PredictionUsageView())], fillsWidth: true)
         ])
     }
 

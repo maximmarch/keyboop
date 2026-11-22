@@ -11,6 +11,26 @@ func milliseconds(_ n: Double?) -> String {
 do {
     enum Mode: String { case pipeline = "--pipeline", compare = "--compare-completion", confidence = "--tune-confidence" }
     var args = Array(CommandLine.arguments.dropFirst())
+    if args.first == "--usage" {
+        guard args.count <= 2 else {
+            throw NSError(domain: "KeyboopEvaluation", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Expected --usage [report.json]"])
+        }
+        let url = args.count == 2 ? URL(fileURLWithPath: args[1])
+            : PredictionUsageStore.shared.directory.appendingPathComponent(PredictionUsageStore.filename)
+        if args.count == 2, !FileManager.default.fileExists(atPath: url.path) { throw CocoaError(.fileNoSuchFile) }
+        let builds = try PredictionUsageStore.read(url)
+        print("version\tbuild\tlanguage\tshown\taccepted\taccepted_%\tundone\tsaved_keys\ttimed_shows\tmean_key_to_show_ms")
+        for build in builds {
+            for language in PredictionUsage.Language.allCases {
+                let c = build[language]
+                print([build.version, build.id, language.rawValue, String(c.shown), String(c.accepted),
+                       number(c.acceptancePercent), String(c.undone), String(c.saved), String(c.timed),
+                       milliseconds(c.meanMS)].joined(separator: "\t"))
+            }
+        }
+        exit(0)
+    }
     let mode = args.first.flatMap(Mode.init(rawValue:))
     if mode != nil { args.removeFirst() }
     var baseURL: URL?
