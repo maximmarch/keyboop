@@ -180,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             languageData.wordsRu.contains(w) || languageData.wordsEn.contains(w)
         }
         engine = Engine()
+        PredictionSync.shared.start()
         WebsiteContextProvider.shared.start()
         menuBar = MenuBarController(layout: engine.layout)
         menuBar.onOpenSettings = { [weak self] in self?.openSettings() }

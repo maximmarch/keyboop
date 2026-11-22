@@ -57,6 +57,17 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        Release(version: "0.6.2",
+            ru: [
+                "В «Предиктивном вводе» можно выбрать общую папку для своих Mac. Глоссарии объединяются по словам, удаления и настройки подсказок переносятся между устройствами.",
+                "Обмен выученными словами и короткими сочетаниями включается отдельно на каждом Mac.",
+                "Подсказки успевают за быстрым набором. Их принятия, отмены, экономия нажатий и задержка отображаются отдельно для русского и английского."
+            ],
+            en: [
+                "Choose a shared folder in Predictive Input to sync your Macs. Glossaries merge word by word, including deletions, and prediction preferences follow you.",
+                "Sharing learned words and short combinations is a separate choice on each Mac.",
+                "Suggestions keep up with fast typing. Acceptance, undo, saved keystrokes and latency are shown separately for Russian and English."
+            ]),
         Release(version: "0.6.1",
             ru: [
                 "Выровнены карточки и отступы в «Типографике», «Сниппетах» и «Предиктивном вводе». Поле проверки подсказок занимает всю ширину карточки.",

@@ -316,7 +316,8 @@ enum PredictionGlossaryEditor {
         text.autoresizingMask = [.width]
         text.textContainer?.widthTracksTextView = true
         text.textContainerInset = NSSize(width: 6, height: 5)
-        text.string = settings.predictionGlossary
+        let original = settings.predictionGlossary
+        text.string = original
         text.setAccessibilityLabel(L10n.t("completion.glossary"))
         text.setAccessibilityIdentifier("keyboop-prediction-glossary")
 
@@ -333,7 +334,9 @@ enum PredictionGlossaryEditor {
         alert.addButton(withTitle: L10n.t("common.cancel"))
         alert.window.initialFirstResponder = text
         if alert.runModal() == .alertFirstButtonReturn {
-            settings.predictionGlossary = text.string
+            settings.predictionGlossary = PredictionSyncLedger.editedGlossary(original: original, edited: text.string,
+                                                                              current: settings.predictionGlossary)
+            PredictionSync.shared.syncNow()
         }
     }
 }

@@ -168,6 +168,37 @@ struct PersonalPredictionHistory: Codable {
         return bestScore >= minimum && bestScore >= rival * margin ? best : nil
     }
 
+    /// Merge independent devices' decaying evidence. Exports always use the local history alone.
+    static func combined(_ sources: [Self]) -> Self {
+        func add(_ a: Evidence, _ b: Evidence) -> Evidence {
+            let date = max(a.updated, b.updated)
+            let spelling = a.updated == b.updated ? min(a.word, b.word) : (a.updated > b.updated ? a.word : b.word)
+            return Evidence(word: spelling, weight: min(64, a.score(at: date) + b.score(at: date)), updated: date)
+        }
+        func recent(_ entries: [String: Evidence], limit: Int) -> [String: Evidence] {
+            guard entries.count > limit else { return entries }
+            let sorted = entries.sorted {
+                $0.value.updated == $1.value.updated ? $0.key < $1.key : $0.value.updated > $1.value.updated
+            }
+            return Dictionary(uniqueKeysWithValues: sorted.prefix(limit).map { ($0.key, $0.value) })
+        }
+        var result = Self()
+        for source in sources {
+            result.words.merge(source.words, uniquingKeysWith: add)
+            for (key, entries) in source.contexts {
+                result.contexts[key, default: [:]].merge(entries, uniquingKeysWith: add)
+            }
+        }
+        result.words = recent(result.words, limit: 4_000)
+        result.contexts = result.contexts.mapValues { recent($0, limit: 12) }
+        if result.contexts.count > 6_000 {
+            let dates = result.contexts.mapValues { $0.values.map(\.updated).max() ?? .distantPast }
+            let keys = dates.keys.sorted { dates[$0] == dates[$1] ? $0 < $1 : dates[$0]! > dates[$1]! }
+            for key in keys.dropFirst(6_000) { result.contexts.removeValue(forKey: key) }
+        }
+        return result
+    }
+
     var isValid: Bool {
         func valid(_ entries: [String: Evidence]) -> Bool {
             entries.allSatisfy { key, evidence in
@@ -198,6 +229,8 @@ final class PersonalPredictionStore {
     private var enabled = false
     private var revision: UInt64 = 0
     private var history: PersonalPredictionHistory?
+    private var peerHistory: PersonalPredictionHistory?
+    private var combinedHistory: PersonalPredictionHistory?
     private var pendingSave: DispatchWorkItem?
     private var recorded: Set<UUID> = []
     private var recent: [UUID] = []
@@ -210,7 +243,20 @@ final class PersonalPredictionStore {
     }
 
     var session: UInt64? { lock.withLock { history == nil ? nil : revision } }
-    func snapshot() -> PersonalPredictionHistory? { lock.withLock { history } }
+    func snapshot() -> PersonalPredictionHistory? { lock.withLock { combinedHistory ?? history } }
+    func localSnapshot() -> PersonalPredictionHistory? { lock.withLock { history } }
+
+    func setPeerHistory(_ peer: PersonalPredictionHistory?) {
+        lock.withLock {
+            peerHistory = peer
+            rebuildCombined()
+        }
+    }
+
+    private func rebuildCombined() {
+        if let history, let peerHistory { combinedHistory = .combined([history, peerHistory]) }
+        else { combinedHistory = nil }
+    }
 
     func setEnabled(_ enabled: Bool) {
         lock.withLock {
@@ -218,6 +264,8 @@ final class PersonalPredictionStore {
             self.enabled = enabled
             cancelPending()
             history = nil
+            combinedHistory = nil
+            peerHistory = nil
             let generation = revision
             if enabled {
                 queue.async { [weak self] in self?.load(session: generation) }
@@ -231,6 +279,7 @@ final class PersonalPredictionStore {
             recent.append(observation.id)
             if recent.count > 256 { recorded.remove(recent.removeFirst()) }
             history?.record(observation)
+            combinedHistory?.record(observation)
             pendingSave?.cancel()
             let write = DispatchWorkItem { [weak self] in self?.save(session: session) }
             pendingSave = write
@@ -242,6 +291,7 @@ final class PersonalPredictionStore {
         lock.withLock {
             cancelPending()
             history = enabled ? PersonalPredictionHistory() : nil
+            rebuildCombined()
             // Serial with writes already in progress and loads scheduled by re-enabling.
             queue.async { [url] in
                 do {
@@ -276,6 +326,7 @@ final class PersonalPredictionStore {
         lock.withLock {
             guard session == revision, enabled else { return }
             history = usable ?? PersonalPredictionHistory()
+            rebuildCombined()
         }
     }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2 — 2026-11-22
+
+- Sync predictive typing glossaries and five preferences through a user-selected shared folder. Concurrent word additions merge, and deletions propagate across Macs.
+- Opt in separately on each Mac to exchange learned words and short contexts.
+- Keep matching predictions during fast typing and prepare the next word. See actual acceptance, undo, saved keystrokes and latency by language and build.
+
 ## 0.6.1 — 2026-11-21
 
 ### Added

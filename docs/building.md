@@ -76,6 +76,7 @@ bash build-app.sh
 ./Tests/SageRuntime/run.sh
 ./Tests/WordCompletion/run.sh
 ./Tests/PredictionRuntime/run.sh
+./Tests/PredictionSync/run.sh
 ```
 
 Наборы данных и команды для проверки качества подсказок описаны

@@ -1174,6 +1174,8 @@ final class DetailVC: NSViewController {
         contentW = width
         showsScroller = scroller
         super.init(nibName: nil, bundle: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(importedPredictionSettings),
+                                                name: PredictionSync.importedSettings, object: nil)
     }
 
     /// Показывать ли полосу прокрутки. В подробных настройках она видна ВСЕГДА (там есть что
@@ -1447,6 +1449,10 @@ final class DetailVC: NSViewController {
             stack.widthAnchor.constraint(equalTo: column.widthAnchor)   // явная ширина (stack.w был 0)
         ])
         view.needsLayout = true
+    }
+
+    @objc private func importedPredictionSettings() {
+        if !showingRoot, currentSection == .predictiveInput, viewIfLoaded?.window != nil { reshow() }
     }
 
     func reshow() { showingRoot ? showRoot() : show(currentSection) }
@@ -1889,6 +1895,9 @@ final class DetailVC: NSViewController {
             sectionTitle(L10n.t("prediction.preview")),
             card([cardContent(PredictionPreviewView())], fillsWidth: true),
             group(6),
+            sectionTitle(L10n.t("sync.title")),
+            card([cardContent(PredictionSyncView())], fillsWidth: true),
+            group(6),
             sectionTitle(L10n.t("usage.title")),
             card([cardContent(PredictionUsageView())], fillsWidth: true)
         ])
@@ -1908,6 +1917,7 @@ final class DetailVC: NSViewController {
 
     @objc private func togglePersonalPrediction(_ sender: NSSwitch) {
         settings.personalPredictionEnabled = sender.state == .on
+        PredictionSync.shared.syncNow()
     }
 
     @objc private func resetPersonalPrediction() {
