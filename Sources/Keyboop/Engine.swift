@@ -992,7 +992,7 @@ final class Engine: EventTapHandler {
         if wordCompletion.continueTyping(typed, isEligible: { [weak self] in self?.canSuggestWord($0) ?? false }) { return }
         guard canSuggestWord(trigger) else { return }
         wordCompletion.schedule(trigger, useLocalModel: settings.predictiveLocalModelEnabled,
-                                useInfill: canSuggestWord(.infill)) { [weak self] actualTrigger in
+                                useInfill: canSuggestWord(.infill), typed: typed) { [weak self] actualTrigger in
             self?.canSuggestWord(actualTrigger) ?? false
         }
     }

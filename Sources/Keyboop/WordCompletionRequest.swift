@@ -6,8 +6,20 @@ final class WordCompletionRequest {
     private let lock = NSLock()
     private var cancelled = false
     private var inference: URLSessionDataTask?
+    private var typed = ""
 
     var isCancelled: Bool { lock.withLock { cancelled } }
+    var typedAhead: String { lock.withLock { typed } }
+
+    /// Additional physical input during this lookup. Bound stale work during long bursts.
+    func appendTyped(_ text: String) -> Bool {
+        lock.withLock {
+            guard !cancelled, text.count == 1, text == " " || text.first?.isLetter == true,
+                  typed.utf16.count + text.utf16.count <= 16 else { return false }
+            typed += text
+            return true
+        }
+    }
     func cancel() {
         let task = lock.withLock {
             cancelled = true

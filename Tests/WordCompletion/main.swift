@@ -216,6 +216,29 @@ precondition(chooseCompletion(before: "ZetaEng", references: "", history: person
 precondition(chooseCompletion(before: "zetaeng", references: "", history: nil) ==
              .dictionary(prefix: "zetaeng", suffix: "ine"))
 
+// Fast typing keeps only the untyped suffix, including a word boundary.
+let burst = WordCompletionRequest()
+for character in "жу в" { precondition(burst.appendTyped(String(character))) }
+precondition(burst.typedAhead == "жу в")
+precondition(PredictionPhrase.remaining("жу вечером", afterTyping: burst.typedAhead) == "ечером")
+precondition(PredictionPhrase.remaining("жу вечером", afterTyping: "жу у") == nil)
+precondition(PredictionPhrase.remaining("жу вечером", afterTyping: "жу вечером") == nil)
+precondition(!burst.appendTyped(".") && !burst.appendTyped("аб"))
+burst.cancel()
+precondition(!burst.appendTyped("а"))
+let longBurst = WordCompletionRequest()
+for _ in 0..<16 { precondition(longBurst.appendTyped("x")) }
+precondition(!longBurst.appendTyped("y"))
+
+func preparedRoute(_ after: String = "", history: PersonalPredictionHistory? = nil) -> PredictionDecision.Choice {
+    PredictionDecision.resolve(before: "Завтра пришлю ", after: after, startsAtFieldStart: true,
+                               trigger: .nextWord, index: ranked, next: nil,
+                               personal: history, preparedNextWord: "отчёт")
+}
+precondition(preparedRoute() == .dictionary(prefix: "", suffix: "отчёт"))
+precondition(preparedRoute("more") == .skip(.rightText))
+precondition(preparedRoute(history: personal) == .personal(prefix: "", suffix: "ZetaEngineCore"))
+
 let stale = WordCompletionRequest()
 precondition(stale.insert(readTarget: { stale.cancel(); return 1 }, write: { _ in
     preconditionFailure("A request cancelled during AX validation must never write")

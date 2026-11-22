@@ -1,6 +1,11 @@
 import Foundation
 
 enum PredictionPhrase {
+    static func remaining(_ suggestion: String, afterTyping typed: String) -> String? {
+        guard suggestion.hasPrefix(typed), suggestion.count > typed.count else { return nil }
+        return String(suggestion.dropFirst(typed.count))
+    }
+
     /// The first displayed word can include a separator if the user typed the preceding word.
     static func firstChunk(_ text: String) -> String {
         let start = text.prefix(while: { $0 == " " })

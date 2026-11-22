@@ -36,7 +36,8 @@ enum PredictionDecision {
                         next: @autoclosure () -> NextWordIndex?,
                         references: @autoclosure () -> PredictionReferenceIndex? = nil,
                         useFieldReferences: Bool = false,
-                        personal: @autoclosure () -> PersonalPredictionHistory? = nil) -> Choice {
+                        personal: @autoclosure () -> PersonalPredictionHistory? = nil,
+                        preparedNextWord: String? = nil) -> Choice {
         guard after.isEmpty || after.first?.isNewline == true else { return .skip(.rightText) }
         let before = rawBefore.replacingOccurrences(of: "\u{00A0}", with: " ")
         switch trigger {
@@ -80,7 +81,7 @@ enum PredictionDecision {
                 let context = PersonalPredictionObservation.context(before: before, startsAtFieldStart: startsAtFieldStart)
                 if let word = personal.nextWord(after: context) { return .personal(prefix: "", suffix: word) }
             }
-            if let suffix = next()?.predict(before: before, startsAtFieldStart: startsAtFieldStart) {
+            if let suffix = preparedNextWord ?? next()?.predict(before: before, startsAtFieldStart: startsAtFieldStart) {
                 return .dictionary(prefix: "", suffix: suffix)
             }
             guard before.last == " ",

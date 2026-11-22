@@ -40,6 +40,8 @@ final class WordCompletion {
         let prefix: String
         let suffix: String
         let inputSource: String
+        var displayedSuffix = ""
+        var typedRevision = ""
     }
 
     enum Insertion {
@@ -69,6 +71,9 @@ final class WordCompletion {
     private var request: WordCompletionRequest?
     private var debounce: DispatchWorkItem?
     private var suggestion: Suggestion?
+    private var typingTrigger: Trigger?
+    private var keyLookup: WordCompletionRequest?
+    private var preparedNextWord: String?
     private struct TypedTail {
         let original: Suggestion
         var typed: String
@@ -130,6 +135,9 @@ final class WordCompletion {
         request = nil
         debounce?.cancel()
         debounce = nil
+        typingTrigger = nil
+        keyLookup = nil
+        preparedNextWord = nil
         suggestion = nil
         pendingTail = nil
         deferredAccept = nil
@@ -140,10 +148,16 @@ final class WordCompletion {
     func beginKeyDown() {
         didPassPersonalKey = false
         keySeed = pendingTail ?? suggestion.map { TypedTail(original: $0, typed: "") }
-        clearRequest()
+        if typingTrigger != nil, keySeed == nil {
+            keyLookup = request
+        } else {
+            clearRequest()
+        }
     }
 
     func endKeyDown() {
+        // A shortcut, edit or navigation key never advances a pending text lookup.
+        if let keyLookup, request === keyLookup { invalidate() }
         if personalLearningEnabled && !didPassPersonalKey { cancelPersonalLearningContext() }
         keySeed = nil
         if suggestion == nil && pendingTail == nil && overlay?.isVisible == true { overlay?.orderOut(nil) }
@@ -224,18 +238,13 @@ final class WordCompletion {
         guard var tail = keySeed, !tail.original.trigger.isInfill, !characters.isEmpty,
               isEligible(tail.original.trigger) else { return false }
         tail.typed += characters
-        guard tail.original.suffix.hasPrefix(tail.typed) else { return false }
+        guard let remainder = PredictionPhrase.remaining(tail.original.suffix, afterTyping: tail.typed) else { return false }
         keySeed = nil
-        if tail.original.suffix == tail.typed {
-            invalidate()
-            return false
-        }
         pendingTail = tail
         let current = WordCompletionRequest()
         request = current
         let expected = tail
         worker.asyncAfter(deadline: .now() + .milliseconds(15)) { [weak self] in
-            let remainder = String(expected.original.suffix.dropFirst(expected.typed.count))
             let next = Self.readAdvanced(expected.original, inserted: expected.typed, remainder: remainder, request: current)
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.request === current else { return }
@@ -259,25 +268,60 @@ final class WordCompletion {
             return false
         }
         let first = suggestion == nil
-        guard show(candidate) else {
+        var displayed = candidate
+        guard show(&displayed) else {
             PredictionDiagnostic.shared.record("prediction.noRoom")
             return false
         }
-        suggestion = candidate
+        suggestion = displayed
+        typingTrigger = nil
+        prepareFollowingWord(for: displayed, request: request)
         if first { watch(candidate, request: request, until: .now() + .seconds(6), isEligible: isEligible) }
         return true
     }
 
-    func schedule(_ trigger: Trigger, useLocalModel: Bool, useInfill: Bool,
+    private func prepareFollowingWord(for visible: Suggestion, request: WordCompletionRequest) {
+        preparedNextWord = nil
+        guard !visible.trigger.isInfill, AppSettings.shared.nextWordEnabled else { return }
+        worker.async { [weak self] in
+            guard let self, !request.isCancelled else { return }
+            let before = (visible.field.before + visible.displayedSuffix + " ").replacingOccurrences(of: "\u{00a0}", with: " ")
+            guard let word = self.nextWordIndex?.predict(before: before, startsAtFieldStart: visible.field.startsAtFieldStart) else { return }
+            DispatchQueue.main.async {
+                guard self.request === request, let current = self.suggestion,
+                      current.field.matches(visible.field), current.displayedSuffix == visible.displayedSuffix else { return }
+                self.preparedNextWord = word
+            }
+        }
+    }
+
+    func schedule(_ trigger: Trigger, useLocalModel: Bool, useInfill: Bool, typed: String = "",
                   isEligible: @escaping (Trigger) -> Bool) {
+        if !trigger.isInfill, let active = keyLookup, request === active, active.appendTyped(typed) {
+            keyLookup = nil
+            typingTrigger = trigger
+            // The original debounce and inference deadline stay in force during this burst.
+            return
+        }
+        startLookup(trigger, useLocalModel: useLocalModel, useInfill: useInfill,
+                    delayMS: PredictionDecision.debounceMS, isEligible: isEligible)
+    }
+
+    private func startLookup(_ trigger: Trigger, useLocalModel: Bool, useInfill: Bool, delayMS: Int,
+                             anchor: Field? = nil, anchorSource: String? = nil, requireExactText: Bool = false, preparedWord: String? = nil,
+                             isEligible: @escaping (Trigger) -> Bool) {
         invalidate()
         let request = WordCompletionRequest()
         self.request = request
+        typingTrigger = trigger.isInfill ? nil : trigger
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.request === request else { return }
             self.debounce = nil
+            let trigger = self.typingTrigger ?? trigger
+            let issued = request.typedAhead
             guard isEligible(trigger), let source = Self.keyboardLayoutID(),
-                  let app = NSWorkspace.shared.frontmostApplication else {
+                  let app = NSWorkspace.shared.frontmostApplication,
+                  anchor.map({ $0.pid == app.processIdentifier && anchorSource == source }) ?? true else {
                 PredictionDiagnostic.shared.record("prediction.ineligible")
                 self.invalidate()
                 return
@@ -290,14 +334,20 @@ final class WordCompletion {
                 guard let self, !request.isCancelled else { return }
                 self.makeSuggestion(pid: pid, trigger: trigger, source: source, request: request,
                                     useLocalModel: useLocalModel, useInfill: useInfill, references: references,
-                                    usePersonal: usePersonal, useSystemSpelling: useSystemSpelling) { [weak self] candidate, reason in
+                                    usePersonal: usePersonal, useSystemSpelling: useSystemSpelling,
+                                    anchor: anchor, requireExactText: requireExactText, preparedWord: preparedWord, baseline: issued) { [weak self] candidate, reason, origin in
                     DispatchQueue.main.async { [weak self] in
                         guard let self, self.request === request else { return }
-                        guard let candidate else {
-                            // A deadline may follow an already displayed, complete word.
+                        let typed = request.typedAhead
+                        guard let candidate, candidate.typedRevision == typed else {
                             if self.suggestion != nil && reason == "prediction.timeout" { return }
-                            PredictionDiagnostic.shared.record(reason)
-                            self.invalidate()
+                            if let latest = self.typingTrigger, let origin, !typed.isEmpty {
+                                self.startLookup(latest, useLocalModel: useLocalModel, useInfill: useInfill,
+                                                 delayMS: 15, anchor: origin, anchorSource: source, isEligible: isEligible)
+                            } else {
+                                PredictionDiagnostic.shared.record(reason)
+                                self.invalidate()
+                            }
                             return
                         }
                         if let visible = self.suggestion, visible.suffix == candidate.suffix,
@@ -312,7 +362,7 @@ final class WordCompletion {
             }
         }
         debounce = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(PredictionDecision.debounceMS), execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delayMS), execute: work)
     }
 
     // Freeze the displayed phrase before touching the field. Late streaming updates and watchers
@@ -329,6 +379,7 @@ final class WordCompletion {
               Self.keyboardLayoutID() == candidate.inputSource else { return false }
         if candidate.trigger.isInfill { return acceptInfill(candidate, finished: finished) }
         guard let accepted = PredictionPhrase.acceptFirstWord(candidate.suffix) else { return false }
+        let following = accepted.insertion == candidate.displayedSuffix + " " ? preparedNextWord : nil
         invalidate()
         let current = WordCompletionRequest()
         request = current
@@ -367,6 +418,10 @@ final class WordCompletion {
                 if self.request === current {
                     if let tail, valid {
                         if !self.present(tail, request: current, isEligible: { isEligible(candidate.trigger) }) { self.invalidate() }
+                    } else if valid, accepted.remainder.isEmpty, let field = result?.field, isEligible(.nextWord) {
+                        self.startLookup(.nextWord, useLocalModel: AppSettings.shared.predictiveLocalModelEnabled,
+                                         useInfill: false, delayMS: 0, anchor: field, anchorSource: candidate.inputSource, requireExactText: true,
+                                         preparedWord: following, isEligible: isEligible)
                     } else {
                         self.invalidate()
                     }
@@ -380,17 +435,25 @@ final class WordCompletion {
     private func makeSuggestion(pid: pid_t, trigger: Trigger, source: String, request: WordCompletionRequest,
                                 useLocalModel: Bool, useInfill: Bool, references: PredictionReferenceIndex.Preferences,
                                 usePersonal: Bool, useSystemSpelling: Bool,
-                                finished: @escaping (Suggestion?, String) -> Void) {
+                                anchor: Field?, requireExactText: Bool, preparedWord: String?, baseline: String,
+                                complete: @escaping (Suggestion?, String, Field?) -> Void) {
         if trigger.isInfill {
-            makeInfillSuggestion(pid: pid, source: source, request: request, finished: finished)
+            makeInfillSuggestion(pid: pid, source: source, request: request) { complete($0, $1, nil) }
             return
         }
         var fieldReason = "prediction.field"
-        guard let field = Self.readField(pid: pid, report: { fieldReason = $0 }) else {
-            finished(nil, fieldReason)
+        guard let field = Self.readField(pid: pid, report: { fieldReason = $0 }),
+              anchor.map({ CFEqual($0.element, field.element) }) ?? true else {
+            complete(nil, fieldReason, nil)
             return
         }
         guard !request.isCancelled else { return }
+        func finished(_ result: Suggestion?, _ reason: String) { complete(result, reason, field) }
+        guard !requireExactText || anchor?.matches(field) == true, request.typedAhead == baseline,
+              baseline.isEmpty || field.before.replacingOccurrences(of: "\u{00a0}", with: " ").hasSuffix(baseline) else {
+            finished(nil, "prediction.changed")
+            return
+        }
         if case .nextWord = trigger, useInfill, let first = field.after.first, !first.isNewline {
             makeInfillSuggestion(pid: pid, source: source, request: request, finished: finished)
             return
@@ -401,11 +464,11 @@ final class WordCompletion {
                                                 index: index, next: nextWordIndex,
                                                 references: referenceIndex(for: references),
                                                 useFieldReferences: references.useField,
-                                                personal: usePersonal ? PersonalPredictionStore.shared.snapshot() : nil)
+                                                personal: usePersonal ? PersonalPredictionStore.shared.snapshot() : nil, preparedNextWord: preparedWord)
         func deliver(_ choice: PredictionDecision.Choice) {
             guard !request.isCancelled else { return }
             finishSuggestion(choice, field: field, trigger: trigger, source: source, request: request,
-                             useLocalModel: useLocalModel, finished: finished)
+                             useLocalModel: useLocalModel, baseline: baseline, finished: finished)
         }
 
         if case .model = choice, !useLocalModel {
@@ -482,16 +545,30 @@ final class WordCompletion {
     }
 
     private func finishSuggestion(_ choice: PredictionDecision.Choice, field: Field, trigger: Trigger, source: String,
-                                  request: WordCompletionRequest, useLocalModel: Bool,
+                                  request: WordCompletionRequest, useLocalModel: Bool, baseline: String,
                                   finished: @escaping (Suggestion?, String) -> Void) {
         let pid = field.pid
         func publish(_ suffix: String, prefix: String, reason: String) {
             guard !request.isCancelled else { return }
-            guard let current = Self.readField(pid: pid), field.matches(current) else {
-                finished(nil, "prediction.changed")
-                return
+            let typed = request.typedAhead
+            let appended = String(typed.dropFirst(baseline.count))
+            var candidate = Suggestion(field: field, trigger: trigger, prefix: prefix, suffix: suffix, inputSource: source)
+            if appended.isEmpty {
+                guard let current = Self.readField(pid: pid), field.matches(current) else {
+                    finished(nil, "prediction.changed")
+                    return
+                }
+                candidate.field = current
+            } else {
+                guard let remainder = PredictionPhrase.remaining(suffix, afterTyping: appended),
+                      let advanced = Self.readAdvanced(candidate, inserted: appended, remainder: remainder, request: request) else {
+                    finished(nil, "prediction.changed")
+                    return
+                }
+                candidate = advanced
             }
-            finished(Suggestion(field: current, trigger: trigger, prefix: prefix, suffix: suffix, inputSource: source), reason)
+            candidate.typedRevision = typed
+            finished(candidate, reason)
         }
         let before, prefix, contextWord: String
         switch choice {
@@ -520,7 +597,7 @@ final class WordCompletion {
         // Only the managed server has our private single slot and no shared prompt cache.
         let scope = connection.apiKey.map { _ in cacheScope(for: current, source: source) }
         let context = scope == nil ? before : PredictiveLocalModel.stableContext(before, caretPosition: current.position)
-        // Give a warm model its own budget after the dictionary pass; new input still cancels immediately.
+        // A matching burst may consume the beginning of the returned phrase.
         let deadline = DispatchTime.now() + .milliseconds(PredictionDecision.modelBudgetMS)
         localModel.predict(before: context, contextWord: contextWord, completing: !prefix.isEmpty,
                            endpoint: connection.baseURL, apiKey: connection.apiKey, cacheScope: scope,
@@ -553,7 +630,8 @@ final class WordCompletion {
             guard !request.isCancelled else { return nil }
             if attempt > 0 { Thread.sleep(forTimeInterval: 0.015) }
             guard let field = readField(pid: target.pid), CFEqual(target.element, field.element) else { return nil }
-            if PredictionPhrase.matchesEdit(before: target.before, after: target.after, inserted: inserted, position: target.position,
+            if field.length == target.length + inserted.utf16.count,
+               PredictionPhrase.matchesEdit(before: target.before, after: target.after, inserted: inserted, position: target.position,
                                             newBefore: field.before, newAfter: field.after, newPosition: field.position) {
                 let prefix = field.before.reversed().prefix(while: { $0.isLetter }).reversed()
                 return Suggestion(field: field, trigger: candidate.trigger, prefix: String(prefix),
@@ -820,7 +898,7 @@ final class WordCompletion {
         return Unmanaged<CFString>.fromOpaque(id).takeUnretainedValue() as String
     }
 
-    private func show(_ candidate: Suggestion) -> Bool {
+    private func show(_ candidate: inout Suggestion) -> Bool {
         let caret = CaretLocator.flipToCocoa(candidate.field.bounds)
         guard let screen = NSScreen.screens.first(where: { $0.frame.intersects(caret.insetBy(dx: -1, dy: 0)) }) else { return false }
         let label = NSTextField(labelWithString: candidate.suffix)
@@ -844,6 +922,7 @@ final class WordCompletion {
         }
         guard let frame = fitted else { return false }
 
+        candidate.displayedSuffix = label.stringValue
         displayOverlay(label, frame: frame)
         return true
     }
